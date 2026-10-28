@@ -506,10 +506,10 @@ export async function deployWorkerWithProvenance(
     writeDiagnostic(`${JSON.stringify({ song_funding_binding_readback: readback })}\n`);
   }
   if (guardedHnsStagingHttp) {
-    const serving = await runner(["bun", "run", "check:staging:hns-route"], solidRoot);
+    const serving = await runner(["bun", "run", "check:staging:release"], solidRoot);
     if (serving.exitCode !== 0) {
       throw new Error(
-        `staging HNS serving check failed after HTTP deploy (exit ${serving.exitCode})`,
+        `staging direct-host release check failed after HTTP deploy (exit ${serving.exitCode})`,
       );
     }
     if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);

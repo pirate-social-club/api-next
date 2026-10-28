@@ -482,7 +482,7 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
     expect(diagnostics).toEqual(["deployed\n"]);
   });
 
-  test("gates staging HTTP on the gateway and checks HNS serving after deploy", async () => {
+  test("keeps gateway configuration guards and requires direct-host release acceptance", async () => {
     const manifest = JSON.stringify({
       schema: "pirate-hns-community-app-handle-gateway-staging-public-v1",
       mode: "staging-public-tls",
@@ -513,11 +513,11 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       { exitCode: 0, stdout: before },
       { exitCode: 0, stdout: "deployed" },
       { exitCode: 0, stdout: after },
-      { exitCode: 0, stdout: "serving passed" },
+      { exitCode: 0, stdout: '{"direct":"passed","hns":"failed"}' },
     ]);
     const solidDirectories: string[] = [];
     const linkedRunner: CommandRunner = async (command, cwd, signal) => {
-      if (command[0] === "node" || command.includes("check:staging:hns-route"))
+      if (command[0] === "node" || command.includes("check:staging:release"))
         solidDirectories.push(cwd);
       return runner(command, cwd, signal);
     };
@@ -535,11 +535,34 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
     ).resolves.toMatchObject({ worker_version_id: "version-2" });
     expect(commands[6]?.[0]).toBe("timeout");
     expect(commands[7]).toEqual(["node", "scripts/hns-staging-gateway-preflight.mjs"]);
-    expect(commands[11]).toEqual(["bun", "run", "check:staging:hns-route"]);
+    expect(commands[11]).toEqual(["bun", "run", "check:staging:release"]);
     expect(solidDirectories).toEqual([
       "/workspace/pirate-web-solid",
       "/workspace/pirate-web-solid",
     ]);
+
+    const failedDirect = queueRunner([
+      ...sourceChecks(httpInput.configPath),
+      { exitCode: 0, stdout: "/workspace/api-next/.git" },
+      { exitCode: 0, stdout: manifest },
+      { exitCode: 0 },
+      { exitCode: 0, stdout: before },
+      { exitCode: 0, stdout: "deployed" },
+      { exitCode: 0, stdout: after },
+      { exitCode: 1 },
+    ]);
+    await expect(
+      deployWorkerWithProvenance(
+        "/repo",
+        httpInput,
+        failedDirect.runner,
+        () => undefined,
+        async () => pin,
+        allowRewardDeployment,
+        allowStagingBindings,
+        allowTelegram,
+      ),
+    ).rejects.toThrow("staging direct-host release check failed after HTTP deploy");
 
     const refused = queueRunner([
       { exitCode: 0, stdout: sourceSha },
