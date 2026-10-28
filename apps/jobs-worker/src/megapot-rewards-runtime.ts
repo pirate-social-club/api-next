@@ -43,6 +43,7 @@ import {
   makeControlPlaneSongFundingRecoveryStore,
 } from "../../../packages/platform-cf/src/song-megapot-contribution-repository.ts";
 import { makeSongFundingRecoveryRouting } from "./megapot-rewards-routing.ts";
+import { composeSongFundingStage } from "./song-funding-stage.ts";
 import { makeSongMegapotFundingRecovery } from "./song-megapot-funding-recovery.ts";
 
 export function makeBoundedSongFundingConnection(
@@ -106,14 +107,7 @@ export function makeSongFundingRecoveryRuntime(input: {
   });
   return {
     ensure: authority.ensure,
-    run: Effect.fn("SongFundingRuntime.run")(function* (
-      options: Parameters<typeof runtime.run>[0],
-    ) {
-      if (!options.enabled) return;
-      // Existing receipt/finality recovery takes priority over prospective quotes.
-      yield* runtime.run(options);
-      yield* contexts.run({ enabled: true, ensure: options.ensure, limit: 6 });
-    }),
+    run: composeSongFundingStage(runtime, contexts),
   };
 }
 

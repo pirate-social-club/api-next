@@ -5709,6 +5709,24 @@ BEGIN
    AND template.valid_from<=clock_timestamp() AND template.valid_until>clock_timestamp() AND p.accepted AND p.valid_until>clock_timestamp()
    AND account.status='active' AND persona.status='active' AND a.status='active' AND a.chain_account_kind='evm'
    AND can_account_access_activity_song(account.user_id,s.community_id,s.post_id)
+   -- A committed pot is a candidate only while create_song_contribution_v2 could
+   -- still admit a contribution: its frozen terms have not ended, and neither the
+   -- leg nor this account has reached the profile's admitted-contribution limit.
+   AND (s.target IS NULL OR (
+     ((s.terms->>'ends_at')::TIMESTAMPTZ<=clock_timestamp()) IS NOT TRUE
+     AND ((SELECT count(*) FROM song_megapot_contributions_v2 c WHERE c.pool_leg_id=s.target->>'pool_leg_id'
+       AND c.state->>'fundingState'<>'nonce_closed_no_principal')
+       >=least((p.policy->>'maxLegLiabilities')::BIGINT,(p.policy->>'maxAdmittedLeg')::BIGINT)) IS NOT TRUE
+     AND ((SELECT count(*) FROM song_megapot_contributions_v2 c WHERE c.account_id=account.user_id
+       AND c.pool_leg_id=s.target->>'pool_leg_id' AND c.state->>'fundingState'<>'nonce_closed_no_principal')
+       >=(p.policy->>'maxAdmittedAccountLeg')::BIGINT) IS NOT TRUE))
+   -- Skip an account, or the whole profile, without room for one more charged
+   -- attempt, so an exhausted counter cannot raise for or block other candidates.
+   AND NOT EXISTS(SELECT 1 FROM reward_context_work_counters_v2 counter
+     WHERE counter.profile_id=p.profile_id AND counter.account_id IN ('',account.user_id)
+       AND (counter.maximum_units IS DISTINCT FROM (CASE WHEN counter.account_id='' THEN template.operational_profile->>'maximumContextWorkGlobal'
+             ELSE template.operational_profile->>'maximumContextWorkPerAccount' END)::BIGINT
+         OR counter.used_units+(template.operational_profile->>'contextWorkPerAttempt')::BIGINT>counter.maximum_units))
    AND (s.target IS NOT NULL OR NOT EXISTS(SELECT 1 FROM song_reward_offers existing WHERE existing.community_id=s.community_id AND existing.post_id=s.post_id
      AND existing.status IN('draft','active','paused','operational_hold')))
    AND ((template.operational_profile->>'maximumContextAttempts')::BIGINT>0

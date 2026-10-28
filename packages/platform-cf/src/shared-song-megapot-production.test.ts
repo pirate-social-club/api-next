@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { Effect, Layer, Schema } from "effect";
 import {
   ControlPlaneDb,
+  type ControlPlaneOutcomeCertainty,
   type ControlPlaneStatement,
+  ControlPlaneStatementFailed,
   type ControlPlaneTransaction,
   ControlPlaneTransactionOutcomeUnknown,
 } from "../../application/src/ports.ts";
@@ -29,6 +31,11 @@ const encode = (value: unknown) =>
 async function fixture(
   options: {
     claims?: number;
+    claimFailure?: {
+      at: number;
+      sqlState: string;
+      outcomeCertainty?: ControlPlaneOutcomeCertainty;
+    };
     providerDelayMs?: number;
     drift?: boolean;
     advance?: boolean;
@@ -179,36 +186,53 @@ async function fixture(
   const reads = { active: 0, peak: 0 };
   const balanceBlocks: Array<bigint | undefined> = [];
   const execute: ControlPlaneTransaction["execute"] = <Row>(s: ControlPlaneStatement) =>
-    Effect.sync(() => {
-      statements.push(s);
-      trace.push(s.label);
-      let packet: unknown = null;
-      if (s.label === "shared-song.context.claim") {
-        claims++;
-        if (claims <= (options.claims ?? Number.POSITIVE_INFINITY)) {
-          packet =
-            options.claims === undefined
-              ? work
-              : {
-                  ...work,
-                  workId: `work-${claims}`,
-                  facts: {
-                    ...work.facts,
-                    actor: {
-                      ...work.facts.actor,
-                      wallet_assignment_id: `${work.facts.actor.wallet_assignment_id}-${claims}`,
-                    },
-                  },
-                };
-        }
-      } else if (s.label === "shared-song.context.persist")
-        contexts.push(JSON.parse(String(s.values[2])));
-      else if (s.label === "shared-song.context.finish-unavailable")
-        failures.push(String(s.values[2]));
-      else if (s.label === "shared-song.frozen-plan.read") packet = options.original;
-      else throw new Error(`Unexpected DB call ${s.label}`);
-      return { rows: [{ packet }] as Row[], rowCount: 1 };
-    });
+    s.label === "shared-song.context.claim" && options.claimFailure?.at === claims + 1
+      ? Effect.sync(() => {
+          statements.push(s);
+          trace.push(s.label);
+          claims++;
+        }).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ControlPlaneStatementFailed({
+                label: s.label,
+                sqlState: options.claimFailure?.sqlState ?? null,
+                constraint: null,
+                outcomeCertainty: options.claimFailure?.outcomeCertainty ?? "aborted",
+              }),
+            ),
+          ),
+        )
+      : Effect.sync(() => {
+          statements.push(s);
+          trace.push(s.label);
+          let packet: unknown = null;
+          if (s.label === "shared-song.context.claim") {
+            claims++;
+            if (claims <= (options.claims ?? Number.POSITIVE_INFINITY)) {
+              packet =
+                options.claims === undefined
+                  ? work
+                  : {
+                      ...work,
+                      workId: `work-${claims}`,
+                      facts: {
+                        ...work.facts,
+                        actor: {
+                          ...work.facts.actor,
+                          wallet_assignment_id: `${work.facts.actor.wallet_assignment_id}-${claims}`,
+                        },
+                      },
+                    };
+            }
+          } else if (s.label === "shared-song.context.persist")
+            contexts.push(JSON.parse(String(s.values[2])));
+          else if (s.label === "shared-song.context.finish-unavailable")
+            failures.push(String(s.values[2]));
+          else if (s.label === "shared-song.frozen-plan.read") packet = options.original;
+          else throw new Error(`Unexpected DB call ${s.label}`);
+          return { rows: [{ packet }] as Row[], rowCount: 1 };
+        });
   const db = ControlPlaneDb.of({
     execute,
     withTransaction: (use) =>
@@ -329,6 +353,31 @@ describe("actual shared-song background context producer", () => {
       f.trace.findIndex((x) => x.startsWith("rpc:")),
     );
     expect(f.reads.peak).toBe(3);
+  });
+  test("a certain budget refusal mid-batch still produces the quotes already claimed", async () => {
+    const f = await fixture({
+      successor: true,
+      claims: 6,
+      claimFailure: { at: 3, sqlState: "PCV04" },
+    });
+    await Effect.runPromise(f.producer.run({ ...options, limit: 6 }));
+    expect(f.statements.filter((s) => s.label === "shared-song.context.claim")).toHaveLength(3);
+    expect(f.contexts).toHaveLength(2);
+    expect(f.failures).toEqual([]);
+  });
+  test("an uncertain or non-budget claim failure still fails the batch before production", async () => {
+    for (const claimFailure of [
+      { at: 3, sqlState: "PCV04", outcomeCertainty: "unknown" as const },
+      { at: 3, sqlState: "PCV05" },
+      { at: 1, sqlState: null as unknown as string },
+    ]) {
+      const f = await fixture({ successor: true, claims: 6, claimFailure });
+      await expect(
+        Effect.runPromise(f.producer.run({ ...options, limit: 6 })),
+      ).rejects.toMatchObject({ _tag: "ControlPlaneStatementFailed" });
+      expect(f.trace.some((x) => x.startsWith("rpc:"))).toBe(false);
+      expect(f.contexts).toEqual([]);
+    }
   });
   test("a partial queue stops at null and unavailable observations do not replay work", async () => {
     const f = await fixture({ claims: 3, providerUnknown: true });

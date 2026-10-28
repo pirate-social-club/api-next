@@ -3,6 +3,7 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   ControlPlaneOperationTimedOut,
+  ControlPlaneStatementFailed,
   type ControlPlaneTransaction,
   ControlPlaneTransactionOutcomeUnknown,
 } from "../../application/src/ports.ts";
@@ -41,6 +42,16 @@ const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: u
     try: () => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value),
     catch: () => unavailable("policy_unavailable"),
   });
+/** Only a certain counter refusal from the claim itself ends a batch quietly. */
+const isCertainContextBudgetRefusal = (cause: Cause.Cause<unknown>) =>
+  cause.reasons.length > 0 &&
+  cause.reasons.every(
+    (reason) =>
+      Cause.isFailReason(reason) &&
+      reason.error instanceof ControlPlaneStatementFailed &&
+      reason.error.sqlState === "PCV04" &&
+      reason.error.outcomeCertainty !== "unknown",
+  );
 const stringify = (value: unknown) =>
   JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v));
 const call = Effect.fn("SharedSongProduction.call")(function* (
@@ -571,13 +582,29 @@ export function makeControlPlaneSharedSongContextProducer(input: {
       // reads and their independent snapshot transactions may overlap.
       for (let index = 0; index < limit; index++) {
         yield* options.ensure();
-        const raw = yield* txCall(
-          "shared-song.context.claim",
-          "SELECT claim_next_shared_song_context_v2($1) AS packet",
-          [crypto.randomUUID()],
+        const claimed = yield* Effect.exit(
+          txCall(
+            "shared-song.context.claim",
+            "SELECT claim_next_shared_song_context_v2($1) AS packet",
+            [crypto.randomUUID()],
+          ),
         );
-        if (raw === null) break;
-        candidates.push(yield* decode(Candidate, raw));
+        if (Exit.isFailure(claimed)) {
+          // Selection already skips exhausted counters. A concurrent charge can
+          // still refuse after selection; that certain, rolled-back refusal must
+          // not abandon candidates this batch has already claimed and charged.
+          if (!isCertainContextBudgetRefusal(claimed.cause))
+            return yield* Effect.failCause(claimed.cause);
+          console.warn(
+            JSON.stringify({
+              event: "shared-song.context.claim_budget_refused",
+              claimed: candidates.length,
+            }),
+          );
+          break;
+        }
+        if (claimed.value === null) break;
+        candidates.push(yield* decode(Candidate, claimed.value));
       }
       yield* Effect.forEach(
         candidates,

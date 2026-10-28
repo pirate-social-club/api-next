@@ -52,6 +52,7 @@ import {
   loseOneStudyCommitAcknowledgement,
   makeSafeLifecycleJobProof,
 } from "./safe-lifecycle-job.pg-fixture.ts";
+import { composeSongFundingStage } from "./song-funding-stage.ts";
 import { makeSongMegapotFundingRecovery } from "./song-megapot-funding-recovery.ts";
 
 const url = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -62,6 +63,34 @@ const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
 const h = "a".repeat(64),
   bh = `0x${h}`;
 const addr = (value: string) => `0x${value.repeat(40)}`;
+/** Leave an account, at the fixture's actual low budget, without room for one more attempt. */
+const exhaustContextWork = (
+  db: { query: (text: string, values?: unknown[]) => Promise<unknown> },
+  account: string,
+) =>
+  db.query(
+    `INSERT INTO reward_context_work_counters_v2(profile_id,account_id,maximum_units,used_units)
+     SELECT t.profile_id,$1,(t.operational_profile->>'maximumContextWorkPerAccount')::BIGINT,
+       (t.operational_profile->>'maximumContextWorkPerAccount')::BIGINT
+     FROM reward_shared_song_templates_v2 t JOIN reward_shared_song_template_admissions_v2 a USING(community_id,template_id)
+     WHERE a.accepted
+     ON CONFLICT(profile_id,account_id) DO UPDATE SET used_units=excluded.maximum_units
+     WHERE reward_context_work_counters_v2.used_units<excluded.maximum_units`,
+    [account],
+  );
+const contextWork = async (db: { query: (text: string) => Promise<{ rows: unknown[] }> }) => ({
+  attempts: (
+    await db.query(
+      `SELECT w.account_id,sum(cw.attempts)::int AS attempts FROM reward_song_context_work_v2 cw
+       JOIN persona_wallet_assignments w USING(assignment_id) GROUP BY w.account_id ORDER BY w.account_id`,
+    )
+  ).rows,
+  counters: (
+    await db.query(
+      "SELECT account_id,used_units::int AS used,maximum_units::int AS maximum FROM reward_context_work_counters_v2 ORDER BY account_id",
+    )
+  ).rows,
+});
 
 for (const scenario of [
   "win",
@@ -76,6 +105,7 @@ for (const scenario of [
   "job_treasury_qualified_win",
   "job_late_recovery",
   "job_commit_unknown",
+  "job_context_exhaustion",
   "job_late_refund",
   "timed_late_refund",
   "job_unspent_refund",
@@ -89,6 +119,7 @@ for (const scenario of [
   const treasury = scenario.includes("treasury_");
   const empty = scenario.includes("empty_") || (treasury && !scenario.includes("qualified"));
   const lateRecovery = scenario === "job_late_recovery";
+  const contextExhaustion = scenario === "job_context_exhaustion";
   const funderWins = (empty || lateRecovery) && !treasury;
   const newTerms = throughJob || empty || scenario === "qualified_funder_policy";
   const beneficiary = funderWins ? "b" : "a";
@@ -200,8 +231,16 @@ for (const scenario of [
           now: () => new Date().toISOString(),
           rpcFor: () => rpc,
         });
-        await run(producer.run({ enabled: true, ensure: authority.ensure }));
-        await run(producer.run({ enabled: true, ensure: authority.ensure }));
+        if (contextExhaustion) {
+          // The participant has no room for another attempt. One production-sized
+          // batch must skip it, without raising, and still quote the funder.
+          await exhaustContextWork(f.owner, "a");
+          await run(producer.run({ enabled: true, ensure: authority.ensure, limit: 6 }));
+          expect((await contextWork(f.owner)).attempts).toEqual([{ account_id: "b", attempts: 1 }]);
+        } else {
+          await run(producer.run({ enabled: true, ensure: authority.ensure }));
+          await run(producer.run({ enabled: true, ensure: authority.ensure }));
+        }
         const scope = { communityId: "community", postId, contributionId: null };
         const auth = { authorize: () => Effect.succeed({ accountId: "b" }) };
         const reads = makeControlPlaneSongContributionReadPorts(httpLayer, auth, {
@@ -307,6 +346,16 @@ for (const scenario of [
             purchase_order: "ticket_first_v1",
           },
         ]);
+        if (contextExhaustion) {
+          // The one admitted contribution fills this single-funder leg, so the
+          // committed pot stops consuming quote budget for every account.
+          const before = await contextWork(f.owner);
+          await run(producer.run({ enabled: true, ensure: authority.ensure, limit: 6 }));
+          expect(await contextWork(f.owner)).toEqual(before);
+          // Exhaust the funder too. Every later tick runs the serving funding stage
+          // with its real quote producer through purchase, Study, freeze and settlement.
+          await exhaustContextWork(f.owner, "b");
+        }
         const app = await makeReleaseRuntimeLogin(f.admin, url, f.schema);
         try {
           const layer = makeDirectPostgresControlPlaneLayer(app.url);
@@ -469,7 +518,9 @@ for (const scenario of [
             layer,
             rpc,
             now: () => jobClock,
-            funding,
+            funding: contextExhaustion
+              ? { ...funding, run: composeSongFundingStage(funding, producer) }
+              : funding,
             ensure: authority.ensure,
             custody: {
               attestationId: "attestation",
