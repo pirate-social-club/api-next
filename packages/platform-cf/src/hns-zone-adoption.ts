@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import type { Client } from "pg";
 import { decodeHnsRootImportReadinessResultV1 } from "../../application/src/namespace-ownership/hns-root-import-readiness.ts";
 import { promoteImportedHnsInventorySuccessor } from "./hns-imported-inventory-successor.ts";
-import { requireHnsStagingRelocationReview } from "./hns-staging-relocation-review.ts";
+import { readHnsStagingOwnerTxtRecovery } from "./hns-staging-owner-txt-recovery.ts";
 import {
   type HnsZoneAdoptionDeltaKind,
   hnsZoneAdoptionSerialV1,
   hnsZoneHoldsWildcardAddressFamilyV1,
-  requireHnsZoneAdoptionDeltaV1,
 } from "./hns-zone-adoption-delta.ts";
+import { requireHnsZoneAdoptionReview } from "./hns-zone-adoption-review.ts";
 
 /**
  * Operator adoption of a changed zone for one activated root.
@@ -393,6 +393,7 @@ export async function adoptHnsRootZone(
     readonly expected_delta: HnsZoneAdoptionDeltaKind;
     readonly mode: HnsZoneAdoptionMode;
     readonly reviewed_relocation?: unknown;
+    readonly reviewed_owner_txt?: unknown;
     /** Fresh full observer result, read under the same database fence. */
     readonly observe_current: (state: HnsRootZoneAdoptionState) => Promise<Uint8Array>;
   },
@@ -425,6 +426,15 @@ export async function adoptHnsRootZone(
   try {
     await client.query("SET LOCAL lock_timeout TO '10s'");
     await client.query("SET LOCAL statement_timeout TO '20s'");
+    // Recovery owns community/route before it reaches app and DNS. Take its
+    // outer fence first so a concurrent recovery cannot hold app and wait on
+    // our DNS lock while we wait on its route.
+    if (input.reviewed_owner_txt !== undefined)
+      await readHnsStagingOwnerTxtRecovery(client, {
+        review: input.reviewed_owner_txt,
+        root_import_session_id: result.root_import_session_id,
+        lock: writing,
+      });
     const state = await selectState(
       client,
       result.root_label,
@@ -449,35 +459,6 @@ export async function adoptHnsRootZone(
       result.gateway_healthy !== true
     )
       refuse("the observation does not report a healthy authority");
-    const relocation =
-      input.reviewed_relocation === undefined
-        ? undefined
-        : await requireHnsStagingRelocationReview({
-            review: input.reviewed_relocation,
-            predecessor: {
-              environment: state.environment,
-              root_label: state.root_label,
-              generation: state.current_generation,
-              health_generation: state.current_health_generation,
-              gateway_reference: state.gateway_deployment_reference,
-              certificate_spki: state.gateway_certificate_spki_sha256,
-              chain_reference: state.stable_chain_delegation_snapshot_reference,
-            },
-            observed: result,
-            observed_at: result.observed_at,
-          });
-    if ((input.expected_delta === "staging_gateway_relocated") !== (relocation !== undefined))
-      refuse("staging gateway relocation requires its explicit reviewed delta");
-    if (
-      result.dnssec_keyset_reference !== state.dnssec_keyset_reference ||
-      result.dnssec_keyset_version !== state.dnssec_keyset_version ||
-      result.gateway_certificate_spki_sha256 !== state.gateway_certificate_spki_sha256 ||
-      (relocation === undefined &&
-        (result.gateway_deployment_reference !== state.gateway_deployment_reference ||
-          `hns-root-chain:${result.chain_resource_sha256}` !==
-            state.stable_chain_delegation_snapshot_reference))
-    )
-      refuse("the observation's keyset, gateway or chain reference is not the current revision's");
     const now = Date.parse(state.database_time);
     const observed = Date.parse(result.observed_at);
     const remaining = Math.floor((Date.parse(result.valid_until) - now) / 1000);
@@ -487,14 +468,16 @@ export async function adoptHnsRootZone(
       !(remaining >= 1 && remaining <= 604_800)
     )
       refuse("the observation is stale; observe the root again");
-    const delta = requireHnsZoneAdoptionDeltaV1({
-      root_label: result.root_label,
-      retained_zone_bytes: state.retained_zone_bytes,
-      observed_zone_bytes: decoded.managed_zone_bytes,
-      ...(relocation === undefined ? {} : { staging_relocation: relocation }),
-    });
-    if (delta !== input.expected_delta)
-      refuse(`the zone difference is ${delta}, not the one intended`);
+    const review = {
+      state,
+      result,
+      zone_bytes: decoded.managed_zone_bytes,
+      expected_delta: input.expected_delta,
+      reviewed_relocation: input.reviewed_relocation,
+      reviewed_owner_txt: input.reviewed_owner_txt,
+      lock: writing,
+    };
+    const delta = await requireHnsZoneAdoptionReview(client, { ...review, database_time: now });
     // DNS and its keys have no transaction shared with PostgreSQL. The
     // operator must retain exclusive authority-writer custody through commit.
     // Reobserve both authorities, keys, chain and gateway here; a serial alone
@@ -539,6 +522,10 @@ export async function adoptHnsRootZone(
     )
       refuse("the observation is stale; observe the root again");
 
+    // Ownership expires by wall clock even while its rows are locked.
+    if (input.reviewed_owner_txt !== undefined)
+      await requireHnsZoneAdoptionReview(client, { ...review, database_time: checkedAt });
+
     const receipt = (committed: boolean): HnsZoneAdoptionReceipt => ({
       mode: input.mode,
       committed,
@@ -567,6 +554,7 @@ export async function adoptHnsRootZone(
       resultSha256,
       "hns-zone-adoption",
       input.reviewed_relocation,
+      input.reviewed_owner_txt,
     );
     const after = await client.query<{ generation: string; zone_bytes_digest: string }>(
       `SELECT dns.current_generation::text AS generation, revision.zone_bytes_digest

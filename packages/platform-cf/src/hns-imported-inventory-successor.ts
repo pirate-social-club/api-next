@@ -8,6 +8,11 @@ import {
 } from "../../application/src/hns-host-persistence.ts";
 import { decodeHnsRootImportReadinessResultV1 } from "../../application/src/namespace-ownership/hns-root-import-readiness.ts";
 import { promoteHnsAuthoritySuccessorInTransaction } from "./hns-authority-successor-promotion.ts";
+import { readHnsStagingOwnerTxtRecovery } from "./hns-staging-owner-txt-recovery.ts";
+import {
+  HnsStagingOwnerTxtRefusal,
+  requireHnsStagingOwnerTxtReview,
+} from "./hns-staging-owner-txt-review.ts";
 import { requireHnsStagingRelocationReview } from "./hns-staging-relocation-review.ts";
 
 type State = {
@@ -30,6 +35,9 @@ type State = {
   current_health_generation: string;
   stable_chain_delegation_snapshot_reference: string;
   stable_chain_delegation_snapshot_digest: string;
+  zone_bytes: Uint8Array;
+  dnssec_keyset_reference: string;
+  dnssec_keyset_version: string;
   actor_account_id: string;
   community_id: string;
   sale_namespace_activation_id: string;
@@ -41,7 +49,9 @@ type State = {
 };
 
 // The caller already holds the session and predecessor DNS locks, and for a
-// renewal the job's. The prefix names the operation the successor belongs to
+// renewal the job's. The owner-TXT variant must acquire community/route before
+// session/DNS, as adoption does. Its recovery re-read reuses those locks before
+// taking app/sale. The prefix names the operation the successor belongs to
 // in its operation identifiers; it changes nothing else.
 export async function promoteImportedHnsInventorySuccessor(
   client: Client,
@@ -49,14 +59,33 @@ export async function promoteImportedHnsInventorySuccessor(
   resultSha256: string,
   operationPrefix: "hns-inventory-renewal" | "hns-zone-adoption" = "hns-inventory-renewal",
   reviewedRelocation?: unknown,
+  reviewedOwnerTxt?: unknown,
 ) {
   const decoded = await decodeHnsRootImportReadinessResultV1(resultBytes);
   const result = decoded.result;
+  if (
+    reviewedOwnerTxt !== undefined &&
+    (reviewedRelocation !== undefined || operationPrefix !== "hns-zone-adoption")
+  )
+    throw new HnsStagingOwnerTxtRefusal(
+      "HNS owner TXT refresh requires exclusive zone adoption review",
+    );
+  // Acquire the recovery's community/route fence before app/sale locks. The
+  // shared promotion validates the review itself, even for a direct caller.
+  const recovery =
+    reviewedOwnerTxt === undefined
+      ? undefined
+      : await readHnsStagingOwnerTxtRecovery(client, {
+          review: reviewedOwnerTxt,
+          root_import_session_id: result.root_import_session_id,
+          lock: true,
+        });
   const rows = await client.query<State>(
     `SELECT
     dns.dns_zone_activation_id, dns.current_generation AS dns_generation,
     revision.dns_authority_kind, revision.dns_authority_reference, revision.zone_revision, revision.status AS dns_status,
     revision.stable_chain_delegation_snapshot_reference, revision.stable_chain_delegation_snapshot_digest,
+    revision.zone_bytes, revision.dnssec_keyset_reference, revision.dnssec_keyset_version,
     revision.gateway_deployment_reference, revision.gateway_certificate_spki_sha256,
     (SELECT COALESCE(max(health_generation),0)::text FROM hns_dns_zone_health_observations
       WHERE dns_zone_activation_id=dns.dns_zone_activation_id AND activation_generation=dns.current_generation) AS current_health_generation,
@@ -111,6 +140,38 @@ export async function promoteImportedHnsInventorySuccessor(
     throw new Error("HNS successor namespace authority changed");
   if (decoded.authority_inventory.environment !== state.environment)
     throw new Error("HNS successor inventory environment changed");
+  if (recovery !== undefined) {
+    if (
+      recovery.dns_zone_activation_id !== state.dns_zone_activation_id ||
+      recovery.app_host_activation_id !== state.app_host_activation_id ||
+      recovery.app_generation !== state.app_generation ||
+      recovery.sale_namespace_activation_id !== state.sale_namespace_activation_id ||
+      recovery.sale_generation !== state.sale_namespace_activation_generation
+    )
+      throw new HnsStagingOwnerTxtRefusal("HNS owner TXT refresh serving generations changed");
+    requireHnsStagingOwnerTxtReview({
+      review: reviewedOwnerTxt,
+      recovery,
+      predecessor: {
+        environment: state.environment,
+        root_label: result.root_label,
+        generation: Number(state.dns_generation),
+        health_generation: Number(state.current_health_generation),
+        chain_reference: state.stable_chain_delegation_snapshot_reference,
+      },
+      observed_chain_sha256: result.chain_resource_sha256,
+      database_time: state.database_time.getTime(),
+    });
+    if (
+      recovery.community_id !== state.community_id ||
+      !Buffer.from(state.zone_bytes).equals(decoded.managed_zone_bytes) ||
+      state.dnssec_keyset_reference !== result.dnssec_keyset_reference ||
+      state.dnssec_keyset_version !== result.dnssec_keyset_version ||
+      state.gateway_deployment_reference !== result.gateway_deployment_reference ||
+      state.gateway_certificate_spki_sha256 !== result.gateway_certificate_spki_sha256
+    )
+      throw new HnsStagingOwnerTxtRefusal("HNS owner TXT refresh changed serving authority");
+  }
   const relocation =
     reviewedRelocation === undefined
       ? undefined
@@ -129,11 +190,13 @@ export async function promoteImportedHnsInventorySuccessor(
           observed_at: result.observed_at,
         });
   const chainReference =
-    relocation === undefined
+    relocation === undefined && recovery === undefined
       ? state.stable_chain_delegation_snapshot_reference
       : `hns-root-chain:${result.chain_resource_sha256}`;
   const chainDigest =
-    relocation === undefined ? state.stable_chain_delegation_snapshot_digest : resultSha256;
+    relocation === undefined && recovery === undefined
+      ? state.stable_chain_delegation_snapshot_digest
+      : resultSha256;
   const observed = Date.parse(result.observed_at);
   const now = state.database_time.getTime();
   const expires = Math.min(
