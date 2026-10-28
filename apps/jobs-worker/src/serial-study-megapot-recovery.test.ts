@@ -5,7 +5,8 @@ import {
   ControlPlaneStatementFailed,
   ControlPlaneTransactionOutcomeUnknown,
 } from "@pirate/application";
-import { Effect, Layer } from "effect";
+import { Effect, Fiber, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import type { MegapotRewardsJobOptions } from "./megapot-rewards.ts";
 import { buildJobRegistry, JobContext, SONG_FUNDING_RECOVERY_WRITES } from "./registry.ts";
 import {
@@ -364,6 +365,40 @@ test("Funding waits for the settled cycle and shares the original attempt clock"
   expect(trace).toEqual(["study", "cycle", "cycle-settled", "funding"]);
 });
 
+test.each([1000, 20_000])(
+  "Funding completes twelve seconds of work inside the original tick after cycle time %s",
+  async (afterCycle) => {
+    const trace: string[] = [];
+    let now = 1000;
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.exit(
+          runSerialStudyMegapotRecovery({
+            study: Effect.void,
+            financial: Effect.sync(() => {
+              now = afterCycle;
+              trace.push("cycle");
+            }),
+            funding: Effect.sleep(12_000).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  trace.push("funding-complete");
+                }),
+              ),
+            ),
+            outerStartedAtMs: 1000,
+            now: () => now,
+          }),
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust(12_001);
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+    expect(result._tag).toBe("Success");
+    expect(trace).toEqual(["cycle", "funding-complete"]);
+  },
+);
+
 test.each([28_000, 29_000, 51_000])(
   "the original clock defers Funding at %s without starting or retrying it",
   async (afterCycle) => {
@@ -420,27 +455,48 @@ test("Funding COMMIT uncertainty ends the tick without replaying either stage", 
   expect([cycleCalls, fundingCalls]).toEqual([1, 1]);
 });
 
-test("Funding timeout awaits interrupted cleanup and never retries the settled cycle", async () => {
-  const trace: string[] = [];
-  await expect(
-    Effect.runPromise(
-      runSerialStudyMegapotRecovery({
-        study: Effect.void,
-        financial: Effect.sync(() => {
-          trace.push("cycle");
-        }),
-        funding: Effect.never.pipe(
-          Effect.ensuring(
-            Effect.promise(async () => {
-              await new Promise((resolve) => setTimeout(resolve, 5));
-              trace.push("funding-closed");
+test.each([
+  [1000, 20_000],
+  [25_000, 13_000],
+])(
+  "Funding timeout retains the cleanup reserve after cycle time %s with work limit %s",
+  async (afterCycle, workLimit) => {
+    const trace: string[] = [];
+    let now = 1000;
+    const failure = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.flip(
+          runSerialStudyMegapotRecovery({
+            study: Effect.void,
+            financial: Effect.sync(() => {
+              now = afterCycle;
+              trace.push("cycle");
             }),
-          ),
-        ),
-        outerStartedAtMs: 1000,
-        now: () => 1000,
-      }),
-    ),
-  ).rejects.toMatchObject({ _tag: "TimeoutError" });
-  expect(trace).toEqual(["cycle", "funding-closed"]);
-}, 20_000);
+            funding: Effect.never.pipe(
+              Effect.ensuring(
+                Effect.sleep(11_000).pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      trace.push("funding-closed");
+                    }),
+                  ),
+                ),
+              ),
+            ),
+            outerStartedAtMs: 1000,
+            now: () => now,
+          }),
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust(workLimit - 1);
+        expect(trace).toEqual(["cycle"]);
+        yield* TestClock.adjust(2);
+        expect(trace).toEqual(["cycle"]);
+        yield* TestClock.adjust(11_000);
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+    expect(failure).toMatchObject({ _tag: "TimeoutError" });
+    expect(trace).toEqual(["cycle", "funding-closed"]);
+    expect(afterCycle - 1000 + workLimit + 11_001).toBeLessThan(50_000);
+  },
+);

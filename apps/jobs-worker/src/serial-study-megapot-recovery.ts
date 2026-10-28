@@ -14,8 +14,9 @@ const MINIMUM_FINANCIAL_TAIL_MS =
   5 * MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS +
   MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS +
   2_000;
-const FUNDING_BUDGET_MS = 10_000;
-const MINIMUM_FUNDING_TAIL_MS = FUNDING_BUDGET_MS + MINIMUM_FINANCIAL_TAIL_MS;
+const MINIMUM_FUNDING_WORK_MS = 10_000;
+const MAXIMUM_FUNDING_WORK_MS = 20_000;
+const MINIMUM_FUNDING_TAIL_MS = MINIMUM_FUNDING_WORK_MS + MINIMUM_FINANCIAL_TAIL_MS;
 
 /** Keep the original attempt clock and await recovery before any financial
  * setup. A failed or uncertain recovery ends the tick without a retry.
@@ -59,7 +60,14 @@ export const runSerialStudyMegapotRecovery = Effect.fn("SerialStudyMegapot.run")
       funding: "skipped_remaining_budget" as const,
       fundingRemainingMs,
     };
-  yield* input.funding.pipe(Effect.timeout(FUNDING_BUDGET_MS));
+  // The quote batch needs more than ten seconds after its serialized claims.
+  // Use available time without borrowing the counted rollback/close tail or
+  // changing the original fifty-second tick and its financial-first ordering.
+  const fundingBudgetMs = Math.min(
+    MAXIMUM_FUNDING_WORK_MS,
+    fundingRemainingMs - MINIMUM_FINANCIAL_TAIL_MS,
+  );
+  yield* input.funding.pipe(Effect.timeout(fundingBudgetMs));
   return { financial: "ran" as const, remainingMs, funding: "ran" as const, fundingRemainingMs };
 });
 
