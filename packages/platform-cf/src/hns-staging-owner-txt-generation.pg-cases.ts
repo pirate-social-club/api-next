@@ -4,8 +4,8 @@ import type { Client } from "pg";
 import { makeControlPlaneHandleSalesRepository } from "./handle-sales-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
-/** Real active-to-active writers must invalidate the already reviewed app and
- * sale predecessors, even though both services remain active. */
+/** A real app refresh and sale pause/restore invalidate reviewed generations.
+ * Both services finish active, so status alone cannot detect the stale review. */
 export async function verifyHnsOwnerTxtServingGenerationFences(input: {
   readonly admin: Client;
   readonly connection: string;
@@ -34,27 +34,45 @@ export async function verifyHnsOwnerTxtServingGenerationFences(input: {
   if (sale === undefined) throw new Error("owner TXT fixture sale is unavailable");
   // The caller explicitly reviews the new app generation before this second
   // refusal, so a stale sale cannot be hidden by the earlier app mismatch.
+  const revise = (requestedStatus: "suspended" | "active", expectedHash: string, key: string) =>
+    Effect.runPromise(
+      makeControlPlaneHandleSalesRepository()
+        .reviseSaleNamespace({
+          accountId: "actor-root-import",
+          communityId: "community-root-import",
+          activationId: "sale-root-import",
+          expectedActivationHash: expectedHash,
+          requestedStatus,
+          namespaceAuthorityReference: "owner-txt-evidence",
+          expectedNamespaceAuthorityGeneration: 3,
+          dnsZoneActivationId: input.dns_id,
+          expectedDnsZoneActivationGeneration: input.dns_generation,
+          dedicatedRootReplacementConfirmed: true,
+          idempotencyKey: key,
+          actionId: key,
+        })
+        .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(input.connection))),
+    );
   return {
     app_generation: input.app_generation + 1,
-    change_sale: () =>
-      Effect.runPromise(
-        makeControlPlaneHandleSalesRepository()
-          .reviseSaleNamespace({
-            accountId: "actor-root-import",
-            communityId: "community-root-import",
-            activationId: "sale-root-import",
-            expectedActivationHash: sale.sale_namespace_activation_hash,
-            requestedStatus: "active",
-            namespaceAuthorityReference: "owner-txt-evidence",
-            expectedNamespaceAuthorityGeneration: 3,
-            dnsZoneActivationId: input.dns_id,
-            expectedDnsZoneActivationGeneration: input.dns_generation,
-            dedicatedRootReplacementConfirmed: true,
-            idempotencyKey: "txt-fixture-active-sale",
-            actionId: "txt-fixture-active-sale",
-          })
-          .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(input.connection))),
-      ),
-    sale_generation: input.sale_generation + 1,
+    change_sale: async () => {
+      const paused = await revise(
+        "suspended",
+        sale.sale_namespace_activation_hash,
+        "txt-fixture-pause-sale",
+      );
+      expect(paused.activation.status).toBe("suspended");
+      const restored = await revise(
+        "active",
+        paused.activation.sale_namespace_activation_hash,
+        "txt-fixture-restore-sale",
+      );
+      expect(restored.activation.status).toBe("active");
+      expect(restored.activation.sale_namespace_activation_generation).toBe(
+        input.sale_generation + 2,
+      );
+      return restored;
+    },
+    sale_generation: input.sale_generation + 2,
   };
 }
