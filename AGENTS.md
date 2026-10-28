@@ -113,8 +113,12 @@ direct Wrangler staging deploy. Read-only CI packaging dry runs remain allowed.
 Staging HTTP Worker deploys use `scripts/deploy-worker-with-provenance.ts`.
 The tool checks the active staging HNS gateway against
 `scripts/hns-staging-gateway-pin.json` and the sibling Solid staging ingress
-candidate before mutation. It runs Solid's full read-only 8s28 serving gate
-afterward. Do not bypass this with a direct Wrangler staging HTTP deploy. A
+candidate before mutation. Afterward, Solid's `check:staging:release` requires
+direct staging app, bundle and API checks and separately reports 8s28
+availability. HNS availability does not block staging Rewards releases;
+explicit `check:staging:hns-route` acceptance still requires the full HNS gate.
+Production release checks are unchanged. Do not bypass this with a direct
+Wrangler staging HTTP deploy. A
 gateway rotation updates the pin and Solid deployment as one reviewed release.
 
 Effect is pinned to an exact version (`4.0.0-rc.109` at bootstrap), and
