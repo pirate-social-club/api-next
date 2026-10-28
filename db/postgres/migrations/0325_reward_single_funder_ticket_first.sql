@@ -325,9 +325,17 @@ END $$;
 CREATE TRIGGER ticket_first_funder_snapshot_guard BEFORE UPDATE ON megapot_pool_drawings
  FOR EACH ROW EXECUTE FUNCTION guard_ticket_first_funder_snapshot_v1();
 DO $acl$
+DECLARE grant_row RECORD;
 BEGIN
  EXECUTE format('ALTER FUNCTION bind_initial_shared_song_pot_v2(jsonb,text,jsonb) SET search_path TO pg_catalog,%I,pg_temp',current_schema());
+ EXECUTE format('ALTER FUNCTION guard_ticket_first_funder_snapshot_v1() SET search_path TO pg_catalog,%I,pg_temp',current_schema());
  REVOKE ALL ON FUNCTION guard_ticket_first_funder_snapshot_v1() FROM PUBLIC;
+ FOR grant_row IN SELECT DISTINCT a.grantee FROM pg_proc p
+   CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+   WHERE p.oid='guard_ticket_first_funder_snapshot_v1()'::regprocedure
+     AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
+   EXECUTE format('REVOKE ALL ON FUNCTION guard_ticket_first_funder_snapshot_v1() FROM %I',pg_get_userbyid(grant_row.grantee));
+ END LOOP;
 END $acl$;
 
 CREATE OR REPLACE FUNCTION validate_megapot_fallback_cutoff() RETURNS trigger

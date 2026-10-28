@@ -274,7 +274,7 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   });
   expect(migrations[324]).toMatchObject({
     version: "0325_reward_single_funder_ticket_first.sql",
-    checksum: "89765776007e47f353d6439bac3adc4f8fbde6b4d0d819248d2029c085f13436",
+    checksum: "b7593eb2d0686fe7141d4bd9b3c6fcd6c8bc1af0334447398497c7f334693d6d",
   });
   expect(migrations[325]).toMatchObject({
     version: "0326_reward_joint_cycle_fairness.sql",
