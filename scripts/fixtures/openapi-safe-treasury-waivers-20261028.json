@@ -1,0 +1,66 @@
+{
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "1b8a9bb9b5683a995dba2bd5c18609af45755a61",
+      "operationId": "get_communitiesCommunityIdDanceModeratedSessionsSessionIdCaptureContext",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/dance/moderated-sessions/{sessionId}/capture-context: enum value added: \"safe_treasury_ticket_first_v1\" at objectives.items.terms.empty_behavior",
+        "response GET /communities/{communityId}/dance/moderated-sessions/{sessionId}/capture-context: property added to closed response: objectives.items.terms.empty_winnings_recipient"
+      ],
+      "kind": "deprecation",
+      "reason": "Future Safe treasury disposition selected by workspace_owner on 2026-10-28. New safe_treasury_ticket_first_v1 terms freeze the Safe address as empty_winnings_recipient in both prospective and committed hashes. Existing terms, held drawings and credits remain unchanged. Six exact-baseline declarations admit only fourteen named closed-response enum/recipient changes. Genuine client137 and the paired Solid consumer must serve before new terms admission; older tabs must reload. Remove after this transition is accepted; no production signer automation or limit change."
+    },
+    {
+      "baselineSha": "1b8a9bb9b5683a995dba2bd5c18609af45755a61",
+      "operationId": "get_communitiesCommunityIdPostsPostIdMegapotContributionCommandsOperationIdempotencyKey",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/posts/{postId}/megapot-contribution-commands/{operation}/{idempotencyKey}: enum value added: \"safe_treasury_ticket_first_v1\" at committed_terms.empty_behavior",
+        "response GET /communities/{communityId}/posts/{postId}/megapot-contribution-commands/{operation}/{idempotencyKey}: property added to closed response: committed_terms.empty_winnings_recipient"
+      ],
+      "kind": "deprecation",
+      "reason": "Future Safe treasury disposition selected by workspace_owner on 2026-10-28. New safe_treasury_ticket_first_v1 terms freeze the Safe address as empty_winnings_recipient in both prospective and committed hashes. Existing terms, held drawings and credits remain unchanged. Six exact-baseline declarations admit only fourteen named closed-response enum/recipient changes. Genuine client137 and the paired Solid consumer must serve before new terms admission; older tabs must reload. Remove after this transition is accepted; no production signer automation or limit change."
+    },
+    {
+      "baselineSha": "1b8a9bb9b5683a995dba2bd5c18609af45755a61",
+      "operationId": "get_communitiesCommunityIdPostsPostIdMegapotContributionsContributionId",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/posts/{postId}/megapot-contributions/{contributionId}: enum value added: \"safe_treasury_ticket_first_v1\" at command_receipt.committed_terms.empty_behavior",
+        "response GET /communities/{communityId}/posts/{postId}/megapot-contributions/{contributionId}: property added to closed response: command_receipt.committed_terms.empty_winnings_recipient"
+      ],
+      "kind": "deprecation",
+      "reason": "Future Safe treasury disposition selected by workspace_owner on 2026-10-28. New safe_treasury_ticket_first_v1 terms freeze the Safe address as empty_winnings_recipient in both prospective and committed hashes. Existing terms, held drawings and credits remain unchanged. Six exact-baseline declarations admit only fourteen named closed-response enum/recipient changes. Genuine client137 and the paired Solid consumer must serve before new terms admission; older tabs must reload. Remove after this transition is accepted; no production signer automation or limit change."
+    },
+    {
+      "baselineSha": "1b8a9bb9b5683a995dba2bd5c18609af45755a61",
+      "operationId": "get_communitiesCommunityIdPostsPostIdMegapotFundingContext",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/posts/{postId}/megapot-funding-context: enum value added: \"safe_treasury_ticket_first_v1\" at quote.committed_terms.empty_behavior",
+        "response GET /communities/{communityId}/posts/{postId}/megapot-funding-context: enum value added: \"safe_treasury_ticket_first_v1\" at quote.prospective_terms.empty_behavior",
+        "response GET /communities/{communityId}/posts/{postId}/megapot-funding-context: property added to closed response: quote.committed_terms.empty_winnings_recipient",
+        "response GET /communities/{communityId}/posts/{postId}/megapot-funding-context: property added to closed response: quote.prospective_terms.empty_winnings_recipient"
+      ],
+      "kind": "deprecation",
+      "reason": "Future Safe treasury disposition selected by workspace_owner on 2026-10-28. New safe_treasury_ticket_first_v1 terms freeze the Safe address as empty_winnings_recipient in both prospective and committed hashes. Existing terms, held drawings and credits remain unchanged. Six exact-baseline declarations admit only fourteen named closed-response enum/recipient changes. Genuine client137 and the paired Solid consumer must serve before new terms admission; older tabs must reload. Remove after this transition is accepted; no production signer automation or limit change."
+    },
+    {
+      "baselineSha": "1b8a9bb9b5683a995dba2bd5c18609af45755a61",
+      "operationId": "get_communitiesCommunityIdPostsPostIdMegapotParticipation",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/posts/{postId}/megapot-participation: enum value added: \"safe_treasury_ticket_first_v1\" at terms.empty_behavior",
+        "response GET /communities/{communityId}/posts/{postId}/megapot-participation: property added to closed response: terms.empty_winnings_recipient"
+      ],
+      "kind": "deprecation",
+      "reason": "Future Safe treasury disposition selected by workspace_owner on 2026-10-28. New safe_treasury_ticket_first_v1 terms freeze the Safe address as empty_winnings_recipient in both prospective and committed hashes. Existing terms, held drawings and credits remain unchanged. Six exact-baseline declarations admit only fourteen named closed-response enum/recipient changes. Genuine client137 and the paired Solid consumer must serve before new terms admission; older tabs must reload. Remove after this transition is accepted; no production signer automation or limit change."
+    },
+    {
+      "baselineSha": "1b8a9bb9b5683a995dba2bd5c18609af45755a61",
+      "operationId": "post_communitiesCommunityIdPostsPostIdMegapotContributions",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/posts/{postId}/megapot-contributions: enum value added: \"safe_treasury_ticket_first_v1\" at committed_terms.empty_behavior",
+        "response POST /communities/{communityId}/posts/{postId}/megapot-contributions: property added to closed response: committed_terms.empty_winnings_recipient"
+      ],
+      "kind": "deprecation",
+      "reason": "Future Safe treasury disposition selected by workspace_owner on 2026-10-28. New safe_treasury_ticket_first_v1 terms freeze the Safe address as empty_winnings_recipient in both prospective and committed hashes. Existing terms, held drawings and credits remain unchanged. Six exact-baseline declarations admit only fourteen named closed-response enum/recipient changes. Genuine client137 and the paired Solid consumer must serve before new terms admission; older tabs must reload. Remove after this transition is accepted; no production signer automation or limit change."
+    }
+  ]
+}
