@@ -876,6 +876,7 @@ suite("ticket-first owner-executed Safe pools", () => {
          'equal_v1','keccak_packed_v1',$4,1,ARRAY['study','karaoke','dance'],'no_purchase',
          'leg_budget',10000000,'ticket_first_v1','production_approved',clock_timestamp(),
          'shared_song',jsonb_build_object('version','shared-song-megapot-v2',
+           'empty_behavior','no_purchase',
            'terms_hash',substring($1 from 3),'planned_drawing_ids',jsonb_build_array('213')))`,
       [termsHash, USDC, PRICE.toString(), ATTESTATION],
     );

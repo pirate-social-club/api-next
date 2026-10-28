@@ -108,6 +108,9 @@ const Natural = Schema.Int.check(
 );
 const Positive = Natural.check(Schema.isGreaterThan(0));
 const Operations = Schema.Struct({
+  emptyBehavior: Schema.optionalKey(
+    Schema.Literals(["no_purchase", "single_funder_ticket_first_v1"]),
+  ),
   disclosureVersion: C.IdV2,
   feePolicyId: C.IdV2,
   scheduleRuleId: C.IdV2,
@@ -519,12 +522,14 @@ export function makeControlPlaneSharedSongContextProducer(input: {
       })),
     };
     const fundingPolicyHash =
-      existingTerms?.funding_policy_hash ?? (yield* openSongFundingPolicyHashV2(canonicalTarget));
+      existingTerms?.funding_policy_hash ??
+      (yield* openSongFundingPolicyHashV2(canonicalTarget, work.operations.emptyBehavior));
     const facts = yield* decode(
       SongFundingContextFactsSchema,
       JSON.parse(
         stringify({
           ...work.facts,
+          emptyBehavior: work.operations.emptyBehavior ?? "no_purchase",
           now: observed,
           schedule,
           wireSchedule,

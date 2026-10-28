@@ -14,7 +14,11 @@ import {
 export async function seedProspectiveSongFundingFixture(
   admin: Client,
   successor = false,
-  options?: { currentStudy?: boolean; environment?: "test" | "staging" },
+  options?: {
+    currentStudy?: boolean;
+    environment?: "test" | "staging";
+    singleFunderTicketFirst?: boolean;
+  },
 ) {
   const h = "a".repeat(64),
     start = Date.now(),
@@ -126,6 +130,9 @@ export async function seedProspectiveSongFundingFixture(
       }
     }
     const operations = {
+      emptyBehavior: options?.singleFunderTicketFirst
+        ? "single_funder_ticket_first_v1"
+        : "no_purchase",
       disclosureVersion: "fixture",
       feePolicyId: "fixture-fees",
       scheduleRuleId: "fixture-initialized-rows",

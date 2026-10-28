@@ -270,6 +270,20 @@ GRANT EXECUTE ON FUNCTION cancel_unclaimed_account_karaoke_audio_private_v1(
 ) TO api_next_app;
 -- Ordinary account function grants end
 
+-- Incremental Safe lifecycle grants after migrations 0324-0326. The receipt,
+-- obligation, attempt and completion history stays function-only for writes.
+REVOKE ALL ON reward_safe_refunds_v1, reward_safe_refund_attempts_v1,
+  reward_safe_refund_completions_v1, reward_joint_cycle_turn_v1 FROM api_next_app;
+GRANT SELECT ON reward_safe_refunds_v1, reward_safe_refund_attempts_v1,
+  reward_safe_refund_completions_v1 TO api_next_app;
+GRANT EXECUTE ON FUNCTION reward_unpaid_late_principal_atomic_v2(BIGINT,TEXT),
+  reward_offer_has_unfinalized_contribution_v2(TEXT),
+  seal_reward_safe_refunds_v1(TEXT,INTEGER),
+  prepare_reward_safe_refund_v1(TEXT,TEXT,BIGINT),
+  settle_reward_safe_refund_v1(JSONB),
+  take_reward_joint_cycle_turn_v1() TO api_next_app;
+REVOKE ALL ON FUNCTION reward_safe_refund_calldata_v1(TEXT,NUMERIC) FROM api_next_app;
+
 -- The operator role is the only writer that can produce an authorization to
 -- delete retained authority or to apply a recovery decision. Its functions
 -- are deliberately not granted to the runtime: a compromise of the serving

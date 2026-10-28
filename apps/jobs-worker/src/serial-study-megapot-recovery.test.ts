@@ -121,7 +121,9 @@ test("the Safe pool pilot takes the financial step beside Account recovery", asy
   const joint = registry.byName.get(safePool.name);
   if (joint === undefined) throw new Error("Joint writer missing");
   expect(joint.schedule).toBe("* * * * *");
-  expect(new Set(joint.writes)).toEqual(new Set([...study.writes, ...safePool.writes]));
+  expect(new Set(joint.writes)).toEqual(
+    new Set([...study.writes, ...safePool.writes, "postgres:reward_joint_cycle_turn_v1"]),
+  );
 });
 
 test("financial work waits for an outstanding Account recovery stage to settle", async () => {

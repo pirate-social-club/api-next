@@ -40,7 +40,10 @@ export function scanSafeWindows<E>(
 const SAFE_POOL_PILOT_CYCLE_LIMIT = 10;
 
 type Step<A> = Effect.Effect<A, unknown>;
-type BoundEffect = Readonly<{ effectId: string; kind: "ticket_purchase" | "reward_payout" }>;
+type BoundEffect = Readonly<{
+  effectId: string;
+  kind: "ticket_purchase" | "reward_payout" | "reward_refund";
+}>;
 
 /**
  * Everything the Safe pilot cycle does, one ticket-first pool step at a time. Every
@@ -52,6 +55,7 @@ export interface SafePoolPilotRuntime {
   readonly loadBoundEffects: (limit: number) => Step<readonly BoundEffect[]>;
   readonly settlePurchase: (effectId: string) => Step<unknown>;
   readonly settlePayout: (effectId: string) => Step<unknown>;
+  readonly settleRefund: (effectId: string) => Step<unknown>;
   readonly loadPendingFunding: (limit: number) => Step<readonly string[]>;
   readonly reconcileFunding: (fundingEffectId: string) => Step<unknown>;
   readonly closeUnexecutedPurchases: (limit: number) => Step<unknown>;
@@ -67,6 +71,10 @@ export interface SafePoolPilotRuntime {
   readonly settleClaim: (drawing: MegapotDrawingWork) => Step<unknown>;
   readonly prepareClaim: (drawing: MegapotDrawingWork) => Step<unknown>;
   readonly allocate: (drawing: MegapotDrawingWork) => Step<unknown>;
+  readonly closeExpiredOffers: (limit: number) => Step<unknown>;
+  readonly sealRefunds: (limit: number) => Step<unknown>;
+  readonly loadRefunds: (limit: number) => Step<readonly string[]>;
+  readonly prepareRefund: (refundId: string) => Step<unknown>;
   readonly observeSolvency: () => Step<unknown>;
   readonly loadCredits: (limit: number) => Step<readonly string[]>;
   readonly preparePayout: (creditId: string) => Step<unknown>;
@@ -95,7 +103,7 @@ function describe(cause: Cause.Cause<unknown>): string {
 export function runSafePoolPilotCycle(
   runtime: SafePoolPilotRuntime,
   limit = SAFE_POOL_PILOT_CYCLE_LIMIT,
-): Effect.Effect<SafePoolPilotSummary> {
+): Effect.Effect<SafePoolPilotSummary, unknown> {
   return Effect.gen(function* () {
     const completed: Record<string, number> = {};
     const failed: Record<string, string[]> = {};
@@ -106,6 +114,15 @@ export function runSafePoolPilotCycle(
           completed[name] = (completed[name] ?? 0) + 1;
           return exit.value;
         }
+        const error = Cause.squash(exit.cause);
+        const uncertain =
+          typeof error === "object" &&
+          error !== null &&
+          (("_tag" in error && error._tag === "ControlPlaneTransactionOutcomeUnknown") ||
+            ("outcomeCertainty" in error && error.outcomeCertainty === "unknown") ||
+            ("reason" in error && error.reason === "outcome-unknown"));
+        if (Cause.hasInterrupts(exit.cause) || uncertain)
+          return yield* Effect.failCause(exit.cause);
         failed[name] = [...(failed[name] ?? []), describe(exit.cause)];
         return undefined;
       });
@@ -115,6 +132,9 @@ export function runSafePoolPilotCycle(
       run: (item: T) => Step<unknown>,
     ) => Effect.forEach(items ?? [], (item) => attempt(name, run(item)), { discard: true });
 
+    // The joint job has completed its bounded Study continuation before this
+    // local cutoff. Chain-provider latency cannot delay freezing accepted shares.
+    yield* attempt("freeze_due", runtime.freezeDue(limit));
     yield* attempt("observe_drawing", runtime.observeDrawing());
     yield* attempt("scan", runtime.scan());
     const bound = yield* attempt("load_bound_effects", runtime.loadBoundEffects(limit));
@@ -128,6 +148,11 @@ export function runSafePoolPilotCycle(
       bound?.filter((effect) => effect.kind === "reward_payout"),
       (effect) => runtime.settlePayout(effect.effectId),
     );
+    yield* each(
+      "settle_refund",
+      bound?.filter((effect) => effect.kind === "reward_refund"),
+      (effect) => runtime.settleRefund(effect.effectId),
+    );
     // A funding transfer that confirms activates its leg before tickets are prepared.
     yield* each(
       "reconcile_funding",
@@ -138,7 +163,6 @@ export function runSafePoolPilotCycle(
     yield* each("prepare_purchase", yield* attempt("load_legs", runtime.loadLegs(limit)), (leg) =>
       runtime.preparePurchase(leg),
     );
-    yield* attempt("freeze_due", runtime.freezeDue(limit));
     yield* each(
       "publish_commitment",
       yield* attempt("load_frozen", runtime.loadDrawings(["cutoff_frozen"], limit)),
@@ -163,7 +187,14 @@ export function runSafePoolPilotCycle(
       yield* attempt("load_claimed", runtime.loadDrawings(["claimed"], limit)),
       runtime.allocate,
     );
+    yield* attempt("close_expired_offers", runtime.closeExpiredOffers(limit));
+    yield* attempt("seal_refunds", runtime.sealRefunds(limit));
     yield* attempt("observe_solvency", runtime.observeSolvency());
+    yield* each(
+      "prepare_refund",
+      yield* attempt("load_refunds", runtime.loadRefunds(limit)),
+      runtime.prepareRefund,
+    );
     yield* each(
       "prepare_payout",
       yield* attempt("load_credits", runtime.loadCredits(limit)),

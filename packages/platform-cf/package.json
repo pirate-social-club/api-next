@@ -257,7 +257,10 @@
     "./account-audio-deletion-protocol": "./src/account-audio-deletion-protocol.ts",
     "./guest-study-managed-readiness": "./src/guest-study-managed-readiness.ts",
     "./guest-study-managed-control-planes": "./src/guest-study-managed-control-planes.ts",
-    "./guest-ephemeral-cleanup": "./src/guest-ephemeral-cleanup.ts"
+    "./guest-ephemeral-cleanup": "./src/guest-ephemeral-cleanup.ts",
+    "./reward-safe-refund-coordinator": "./src/reward-safe-refund-coordinator.ts",
+    "./reward-safe-refund-repository": "./src/reward-safe-refund-repository.ts",
+    "./reward-offer-terminal-repository": "./src/reward-offer-terminal-repository.ts"
   },
   "dependencies": {
     "@noble/curves": "2.3.0",

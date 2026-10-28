@@ -57,7 +57,7 @@ const TERMINAL_DRAWING_STATUSES = [
   "closed_purchase_unavailable",
 ] as const;
 
-export function makeControlPlaneRewardOfferTerminalRepository() {
+export function makeControlPlaneRewardOfferTerminalRepository(attestationId?: string) {
   return {
     closeExpired: (limit: number) =>
       mapped(
@@ -74,6 +74,11 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
                          FROM song_reward_offers offer
                         WHERE offer.status IN ('draft','active','paused','operational_hold')
                           AND offer.ends_at <= clock_timestamp()
+                          AND ($3::text IS NULL OR EXISTS (
+                            SELECT 1 FROM song_reward_offer_legs leg WHERE leg.offer_id=offer.offer_id
+                              AND leg.attestation_id=$3 AND leg.purchase_order='ticket_first_v1'
+                          ))
+                          AND NOT reward_offer_has_unfinalized_contribution_v2(offer.offer_id)
                           AND NOT EXISTS (
                             SELECT 1 FROM song_reward_offer_legs leg
                              WHERE leg.offer_id=offer.offer_id AND leg.reserved_atomic <> 0
@@ -96,7 +101,7 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
                           )
                         ORDER BY offer.ends_at,offer.offer_id
                         LIMIT $2 FOR UPDATE OF offer SKIP LOCKED`,
-                values: [TERMINAL_DRAWING_STATUSES, limit],
+                values: [TERMINAL_DRAWING_STATUSES, limit, attestationId ?? null],
                 readonly: false,
               });
               const results = [];
@@ -165,8 +170,9 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
 
 export const makeControlPlaneRewardOfferTerminalStore = (
   layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  attestationId?: string,
 ): RewardOfferTerminalStore => {
-  const repository = makeControlPlaneRewardOfferTerminalRepository();
+  const repository = makeControlPlaneRewardOfferTerminalRepository(attestationId);
   return {
     closeExpired: (limit) => mapped(Effect.provide(layer)(repository.closeExpired(limit))),
   };

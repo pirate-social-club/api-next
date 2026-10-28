@@ -41,6 +41,7 @@ export type SongFundingContextFacts = Readonly<{
   rewardPolicyTemplateHash: string;
   qualificationTemplates: readonly C.QualificationTemplateV2[];
   disclosureVersion: string;
+  emptyBehavior?: "no_purchase" | "single_funder_ticket_first_v1";
   feePolicyId: string;
   chainId: number;
   tokenAddress: string;
@@ -127,6 +128,9 @@ export const SongFundingContextFactsSchema: Schema.Codec<SongFundingContextFacts
       liveInboundReservations: Amount,
     }),
     costsReconciled: Schema.Boolean,
+    emptyBehavior: Schema.optionalKey(
+      Schema.Literals(["no_purchase", "single_funder_ticket_first_v1"]),
+    ),
     fundingPolicyRevision: Natural,
     fundingPolicyHash: C.HashV2,
     rewardPolicyTemplateHash: C.HashV2,
@@ -154,14 +158,17 @@ const iso = (milliseconds: number) => new Date(milliseconds).toISOString();
  * derivative-video settings. The versioned rule is fixed, not an owner toggle.
  * Historical V1 policy hashes/rows remain untouched.
  */
-export const openSongFundingPolicyHashV2 = (target: C.SongTargetV2) =>
+export const openSongFundingPolicyHashV2 = (
+  target: C.SongTargetV2,
+  emptyBehavior: C.TermsV2["empty_behavior"] = "no_purchase",
+) =>
   digestFundingPreimageV2(
     C.fundingHashPreimageV2("pirate.open-song-funding-policy.v2", [
       C.projectSongTarget(target),
       1,
       "any_active_account_own_community_wallet",
       "leg_budget",
-      "no_purchase",
+      emptyBehavior,
       ["study", "karaoke", "dance"],
       "one_shared_song_pot",
       "verification_at_claim",
@@ -251,7 +258,7 @@ export const buildSongMegapotFundingContext = Effect.fn("SongFundingContext.buil
       reward_policy_template_hash: f.rewardPolicyTemplateHash,
       start_rule: "allocation_linearization_time",
       budget_source: "leg_budget",
-      empty_behavior: "no_purchase",
+      empty_behavior: f.emptyBehavior ?? "no_purchase",
       eligible_activities: ["study", "karaoke", "dance"],
       dance_scope: "any_policy_accepted",
       qualification_templates: f.qualificationTemplates,

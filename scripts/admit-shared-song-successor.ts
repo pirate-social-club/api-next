@@ -39,6 +39,7 @@ const Input = Schema.Struct({
   profileAccepted: Schema.Boolean,
   profileValidUntil: C.InstantV2,
   capacity: Schema.Record(Schema.String, Schema.Unknown),
+  policy: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   chainId: C.ChainV2,
   environment: Schema.Literals(["test", "staging"]),
   jackpotAddress: C.AddressV2,
@@ -49,19 +50,35 @@ const named = (domain: string, value: unknown) =>
 type Query = Pick<Client, "query">;
 const ownerRole = "workspace_owner";
 
-export async function buildSharedSongSuccessorTemplate(raw: unknown) {
+type TemplateChange = "successor_schedule" | "single_funder_terms";
+
+export async function buildSharedSongSuccessorTemplate(
+  raw: unknown,
+  change: TemplateChange = "successor_schedule",
+) {
   const input = Schema.decodeUnknownSync(Input, { onExcessProperty: "error" })(raw);
   const { template_hash: predecessorHash, ...previous } = input.source;
   const rule = SHARED_SONG_SUCCESSOR_RULE;
+  const generation =
+    previous.profile_id === "shared-song-safe-pilot-staging-v1"
+      ? 1
+      : previous.profile_id === "shared-song-safe-pilot-staging-v2"
+        ? 2
+        : null;
   if (
     predecessorHash !== (await named("pirate.shared-song-reward-template.v1", previous)) ||
-    previous.template_id !== "shared-song-safe-pilot-staging-template-v1" ||
-    previous.profile_id !== "shared-song-safe-pilot-staging-v1" ||
+    generation === null ||
+    (change === "successor_schedule" &&
+      previous.template_id !== `shared-song-safe-pilot-staging-template-v${generation}`) ||
+    (generation === 2 &&
+      previous.operational_profile.emptyBehavior !== "single_funder_ticket_first_v1") ||
     previous.attestation_id !== "megapot-base-sepolia-v2-safe-pilot" ||
-    previous.operational_profile.scheduleRuleId !== "megapot-v2-current-initialized-drawing" ||
+    (change === "successor_schedule" &&
+      previous.operational_profile.scheduleRuleId !== "megapot-v2-current-initialized-drawing") ||
     previous.operational_profile.cadenceSeconds !== "1800" ||
     previous.operational_profile.entryCutoffSeconds !== rule.entryCutoffSeconds ||
-    previous.operational_profile.purchaseLeadSeconds !== rule.purchaseLeadSeconds ||
+    (change === "successor_schedule" &&
+      previous.operational_profile.purchaseLeadSeconds !== rule.purchaseLeadSeconds) ||
     previous.operational_profile.legalActivationGate !== "test_only" ||
     input.capacity.maxDrawings !== 1 ||
     input.capacity.priceCeilingAtomic !== SHARED_SONG_SUCCESSOR_PRICE_RULE.ticketAtomic ||
@@ -74,20 +91,43 @@ export async function buildSharedSongSuccessorTemplate(raw: unknown) {
     input.jackpotCodeHash !== rule.jackpotCodeHash
   )
     throw Error("accepted predecessor template/profile/deployment unavailable");
+  if (
+    change === "single_funder_terms" &&
+    (!previous.template_id.startsWith("shared-song-safe-pilot-staging-") ||
+      previous.operational_profile.scheduleRuleId !== SHARED_SONG_SUCCESSOR_RULE_ID ||
+      [
+        "maxActiveAccount",
+        "maxActiveAccountLeg",
+        "maxLegLiabilities",
+        "maxAdmittedLeg",
+        "maxAdmittedAccountLeg",
+      ].some((key) => input.policy?.[key] !== 1))
+  )
+    throw Error("single-funder accepted successor profile required");
   const body = {
     ...previous,
-    template_id: "shared-song-safe-pilot-staging-successor-template-v1",
-    operational_profile: {
-      ...previous.operational_profile,
-      disclosureVersion: "shared-song-safe-pilot-staging-successor-disclosure-v1",
-      scheduleRuleId: SHARED_SONG_SUCCESSOR_RULE_ID,
-      scheduleRuleHash: await named("pirate.shared-song-schedule-rule.v2", rule),
-      priceRuleHash: await named(
-        "pirate.shared-song-price-rule.v2",
-        SHARED_SONG_SUCCESSOR_PRICE_RULE,
-      ),
-      initializedDrawingIds: [],
-    },
+    template_id:
+      change === "single_funder_terms"
+        ? "shared-song-safe-pilot-staging-single-funder-template-v1"
+        : `shared-song-safe-pilot-staging-successor-template-v${generation}`,
+    operational_profile:
+      change === "single_funder_terms"
+        ? {
+            ...previous.operational_profile,
+            emptyBehavior: "single_funder_ticket_first_v1",
+            disclosureVersion: "shared-song-safe-pilot-staging-single-funder-disclosure-v1",
+          }
+        : {
+            ...previous.operational_profile,
+            disclosureVersion: `shared-song-safe-pilot-staging-successor-disclosure-v${generation}`,
+            scheduleRuleId: SHARED_SONG_SUCCESSOR_RULE_ID,
+            scheduleRuleHash: await named("pirate.shared-song-schedule-rule.v2", rule),
+            priceRuleHash: await named(
+              "pirate.shared-song-price-rule.v2",
+              SHARED_SONG_SUCCESSOR_PRICE_RULE,
+            ),
+            initializedDrawingIds: [],
+          },
   };
   const templateHash = await named("pirate.shared-song-reward-template.v1", body);
   const admissionBody = {
@@ -123,6 +163,7 @@ export async function readSharedSongSuccessorTemplate(
   db: Query,
   communityId: string,
   locked = false,
+  change: TemplateChange = "successor_schedule",
 ) {
   const result = await db.query(
     `SELECT jsonb_build_object('source',jsonb_build_object(
@@ -135,7 +176,7 @@ export async function readSharedSongSuccessorTemplate(
       'admissionHash',a.admission_hash,
       'admissionEffectiveAt',to_char(a.effective_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
       'admissionValidUntil',to_char(a.valid_until AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
-      'profileAccepted',p.accepted,'capacity',p.capacity_profile,
+      'profileAccepted',p.accepted,'capacity',p.capacity_profile,'policy',p.policy,
       'profileValidUntil',to_char(p.valid_until AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
       'chainId',d.chain_id,'environment',d.environment,'jackpotAddress',d.jackpot_address,
       'jackpotCodeHash',d.jackpot_code_hash) packet
@@ -152,7 +193,7 @@ export async function readSharedSongSuccessorTemplate(
     [communityId],
   );
   if (result.rows.length !== 1) throw Error("one current admitted predecessor is required");
-  return buildSharedSongSuccessorTemplate(result.rows[0].packet);
+  return buildSharedSongSuccessorTemplate(result.rows[0].packet, change);
 }
 
 export async function applySharedSongSuccessorTemplate(
@@ -162,6 +203,7 @@ export async function applySharedSongSuccessorTemplate(
     expectedAdmissionHash: string;
     expectedTemplateHash: string;
     expectedBrakeRevision: number;
+    change?: TemplateChange;
   },
 ) {
   Schema.decodeUnknownSync(C.HashV2)(input.expectedAdmissionHash);
@@ -186,7 +228,7 @@ export async function applySharedSongSuccessorTemplate(
       lease?.live !== false
     )
       throw Error("exact paused brake and no live run required");
-    const plan = await readSharedSongSuccessorTemplate(db, input.communityId, true);
+    const plan = await readSharedSongSuccessorTemplate(db, input.communityId, true, input.change);
     if (
       plan.expectedAdmissionHash !== input.expectedAdmissionHash ||
       plan.template.template_hash !== input.expectedTemplateHash
@@ -255,6 +297,7 @@ if (import.meta.main) {
     options: {
       community: { type: "string" },
       apply: { type: "boolean", default: false },
+      "single-funder-terms": { type: "boolean", default: false },
       "expected-admission-hash": { type: "string" },
       "expected-template-hash": { type: "string" },
       "expected-brake-revision": { type: "string" },
@@ -279,11 +322,17 @@ if (import.meta.main) {
         expectedAdmissionHash: values["expected-admission-hash"] ?? "",
         expectedTemplateHash: values["expected-template-hash"] ?? "",
         expectedBrakeRevision: Number(values["expected-brake-revision"]),
+        change: values["single-funder-terms"] ? "single_funder_terms" : "successor_schedule",
       });
     else {
       await db.query("BEGIN READ ONLY");
       try {
-        plan = await readSharedSongSuccessorTemplate(db, values.community);
+        plan = await readSharedSongSuccessorTemplate(
+          db,
+          values.community,
+          false,
+          values["single-funder-terms"] ? "single_funder_terms" : "successor_schedule",
+        );
       } finally {
         await db.query("ROLLBACK");
       }

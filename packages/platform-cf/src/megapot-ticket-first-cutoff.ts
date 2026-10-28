@@ -60,9 +60,9 @@ function sameBeneficiaries(left: readonly Beneficiary[], right: readonly Benefic
 /**
  * Cutoff for ticket-first drawings. Their ticket was bought and its cost spent before
  * entries opened, so the freeze reserves nothing. With qualifiers it freezes the same
- * canonical beneficiary snapshot as commit-first drawings; with none it holds the
- * drawing, because a spent ticket's possible winnings need the owner's ratified
- * empty-drawing terms and are never allocated by default.
+ * canonical beneficiary snapshot as commit-first drawings. A new single-funder
+ * profile freezes its funder when no one qualifies; historical terms still hold
+ * an empty drawing. The policy and identity are fixed before the contribution.
  */
 export function makeMegapotTicketFirstCutoff(options: {
   readonly layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
@@ -83,23 +83,14 @@ export function makeMegapotTicketFirstCutoff(options: {
     readonly frozenAt: string;
   }) =>
     Effect.gen(function* () {
-      const snapshot =
-        input.shares.length === 0
-          ? null
-          : buildMegapotBeneficiarySnapshot({
-              poolLegId: input.poolLegId,
-              drawingId: input.drawingId,
-              termsHash: input.termsHash,
-              fallback: false,
-              beneficiaries: input.shares,
-              sha256: (bytes) => sha256(bytes, "bytes"),
-            });
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
           const current = yield* transaction.execute<Row>({
             label: "megapot-ticket-first-cutoff.drawing.lock",
-            text: `SELECT drawing.version, leg.leg_terms_hash
+            text: `SELECT drawing.version, leg.leg_terms_hash,
+                          leg.shared_song_terms_v2->>'empty_behavior' AS empty_behavior,
+                          leg.fallback_beneficiary_account_id,leg.fallback_payout_persona_id
                      FROM megapot_pool_drawings drawing
                      JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
                     WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
@@ -137,6 +128,27 @@ export function makeMegapotTicketFirstCutoff(options: {
             personaId: text(share, "persona_id"),
           }));
           if (!sameBeneficiaries(shares, input.shares)) return yield* failed("cutoff-conflict");
+          const fallback =
+            shares.length === 0 && row.empty_behavior === "single_funder_ticket_first_v1";
+          const beneficiaries = fallback
+            ? [
+                {
+                  accountId: text(row, "fallback_beneficiary_account_id"),
+                  personaId: text(row, "fallback_payout_persona_id"),
+                },
+              ]
+            : shares;
+          const snapshot =
+            beneficiaries.length === 0
+              ? null
+              : buildMegapotBeneficiarySnapshot({
+                  poolLegId: input.poolLegId,
+                  drawingId: input.drawingId,
+                  termsHash: input.termsHash,
+                  fallback,
+                  beneficiaries,
+                  sha256: (bytes) => sha256(bytes, "bytes"),
+                });
           const nextVersion = input.version + 1;
           if (snapshot === null) {
             yield* transaction.execute({
@@ -226,7 +238,7 @@ export function makeMegapotTicketFirstCutoff(options: {
               JSON.stringify({
                 type: "cutoff",
                 snapshot_hash: snapshot.published.snapshotHash,
-                fallback: false,
+                fallback,
                 share_count: shares.length,
               }),
             ],
@@ -236,7 +248,7 @@ export function makeMegapotTicketFirstCutoff(options: {
             label: "megapot-ticket-first-cutoff.drawing.freeze",
             text: `UPDATE megapot_pool_drawings
                       SET status='cutoff_frozen', version=$3, frozen_share_count=$4,
-                          fallback_beneficiary=false, snapshot_id=$5,
+                          fallback_beneficiary=$7, snapshot_id=$5,
                           cutoff_frozen_at=$6::timestamptz, updated_at=clock_timestamp()
                     WHERE pool_leg_id=$1 AND drawing_id=$2 AND version=$3-1`,
             values: [
@@ -246,6 +258,7 @@ export function makeMegapotTicketFirstCutoff(options: {
               shares.length,
               snapshotId,
               input.frozenAt,
+              fallback,
             ],
             readonly: false,
           });

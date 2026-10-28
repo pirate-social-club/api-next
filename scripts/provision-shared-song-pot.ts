@@ -29,9 +29,9 @@ import * as C from "../packages/contracts/src/rewards-song-contributions-v2.ts";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
 
 export const SHARED_SONG_ATTESTATION = "megapot-base-sepolia-v2-safe-pilot";
-const PROFILE_ID = "shared-song-safe-pilot-staging-v1";
-const TEMPLATE_ID = "shared-song-safe-pilot-staging-template-v1";
-const DISCLOSURE = "shared-song-safe-pilot-staging-disclosure-v1";
+const PROFILE_ID = "shared-song-safe-pilot-staging-v2";
+const TEMPLATE_ID = "shared-song-safe-pilot-staging-template-v2";
+const DISCLOSURE = "shared-song-safe-pilot-staging-disclosure-v2";
 const ACCEPTED_BY = "workspace_owner";
 // One Megapot ticket on Base Sepolia costs 0.01 test USDC.
 const TICKET_ATOMIC = "10000";
@@ -209,6 +209,7 @@ export async function buildSharedSongProvisioning(input: SharedSongProvisioningI
   };
 
   const operationalProfile = {
+    emptyBehavior: "single_funder_ticket_first_v1",
     disclosureVersion: DISCLOSURE,
     feePolicyId: recovery.fee_policy_id,
     scheduleRuleId: "megapot-v2-current-initialized-drawing",

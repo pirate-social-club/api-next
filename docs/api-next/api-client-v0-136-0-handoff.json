@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.136.0",
+  "sourceBranch": "feat/v1-open-reward-funding",
+  "sourceBase": "58250c5050f7738aa29123c647b97d0a37658750",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Retains genuine135 operations. Shared song prospective and committed terms add empty_behavior single_funder_ticket_first_v1. This prospective single-funder rule permits buying the ticket before qualification, spends its cost even if nobody qualifies, and assigns net winnings to the frozen single funder when the drawing has no qualified participants. Existing no_purchase terms are unchanged. Receipt refunds remain represented by the existing refund_pending and refunded contribution states.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.136.0.tgz",
+    "sha256": "5b565aff657fd7655f2bacca4704549c9e31305501aa01e407b6c702843b4cf5"
+  },
+  "validation": {
+    "status": "Candidate package. Final qualification and source checkpoint are recorded in tasks/records/v1-safe-pilot-lifecycle-completion-20261028.md in the control plane.",
+    "operationalBoundary": "Prospective terms only; existing pots and held drawings retain their original terms. No production activation, multi-funder permission or increase in funding limits. Genuine135 and all earlier artifacts remain immutable."
+  }
+}

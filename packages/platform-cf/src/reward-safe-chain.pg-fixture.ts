@@ -214,7 +214,7 @@ export function fakeSafeChain(
     head += 1n;
     const block = head;
     const transactionHash = `0x${sequence.toString(16).padStart(64, "0")}`;
-    const blockHash = hash(sequence % 2 === 0 ? "c" : "d");
+    const blockHash = `0x${block.toString(16).padStart(64, "0")}`;
     canonical.set(block, blockHash);
     const safeTxGas = 120_000n;
     const safeTransactionHash = rewardSafeTransactionHash({
@@ -421,11 +421,11 @@ export function fakeSafeChain(
     });
     return ticketId;
   };
-  const transfer = (sender: string, recipient: string, amount: bigint) => {
+  const transfer = (sender: string, recipient: string, amount: bigint, includedAt?: bigint) => {
     sequence += 1;
     head += 1n;
     const block = head;
-    timestamps.set(block, BigInt(Math.floor(Date.now() / 1000)));
+    timestamps.set(block, includedAt ?? BigInt(Math.floor(Date.now() / 1000)));
     const transactionHash = `0x${sequence.toString(16).padStart(64, "0")}`;
     if (recipient === safe) usdcDeltas.push({ block, amount });
     else creditWallet(recipient, block, amount);
@@ -501,7 +501,8 @@ export function fakeSafeChain(
       tier = ticketTier;
     },
     /** A funder's own usdc transfer into the Safe; its block reads back with the same hash. */
-    fund: (sender: string, amount: bigint) => transfer(sender, safe, amount),
+    fund: (sender: string, amount: bigint, includedAt?: bigint) =>
+      transfer(sender, safe, amount, includedAt),
     transfer,
   };
 }

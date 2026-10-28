@@ -295,7 +295,7 @@ export const ProspectiveTermsV2 = Schema.Struct({
   reward_policy_template_hash: HashV2,
   start_rule: Schema.Literal("allocation_linearization_time"),
   budget_source: Schema.Literal("leg_budget"),
-  empty_behavior: Schema.Literal("no_purchase"),
+  empty_behavior: Schema.Literals(["no_purchase", "single_funder_ticket_first_v1"]),
   eligible_activities: Schema.Tuple([
     Schema.Literal("study"),
     Schema.Literal("karaoke"),
@@ -374,7 +374,7 @@ export const TermsV2 = Schema.Struct({
   funding_policy_revision: RevisionV2,
   funding_policy_hash: HashV2,
   budget_source: Schema.Literal("leg_budget"),
-  empty_behavior: Schema.Literal("no_purchase"),
+  empty_behavior: Schema.Literals(["no_purchase", "single_funder_ticket_first_v1"]),
   eligible_activities: Schema.Tuple([
     Schema.Literal("study"),
     Schema.Literal("karaoke"),
