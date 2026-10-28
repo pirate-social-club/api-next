@@ -909,7 +909,16 @@
                                 "type": "string",
                                 "enum": [
                                   "no_purchase",
-                                  "single_funder_ticket_first_v1"
+                                  "single_funder_ticket_first_v1",
+                                  "safe_treasury_ticket_first_v1"
+                                ]
+                              },
+                              "empty_winnings_recipient": {
+                                "type": "string",
+                                "allOf": [
+                                  {
+                                    "pattern": "^0x[a-f0-9]{40}$"
+                                  }
                                 ]
                               },
                               "eligible_activities": {
@@ -14331,7 +14340,16 @@
                               "type": "string",
                               "enum": [
                                 "no_purchase",
-                                "single_funder_ticket_first_v1"
+                                "single_funder_ticket_first_v1",
+                                "safe_treasury_ticket_first_v1"
+                              ]
+                            },
+                            "empty_winnings_recipient": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^0x[a-f0-9]{40}$"
+                                }
                               ]
                             },
                             "eligible_activities": {
@@ -18610,7 +18628,16 @@
                                       "type": "string",
                                       "enum": [
                                         "no_purchase",
-                                        "single_funder_ticket_first_v1"
+                                        "single_funder_ticket_first_v1",
+                                        "safe_treasury_ticket_first_v1"
+                                      ]
+                                    },
+                                    "empty_winnings_recipient": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "pattern": "^0x[a-f0-9]{40}$"
+                                        }
                                       ]
                                     },
                                     "eligible_activities": {
@@ -18972,7 +18999,16 @@
                                       "type": "string",
                                       "enum": [
                                         "no_purchase",
-                                        "single_funder_ticket_first_v1"
+                                        "single_funder_ticket_first_v1",
+                                        "safe_treasury_ticket_first_v1"
+                                      ]
+                                    },
+                                    "empty_winnings_recipient": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "pattern": "^0x[a-f0-9]{40}$"
+                                        }
                                       ]
                                     },
                                     "eligible_activities": {
@@ -22015,7 +22051,16 @@
                           "type": "string",
                           "enum": [
                             "no_purchase",
-                            "single_funder_ticket_first_v1"
+                            "single_funder_ticket_first_v1",
+                            "safe_treasury_ticket_first_v1"
+                          ]
+                        },
+                        "empty_winnings_recipient": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "pattern": "^0x[a-f0-9]{40}$"
+                            }
                           ]
                         },
                         "eligible_activities": {
@@ -25153,7 +25198,16 @@
                               "type": "string",
                               "enum": [
                                 "no_purchase",
-                                "single_funder_ticket_first_v1"
+                                "single_funder_ticket_first_v1",
+                                "safe_treasury_ticket_first_v1"
+                              ]
+                            },
+                            "empty_winnings_recipient": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^0x[a-f0-9]{40}$"
+                                }
                               ]
                             },
                             "eligible_activities": {
@@ -28335,7 +28389,16 @@
                               "type": "string",
                               "enum": [
                                 "no_purchase",
-                                "single_funder_ticket_first_v1"
+                                "single_funder_ticket_first_v1",
+                                "safe_treasury_ticket_first_v1"
+                              ]
+                            },
+                            "empty_winnings_recipient": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "pattern": "^0x[a-f0-9]{40}$"
+                                }
                               ]
                             },
                             "eligible_activities": {

@@ -3583,6 +3583,12 @@ BEGIN
  IF terms->>'empty_behavior' IS DISTINCT FROM prospectus->>'empty_behavior'
    OR terms->>'empty_behavior' IS DISTINCT FROM coalesce(template->'operational_profile'->>'emptyBehavior','no_purchase') THEN
    RAISE EXCEPTION 'frozen empty-drawing disposition mismatch' USING ERRCODE='PCV06'; END IF;
+
+ IF terms->>'empty_behavior'='safe_treasury_ticket_first_v1' AND (
+   terms->>'empty_winnings_recipient' IS DISTINCT FROM prospectus->>'empty_winnings_recipient'
+   OR terms->>'empty_winnings_recipient' IS DISTINCT FROM (SELECT custody_address
+     FROM megapot_deployment_attestations WHERE attestation_id=r->'instruction'->>'attestation_id')) THEN
+   RAISE EXCEPTION 'treasury recipient differs from accepted prospective terms'; END IF;
  IF terms->>'empty_behavior'='single_funder_ticket_first_v1' THEN
    SELECT * INTO STRICT profile FROM reward_funding_profiles_v2 WHERE profile_id=terms->>'profile_id';
    IF (profile.policy->>'maxActiveAccount')::BIGINT IS DISTINCT FROM 1
@@ -7588,6 +7594,64 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='create_song_contribution_v2'
       AND pg_catalog.pg_get_function_arguments(p.oid)='i jsonb, s jsonb, snapshot text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION credit_empty_safe_treasury_v1(p_leg text, p_drawing numeric) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE d megapot_pool_drawings; l song_reward_offer_legs; a megapot_deployment_attestations;
+ c megapot_claim_effects; batch TEXT; body_hash TEXT; credit_time TIMESTAMPTZ;
+BEGIN
+ IF (SELECT paused FROM reward_operations_control WHERE singleton FOR SHARE) IS DISTINCT FROM FALSE THEN
+  RAISE EXCEPTION 'reward operations paused' USING ERRCODE='PR001'; END IF;
+ PERFORM require_reward_run_authority_v1();
+ SELECT * INTO d FROM megapot_pool_drawings WHERE pool_leg_id=p_leg AND drawing_id=p_drawing FOR UPDATE;
+ IF NOT FOUND THEN RETURN FALSE; END IF;
+ SELECT * INTO STRICT l FROM song_reward_offer_legs WHERE leg_id=p_leg;
+ IF l.shared_song_terms_v2->>'empty_behavior' IS DISTINCT FROM 'safe_treasury_ticket_first_v1'
+   OR d.frozen_share_count IS DISTINCT FROM 0 THEN RETURN FALSE; END IF;
+ IF d.status='credited' AND EXISTS(SELECT 1 FROM reward_safe_treasury_allocations_v1
+   WHERE pool_leg_id=p_leg AND drawing_id=p_drawing) THEN RETURN TRUE; END IF;
+ IF d.status<>'claimed' THEN RETURN FALSE; END IF;
+ SELECT * INTO STRICT a FROM megapot_deployment_attestations WHERE attestation_id=l.attestation_id;
+ SELECT * INTO STRICT c FROM megapot_claim_effects WHERE claim_effect_id=d.claim_effect_id;
+ IF l.shared_song_terms_v2->>'empty_winnings_recipient' IS DISTINCT FROM a.custody_address
+  OR c.received_atomic IS DISTINCT FROM d.net_winnings_atomic OR d.net_winnings_atomic<=0 THEN
+  RAISE EXCEPTION 'Safe treasury claim or recipient conflict'; END IF;
+ body_hash:=encode(sha256(convert_to(concat_ws(':','pirate.safe-treasury.v1',p_leg,p_drawing,
+   d.claim_effect_id,a.chain_id,a.custody_address,a.usdc_address,d.net_winnings_atomic),'UTF8')),'hex');
+ batch:='treasury-batch:'||body_hash;
+ INSERT INTO megapot_allocation_batches(allocation_batch_id,pool_leg_id,drawing_id,snapshot_id,
+   claim_effect_id,algorithm_version,net_winnings_atomic,allocation_count,allocation_hash,state)
+ VALUES(batch,p_leg,p_drawing,d.snapshot_id,d.claim_effect_id,'equal_v1',d.net_winnings_atomic,0,body_hash,'prepared');
+ INSERT INTO reward_safe_treasury_allocations_v1(allocation_batch_id,pool_leg_id,drawing_id,claim_effect_id,
+   chain_id,token_address,treasury_address,amount_atomic)
+ VALUES(batch,p_leg,p_drawing,d.claim_effect_id,a.chain_id,a.usdc_address,a.custody_address,d.net_winnings_atomic);
+ INSERT INTO megapot_pool_drawing_transitions(pool_leg_id,drawing_id,target_version,event_type,event)
+ VALUES(p_leg,p_drawing,d.version+1,'allocated',jsonb_build_object('allocation_batch_id',batch,'allocation_hash',body_hash));
+ UPDATE megapot_pool_drawings SET status='allocated',version=d.version+1,allocation_batch_id=batch,
+   updated_at=clock_timestamp() WHERE pool_leg_id=p_leg AND drawing_id=p_drawing;
+ credit_time:=clock_timestamp();
+ UPDATE megapot_allocation_batches SET state='credited',credited_at=credit_time
+ WHERE allocation_batch_id=batch;
+ INSERT INTO megapot_pool_drawing_transitions(pool_leg_id,drawing_id,target_version,event_type,event)
+ VALUES(p_leg,p_drawing,d.version+2,'credited',jsonb_build_object('allocation_batch_id',batch));
+ UPDATE megapot_pool_drawings SET status='credited',version=d.version+2,updated_at=clock_timestamp(),terminal_at=credit_time
+ WHERE pool_leg_id=p_leg AND drawing_id=p_drawing;
+ RETURN TRUE;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='credit_empty_safe_treasury_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p_leg text, p_drawing numeric';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -19680,6 +19744,61 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_safe_treasury_freeze_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+ IF NEW.purchase_order='ticket_first_v1' AND NEW.frozen_share_count=0
+  AND NEW.fallback_beneficiary IS FALSE
+  AND NEW.status NOT IN ('ticket_pending','entry_open','closed_purchase_unavailable','operational_hold')
+  AND NOT EXISTS(SELECT 1 FROM song_reward_offer_legs l WHERE l.leg_id=NEW.pool_leg_id
+    AND l.shared_song_terms_v2->>'empty_behavior'='safe_treasury_ticket_first_v1') THEN
+  RAISE EXCEPTION 'empty participant snapshot requires frozen treasury terms'; END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_safe_treasury_freeze_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION guard_safe_treasury_terms_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE a megapot_deployment_attestations;
+BEGIN
+ IF NEW.shared_song_terms_v2->>'empty_behavior'='safe_treasury_ticket_first_v1' THEN
+  SELECT * INTO STRICT a FROM megapot_deployment_attestations WHERE attestation_id=NEW.attestation_id;
+  IF NEW.purchase_order<>'ticket_first_v1' OR NEW.empty_pool_policy<>'no_purchase'
+   OR NEW.shared_song_terms_v2->>'empty_winnings_recipient' IS DISTINCT FROM a.custody_address
+   OR NOT EXISTS(SELECT 1 FROM reward_signer_nonces s WHERE s.chain_id=a.chain_id
+      AND s.signer_address=a.custody_address AND s.nonce_authority='safe_owner_v1') THEN
+   RAISE EXCEPTION 'treasury terms require their immutable Safe recipient'; END IF;
+ END IF;
+ RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_safe_treasury_terms_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_shared_context_work_counter_v2() RETURNS trigger
     LANGUAGE plpgsql
@@ -42928,6 +43047,22 @@ BEGIN
   SELECT * INTO drawing_record FROM megapot_pool_drawings
    WHERE pool_leg_id = batch_record.pool_leg_id
      AND drawing_id = batch_record.drawing_id;
+
+  IF snapshot_record.leaf_count=0 THEN
+    IF leg_record.shared_song_terms_v2->>'empty_behavior' IS DISTINCT FROM 'safe_treasury_ticket_first_v1'
+     OR drawing_record.status<>'credited' OR batch_record.state<>'credited'
+     OR batch_record.allocation_count<>0 OR drawing_record.snapshot_id<>batch_record.snapshot_id
+     OR drawing_record.claim_effect_id<>batch_record.claim_effect_id
+     OR drawing_record.allocation_batch_id<>batch_record.allocation_batch_id
+     OR drawing_record.net_winnings_atomic<>batch_record.net_winnings_atomic
+     OR EXISTS(SELECT 1 FROM megapot_allocations WHERE allocation_batch_id=target_batch_id)
+     OR NOT EXISTS(SELECT 1 FROM reward_safe_treasury_allocations_v1 t
+        WHERE t.allocation_batch_id=target_batch_id AND t.pool_leg_id=batch_record.pool_leg_id
+          AND t.drawing_id=batch_record.drawing_id AND t.claim_effect_id=batch_record.claim_effect_id
+          AND t.amount_atomic=batch_record.net_winnings_atomic) THEN
+      RAISE EXCEPTION 'treasury batch does not conserve exact claimed winnings'; END IF;
+    RETURN NULL;
+  END IF;
   base_amount := trunc(batch_record.net_winnings_atomic / snapshot_record.leaf_count);
   remainder_amount := batch_record.net_winnings_atomic
     - base_amount * snapshot_record.leaf_count;
@@ -43017,7 +43152,7 @@ BEGIN
      AND drawing_id = snapshot_record.drawing_id;
   SELECT * INTO leg_record FROM song_reward_offer_legs
    WHERE leg_id = snapshot_record.pool_leg_id;
-  SELECT count(*), jsonb_agg(leaf_commitment ORDER BY ordinal)
+  SELECT count(*), coalesce(jsonb_agg(leaf_commitment ORDER BY ordinal),'[]'::jsonb)
     INTO leaf_total, commitments
     FROM megapot_pool_snapshot_private_leaves
    WHERE snapshot_id = snapshot_record.snapshot_id;
@@ -43041,6 +43176,11 @@ BEGIN
      ) THEN
     RAISE EXCEPTION 'Megapot beneficiary snapshot artifact is not exact';
   END IF;
+
+  IF snapshot_record.leaf_count=0 AND (
+    leg_record.shared_song_terms_v2->>'empty_behavior' IS DISTINCT FROM 'safe_treasury_ticket_first_v1'
+    OR snapshot_record.fallback OR drawing_record.purchase_order<>'ticket_first_v1'
+  ) THEN RAISE EXCEPTION 'zero-leaf snapshot requires treasury terms'; END IF;
   IF snapshot_record.fallback THEN
     IF share_total <> 0 OR snapshot_record.leaf_count <> 1
        OR drawing_record.fallback_beneficiary IS DISTINCT FROM TRUE
@@ -44270,6 +44410,45 @@ BEGIN
   RETURN NULL;
 END;
 $$;
+
+CREATE FUNCTION validate_safe_treasury_allocation_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE d megapot_pool_drawings; l song_reward_offer_legs; a megapot_deployment_attestations;
+ c megapot_claim_effects; b megapot_allocation_batches;
+BEGIN
+ SELECT * INTO STRICT d FROM megapot_pool_drawings WHERE pool_leg_id=NEW.pool_leg_id AND drawing_id=NEW.drawing_id;
+ SELECT * INTO STRICT l FROM song_reward_offer_legs WHERE leg_id=NEW.pool_leg_id;
+ SELECT * INTO STRICT a FROM megapot_deployment_attestations WHERE attestation_id=l.attestation_id;
+ SELECT * INTO STRICT c FROM megapot_claim_effects WHERE claim_effect_id=NEW.claim_effect_id;
+ SELECT * INTO STRICT b FROM megapot_allocation_batches WHERE allocation_batch_id=NEW.allocation_batch_id;
+ IF l.shared_song_terms_v2->>'empty_behavior' IS DISTINCT FROM 'safe_treasury_ticket_first_v1'
+  OR l.shared_song_terms_v2->>'empty_winnings_recipient' IS DISTINCT FROM NEW.treasury_address
+  OR NEW.treasury_address<>a.custody_address OR NEW.chain_id<>a.chain_id OR NEW.token_address<>a.usdc_address
+  OR d.purchase_order<>'ticket_first_v1' OR d.frozen_share_count<>0 OR d.fallback_beneficiary IS DISTINCT FROM FALSE
+  OR d.status<>'credited' OR d.net_winnings_atomic<>NEW.amount_atomic OR d.claim_effect_id<>NEW.claim_effect_id
+  OR d.allocation_batch_id<>NEW.allocation_batch_id OR b.state<>'credited' OR b.allocation_count<>0
+  OR c.received_atomic IS DISTINCT FROM NEW.amount_atomic OR c.pool_leg_id<>NEW.pool_leg_id OR c.drawing_id<>NEW.drawing_id
+  OR NOT EXISTS(SELECT 1 FROM reward_chain_effects e WHERE e.effect_id=c.claim_effect_id
+     AND e.state='confirmed' AND e.execution_mode='safe_owner_v1' AND e.signer_address=NEW.treasury_address)
+  OR EXISTS(SELECT 1 FROM megapot_pool_shares WHERE pool_leg_id=NEW.pool_leg_id AND drawing_id=NEW.drawing_id)
+  OR EXISTS(SELECT 1 FROM megapot_allocations WHERE allocation_batch_id=NEW.allocation_batch_id) THEN
+  RAISE EXCEPTION 'Safe treasury credit lacks exact empty drawing and confirmed claim'; END IF;
+ RETURN NULL;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='validate_safe_treasury_allocation_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION validate_song_owner_policy_head_change() RETURNS trigger
     LANGUAGE plpgsql
@@ -52559,7 +52738,7 @@ CREATE TABLE megapot_allocation_batches (
     CONSTRAINT megapot_allocation_batch_state_shape CHECK ((((state = 'prepared'::text) AND (credited_at IS NULL)) OR ((state = 'credited'::text) AND (credited_at IS NOT NULL) AND (credited_at >= created_at)))),
     CONSTRAINT megapot_allocation_batches_algorithm_version_check CHECK ((algorithm_version = 'equal_v1'::text)),
     CONSTRAINT megapot_allocation_batches_allocation_batch_id_check CHECK (((btrim(allocation_batch_id) <> ''::text) AND (allocation_batch_id = btrim(allocation_batch_id)) AND (octet_length(allocation_batch_id) <= 128))),
-    CONSTRAINT megapot_allocation_batches_allocation_count_check CHECK ((allocation_count > 0)),
+    CONSTRAINT megapot_allocation_batches_allocation_count_check CHECK ((allocation_count >= 0)),
     CONSTRAINT megapot_allocation_batches_allocation_hash_check CHECK ((allocation_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_allocation_batches_net_winnings_atomic_check CHECK ((net_winnings_atomic >= (0)::numeric)),
     CONSTRAINT megapot_allocation_batches_state_check CHECK ((state = ANY (ARRAY['prepared'::text, 'credited'::text])))
@@ -52829,7 +53008,7 @@ CREATE TABLE megapot_pool_beneficiary_snapshots (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT megapot_pool_beneficiary_snapshots_algorithm_version_check CHECK ((algorithm_version = 'equal_v1'::text)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_domain_check CHECK ((domain = 'pirate.megapot-pool-beneficiary-snapshot.v2'::text)),
-    CONSTRAINT megapot_pool_beneficiary_snapshots_leaf_count_check CHECK ((leaf_count > 0)),
+    CONSTRAINT megapot_pool_beneficiary_snapshots_leaf_count_check CHECK ((leaf_count >= 0)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_published_artifact_check CHECK ((jsonb_typeof(published_artifact) = 'object'::text)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_snapshot_hash_check CHECK ((snapshot_hash ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_pool_beneficiary_snapshots_snapshot_id_check CHECK (((btrim(snapshot_id) <> ''::text) AND (snapshot_id = btrim(snapshot_id)) AND (octet_length(snapshot_id) <= 128))),
@@ -52893,7 +53072,7 @@ CREATE TABLE megapot_pool_drawings (
     terminal_at timestamp with time zone,
     purchase_order text DEFAULT 'commit_first'::text NOT NULL,
     CONSTRAINT megapot_pool_drawing_effect_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'committed'::text) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = 'closed_purchase_unavailable'::text) AND (commitment_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'cutoff_frozen'::text, 'closed_purchase_unavailable'::text])) AND (commitment_effect_id IS NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['claim_pending'::text, 'claimed'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NULL)) OR ((status = ANY (ARRAY['allocated'::text, 'credited'::text])) AND (commitment_effect_id IS NOT NULL) AND (purchase_effect_id IS NOT NULL) AND (claim_effect_id IS NOT NULL) AND (allocation_batch_id IS NOT NULL)))))),
-    CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((purchase_order = 'commit_first'::text) AND (((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text])) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR ((status <> ALL (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (((frozen_share_count > 0) AND (fallback_beneficiary = false)) OR ((frozen_share_count = 0) AND (fallback_beneficiary = true))) AND (cutoff_frozen_at IS NOT NULL)))))),
+    CONSTRAINT megapot_pool_drawing_freeze_shape CHECK ((((purchase_order = 'commit_first'::text) AND (((status = 'entry_open'::text) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR (status = 'operational_hold'::text) OR ((status <> ALL (ARRAY['entry_open'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (frozen_share_count >= 0) AND (fallback_beneficiary IS NOT NULL) AND (cutoff_frozen_at IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text])) AND (frozen_share_count IS NULL) AND (fallback_beneficiary IS NULL) AND (snapshot_id IS NULL) AND (cutoff_frozen_at IS NULL)) OR ((status <> ALL (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text, 'operational_hold'::text])) AND (frozen_share_count IS NOT NULL) AND (((frozen_share_count >= 0) AND (fallback_beneficiary = false)) OR ((frozen_share_count = 0) AND (fallback_beneficiary = true))) AND (cutoff_frozen_at IS NOT NULL)))))),
     CONSTRAINT megapot_pool_drawing_purchase_amount_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (reserved_ticket_cost_atomic = (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'closed_purchase_unavailable'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic = (0)::numeric)) OR ((status = ANY (ARRAY['entry_open'::text, 'cutoff_frozen'::text, 'committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (reserved_ticket_cost_atomic > (0)::numeric) AND (actual_ticket_cost_atomic > (0)::numeric)))))),
     CONSTRAINT megapot_pool_drawing_reservation CHECK (((actual_ticket_cost_atomic <= reserved_ticket_cost_atomic) AND (reserved_ticket_cost_atomic <= ticket_price_ceiling_atomic) AND (net_winnings_atomic <= gross_winnings_atomic))),
     CONSTRAINT megapot_pool_drawing_snapshot_shape CHECK ((((purchase_order = 'commit_first'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['entry_open'::text, 'closed_no_entries'::text, 'closed_unfunded'::text, 'closed_fallback_ineligible'::text, 'closed_fallback_unavailable'::text, 'closed_fallback_ceiling'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'purchase_pending'::text, 'tickets_confirmed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text, 'closed_purchase_unavailable'::text])) AND (snapshot_id IS NOT NULL)))) OR ((purchase_order = 'ticket_first_v1'::text) AND ((status = 'operational_hold'::text) OR ((status = ANY (ARRAY['ticket_pending'::text, 'entry_open'::text, 'closed_purchase_unavailable'::text])) AND (snapshot_id IS NULL)) OR ((status = ANY (ARRAY['cutoff_frozen'::text, 'committed'::text, 'drawing_pending'::text, 'no_win'::text, 'winnings_detected'::text, 'claim_pending'::text, 'claimed'::text, 'allocated'::text, 'credited'::text])) AND (snapshot_id IS NOT NULL)))))),
@@ -54693,6 +54872,21 @@ CREATE TABLE reward_safe_refunds_v1 (
     CONSTRAINT reward_safe_refunds_v1_original_sender_check CHECK ((original_sender ~ '^0x[a-f0-9]{40}$'::text))
 );
 
+CREATE TABLE reward_safe_treasury_allocations_v1 (
+    allocation_batch_id text NOT NULL,
+    pool_leg_id text NOT NULL,
+    drawing_id numeric(78,0) NOT NULL,
+    claim_effect_id text NOT NULL,
+    chain_id bigint NOT NULL,
+    token_address text NOT NULL,
+    treasury_address text NOT NULL,
+    amount_atomic numeric(78,0) NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT reward_safe_treasury_allocations_v1_amount_atomic_check CHECK ((amount_atomic > (0)::numeric)),
+    CONSTRAINT reward_safe_treasury_allocations_v1_token_address_check CHECK ((token_address ~ '^0x[a-f0-9]{40}$'::text)),
+    CONSTRAINT reward_safe_treasury_allocations_v1_treasury_address_check CHECK ((treasury_address ~ '^0x[a-f0-9]{40}$'::text))
+);
+
 CREATE TABLE reward_safe_unbound_executions (
     chain_id bigint NOT NULL,
     safe_address text NOT NULL,
@@ -55119,7 +55313,7 @@ CREATE TABLE song_reward_offer_legs (
     qualification_family_v2 text DEFAULT 'numeric'::text NOT NULL,
     shared_song_terms_v2 jsonb,
     purchase_order text DEFAULT 'commit_first'::text NOT NULL,
-    CONSTRAINT shared_song_leg_family_v2 CHECK (((((qualification_family_v2 = 'numeric'::text) AND (shared_song_terms_v2 IS NULL)) OR ((qualification_family_v2 = 'shared_song'::text) AND (kind = 'megapot_pool'::text) AND (min_score_bps IS NULL) AND (funding_source = 'leg_budget'::text) AND (eligible_activities = ARRAY['study'::text, 'karaoke'::text, 'dance'::text]) AND (jsonb_typeof(shared_song_terms_v2) = 'object'::text) AND ((shared_song_terms_v2 ->> 'version'::text) = 'shared-song-megapot-v2'::text) AND ((shared_song_terms_v2 ->> 'terms_hash'::text) = SUBSTRING(leg_terms_hash FROM 3)) AND (((empty_pool_policy = 'no_purchase'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = 'no_purchase'::text)) OR ((purchase_order = 'ticket_first_v1'::text) AND (empty_pool_policy = 'funder_fallback'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = 'single_funder_ticket_first_v1'::text))))) IS TRUE)),
+    CONSTRAINT shared_song_leg_family_v2 CHECK (((((qualification_family_v2 = 'numeric'::text) AND (shared_song_terms_v2 IS NULL)) OR ((qualification_family_v2 = 'shared_song'::text) AND (kind = 'megapot_pool'::text) AND (min_score_bps IS NULL) AND (funding_source = 'leg_budget'::text) AND (eligible_activities = ARRAY['study'::text, 'karaoke'::text, 'dance'::text]) AND (jsonb_typeof(shared_song_terms_v2) = 'object'::text) AND ((shared_song_terms_v2 ->> 'version'::text) = 'shared-song-megapot-v2'::text) AND ((shared_song_terms_v2 ->> 'terms_hash'::text) = SUBSTRING(leg_terms_hash FROM 3)) AND (((empty_pool_policy = 'no_purchase'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = ANY (ARRAY['no_purchase'::text, 'safe_treasury_ticket_first_v1'::text]))) OR ((purchase_order = 'ticket_first_v1'::text) AND (empty_pool_policy = 'funder_fallback'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = 'single_funder_ticket_first_v1'::text))))) IS TRUE)),
     CONSTRAINT song_reward_leg_budget_conservation CHECK (((((reserved_atomic + spent_atomic) + fulfilled_atomic) + refunded_atomic) <= funded_atomic)),
     CONSTRAINT song_reward_leg_kind_shape CHECK ((((kind = 'asset_bonus'::text) AND (amount_per_claim_atomic > (0)::numeric) AND ((max_claims >= 1) AND (max_claims <= '9007199254740991'::bigint)) AND (token_symbol IS NOT NULL) AND (btrim(token_symbol) <> ''::text) AND (token_symbol = btrim(token_symbol)) AND (octet_length(token_symbol) <= 32) AND (asset_policy_version IS NOT NULL) AND (btrim(asset_policy_version) <> ''::text) AND (asset_policy_version = btrim(asset_policy_version)) AND (octet_length(asset_policy_version) <= 128) AND (tickets_per_drawing IS NULL) AND (max_ticket_price_atomic IS NULL) AND (entry_cutoff_seconds IS NULL) AND (beneficiary_algorithm_version IS NULL) AND (ticket_selection_version IS NULL) AND (attestation_id IS NULL) AND (participation_starts_drawing_id IS NULL) AND (eligible_activities IS NULL) AND (min_score_bps IS NULL) AND (empty_pool_policy IS NULL) AND (funding_source IS NULL) AND (fallback_beneficiary_account_id IS NULL) AND (fallback_payout_persona_id IS NULL) AND (referral_allocation_version IS NULL) AND (referral_policy_hash IS NULL) AND (referral_disclosed_at IS NULL) AND (legal_activation_gate = 'test_only'::text)) OR ((kind = 'megapot_pool'::text) AND (token_symbol IS NULL) AND (asset_policy_version IS NULL) AND (amount_per_claim_atomic IS NULL) AND (max_claims IS NULL) AND (tickets_per_drawing = 1) AND (max_ticket_price_atomic > (0)::numeric) AND (entry_cutoff_seconds > 0) AND (beneficiary_algorithm_version = 'equal_v1'::text) AND (ticket_selection_version = 'keccak_packed_v1'::text) AND (attestation_id IS NOT NULL) AND (participation_starts_drawing_id >= (0)::numeric) AND reward_distinct_nonempty_text_array(eligible_activities) AND ((min_score_bps >= 7000) AND (min_score_bps <= 10000)) AND (empty_pool_policy = ANY (ARRAY['no_purchase'::text, 'funder_fallback'::text])) AND (funding_source = ANY (ARRAY['leg_budget'::text, 'shared_sponsor_budget'::text]))))),
     CONSTRAINT song_reward_leg_purchase_order_shape CHECK (((purchase_order = 'commit_first'::text) OR ((kind = 'megapot_pool'::text) AND (funding_source = 'leg_budget'::text) AND ((empty_pool_policy = 'no_purchase'::text) OR ((empty_pool_policy = 'funder_fallback'::text) AND ((shared_song_terms_v2 ->> 'empty_behavior'::text) = 'single_funder_ticket_first_v1'::text)))))),
@@ -59860,6 +60054,15 @@ ALTER TABLE ONLY reward_safe_refunds_v1
 ALTER TABLE ONLY reward_safe_refunds_v1
     ADD CONSTRAINT reward_safe_refunds_v1_receipt_id_key UNIQUE (receipt_id);
 
+ALTER TABLE ONLY reward_safe_treasury_allocations_v1
+    ADD CONSTRAINT reward_safe_treasury_allocations_v1_claim_effect_id_key UNIQUE (claim_effect_id);
+
+ALTER TABLE ONLY reward_safe_treasury_allocations_v1
+    ADD CONSTRAINT reward_safe_treasury_allocations_v1_pkey PRIMARY KEY (allocation_batch_id);
+
+ALTER TABLE ONLY reward_safe_treasury_allocations_v1
+    ADD CONSTRAINT reward_safe_treasury_allocations_v1_pool_leg_id_drawing_id_key UNIQUE (pool_leg_id, drawing_id);
+
 ALTER TABLE ONLY reward_safe_unbound_executions
     ADD CONSTRAINT reward_safe_unbound_executions_pkey PRIMARY KEY (chain_id, transaction_hash, log_index);
 
@@ -62631,6 +62834,10 @@ CREATE TRIGGER reward_safe_refunds_v1_append_only BEFORE DELETE OR UPDATE ON rew
 
 CREATE TRIGGER reward_safe_refunds_v1_no_truncate BEFORE TRUNCATE ON reward_safe_refunds_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
 
+CREATE TRIGGER reward_safe_treasury_allocations_v1_append_only BEFORE DELETE OR UPDATE ON reward_safe_treasury_allocations_v1 FOR EACH ROW EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
+CREATE TRIGGER reward_safe_treasury_allocations_v1_no_truncate BEFORE TRUNCATE ON reward_safe_treasury_allocations_v1 FOR EACH STATEMENT EXECUTE FUNCTION reject_reward_contribution_history_v2();
+
 CREATE TRIGGER reward_safe_unbound_executions_append_only BEFORE DELETE OR UPDATE ON reward_safe_unbound_executions FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER reward_signer_nonces_change_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_signer_nonces FOR EACH ROW EXECUTE FUNCTION guard_reward_signer_nonce();
@@ -62676,6 +62883,10 @@ CREATE CONSTRAINT TRIGGER reward_winner_send_transactions_late_proof AFTER INSER
 CREATE CONSTRAINT TRIGGER reward_winner_sends_attempt_present AFTER INSERT OR UPDATE ON reward_winner_sends DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_reward_winner_send_attempt_present();
 
 CREATE TRIGGER reward_winner_sends_guard BEFORE INSERT OR DELETE OR UPDATE ON reward_winner_sends FOR EACH ROW EXECUTE FUNCTION guard_reward_winner_send();
+
+CREATE CONSTRAINT TRIGGER safe_treasury_allocation_exact AFTER INSERT ON reward_safe_treasury_allocations_v1 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_safe_treasury_allocation_v1();
+
+CREATE TRIGGER safe_treasury_freeze_guard BEFORE UPDATE ON megapot_pool_drawings FOR EACH ROW EXECUTE FUNCTION guard_safe_treasury_freeze_v1();
 
 CREATE TRIGGER shared_song_confirmed_principal AFTER INSERT ON reward_incoming_receipts_v2 FOR EACH ROW EXECUTE FUNCTION project_shared_song_confirmed_principal_v2();
 
@@ -62944,6 +63155,8 @@ CREATE TRIGGER video_post_publication_identity BEFORE UPDATE ON posts FOR EACH R
 CREATE TRIGGER wallet_sponsored_send_mode_guard BEFORE INSERT ON wallet_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_wallet_send_mode();
 
 CREATE TRIGGER wallet_sponsored_sends_guard BEFORE INSERT OR DELETE OR UPDATE ON wallet_sponsored_sends FOR EACH ROW EXECUTE FUNCTION guard_wallet_sponsored_send();
+
+CREATE TRIGGER zz_shared_song_treasury_terms_guard BEFORE INSERT ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_safe_treasury_terms_v1();
 
 ALTER TABLE ONLY account_age_verification_current
     ADD CONSTRAINT account_age_verification_current_account_id_intent_id_fkey FOREIGN KEY (account_id, intent_id) REFERENCES age_verification_requirement_states(actor_id, intent_id);
@@ -65821,6 +66034,15 @@ ALTER TABLE ONLY reward_safe_refunds_v1
 
 ALTER TABLE ONLY reward_safe_refunds_v1
     ADD CONSTRAINT reward_safe_refunds_v1_receipt_id_fkey FOREIGN KEY (receipt_id) REFERENCES reward_incoming_receipts_v2(receipt_id);
+
+ALTER TABLE ONLY reward_safe_treasury_allocations_v1
+    ADD CONSTRAINT reward_safe_treasury_allocations_v1_allocation_batch_id_fkey FOREIGN KEY (allocation_batch_id) REFERENCES megapot_allocation_batches(allocation_batch_id);
+
+ALTER TABLE ONLY reward_safe_treasury_allocations_v1
+    ADD CONSTRAINT reward_safe_treasury_allocations_v1_claim_effect_id_fkey FOREIGN KEY (claim_effect_id) REFERENCES megapot_claim_effects(claim_effect_id);
+
+ALTER TABLE ONLY reward_safe_treasury_allocations_v1
+    ADD CONSTRAINT reward_safe_treasury_allocations_v1_pool_leg_id_drawing_id_fkey FOREIGN KEY (pool_leg_id, drawing_id) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id);
 
 ALTER TABLE ONLY reward_safe_unbound_executions
     ADD CONSTRAINT reward_safe_unbound_executions_chain_id_safe_address_fkey FOREIGN KEY (chain_id, safe_address) REFERENCES reward_safe_execution_cursors(chain_id, safe_address);

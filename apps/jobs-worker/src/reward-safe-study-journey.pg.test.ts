@@ -35,6 +35,7 @@ import { makeRewardSafePurchaseCoordinator } from "../../../packages/platform-cf
 import { proveSafeReceiptRefund } from "../../../packages/platform-cf/src/reward-safe-refund.pg-proof.ts";
 import { makeReleaseRuntimeLogin } from "../../../packages/platform-cf/src/reward-safe-runtime-role.pg-fixture.ts";
 import { makeRewardSafeExecutionScanner } from "../../../packages/platform-cf/src/reward-safe-settlement.ts";
+import { creditEmptySafeTreasury } from "../../../packages/platform-cf/src/safe-treasury-allocation.ts";
 import { SERVING_FUNCTION_EXECUTE_GRANTS } from "../../../packages/platform-cf/src/serving-function-privileges.ts";
 import { makeControlPlaneSharedSongContextProducer } from "../../../packages/platform-cf/src/shared-song-megapot-production.ts";
 import { seedProspectiveSongFundingFixture } from "../../../packages/platform-cf/src/song-funding-prospective.pg-fixture.ts";
@@ -70,6 +71,9 @@ for (const scenario of [
   "qualified_funder_policy",
   "job_win",
   "job_empty_win",
+  "job_treasury_win",
+  "job_treasury_loss",
+  "job_treasury_qualified_win",
   "job_late_recovery",
   "job_commit_unknown",
   "job_late_refund",
@@ -82,17 +86,20 @@ for (const scenario of [
   const throughJob = scenario.startsWith("job_");
   const lateRefund = scenario.endsWith("late_refund");
   const timedLateRefund = scenario === "timed_late_refund";
-  const empty = scenario.includes("empty_");
+  const treasury = scenario.includes("treasury_");
+  const empty = scenario.includes("empty_") || (treasury && !scenario.includes("qualified"));
   const lateRecovery = scenario === "job_late_recovery";
-  const funderWins = empty || lateRecovery;
+  const funderWins = (empty || lateRecovery) && !treasury;
   const newTerms = throughJob || empty || scenario === "qualified_funder_policy";
   const beneficiary = funderWins ? "b" : "a";
   const beneficiaryWallet = addr(funderWins ? "4" : "1");
   const tier =
     scenario === "win" ||
     scenario === "empty_win" ||
+    scenario === "job_treasury_win" ||
+    scenario === "job_treasury_qualified_win" ||
     scenario === "qualified_funder_policy" ||
-    throughJob
+    (throughJob && scenario !== "job_treasury_loss")
       ? 7n
       : 2n;
   pgTest(
@@ -115,6 +122,7 @@ for (const scenario of [
         const { start, postId } = await seedProspectiveSongFundingFixture(f.admin, false, {
           currentStudy: true,
           singleFunderTicketFirst: newTerms,
+          safeTreasuryTicketFirst: treasury,
           environment: "staging",
         });
         await f.admin.query("BEGIN; SET LOCAL session_replication_role=replica");
@@ -604,7 +612,9 @@ for (const scenario of [
                 [legId],
               )
             ).rows,
-          ).toEqual([{ frozen_share_count: funderWins ? 0 : 1, fallback_beneficiary: funderWins }]);
+          ).toEqual([
+            { frozen_share_count: empty || lateRecovery ? 0 : 1, fallback_beneficiary: funderWins },
+          ]);
           const commitment = makeMegapotCommitmentCoordinator({
             store: makeControlPlaneMegapotCommitmentStore(layer),
             signer: megapotUnsignedOwnerSafeSigner,
@@ -640,7 +650,7 @@ for (const scenario of [
                   [legId],
                 )
               ).rows,
-            ).toEqual([{ status: "winnings_detected" }]);
+            ).toEqual([{ status: tier === 2n ? "no_win" : "winnings_detected" }]);
           const scan = () =>
             run(
               makeRewardSafeExecutionScanner(options)({
@@ -686,180 +696,220 @@ for (const scenario of [
             expect(
               await run(makeRewardSafeClaimCoordinator(options).settle(subject)),
             ).toMatchObject({ kind: "claimed", effectId: claim.effectId });
-            const allocation = makeMegapotAllocationCoordinator({
-              store: makeControlPlaneMegapotAllocationStore(layer),
-            });
-            await run(allocation.allocate(subject));
-            await run(allocation.allocate(subject));
-            const credits = (
-              await f.owner.query<{ credit_id: string; account_id: string; amount: string }>(
-                "SELECT credit_id,account_id,amount_atomic::text AS amount FROM reward_ledger_credits WHERE source_kind IN ('megapot_allocation','external_fallback')",
-              )
-            ).rows;
-            expect(credits).toHaveLength(1);
-            const credit = credits[0];
-            if (!credit) throw Error("Study credit missing");
-            expect(credit).toMatchObject({ account_id: beneficiary, amount: "901" });
-            // Only the external verification ceremony is a local prerequisite.
-            // The participant Claim, solvency check and Safe payout execute normally.
-            await seedVeryRewardEvidence(f.admin, beneficiary, "safe-study-claim");
-            const projection = makeControlPlaneRewardProjectionStore(layer);
-            if (!funderWins) {
-              expect(
-                await run(
-                  projection.claimCredit({ accountId: beneficiary, creditId: credit.credit_id }),
-                ),
-              ).toMatchObject({ outcome: "accepted" });
-            }
-            await run(
-              makeCustodySolvencyCoordinator({
-                store: makeControlPlaneCustodySolvencyStore(layer),
-                rpc,
-                requiredConfirmations: 1,
-                safePilot,
-              }).observe("attestation"),
-            );
-            const payouts = makeRewardSafePayoutCoordinator(options);
-            let payout: { effectId: string };
-            if (throughJob) {
-              await job.tick();
-              const call = await job.prepared("reward_payout");
-              payout = call;
-              chain.execute(call, "success");
-              await job.tick();
-            } else {
-              const preparedPayout = await run(payouts.prepare(credit.credit_id));
-              payout = preparedPayout;
-              chain.execute(callOf(preparedPayout.transactionBuilderFile), "success");
-              await scan();
-              expect(await run(payouts.settle(payout.effectId))).toMatchObject({
-                kind: "confirmed",
-              });
-            }
-            expect(
-              await run(makeRewardSafePayoutCoordinator(options).settle(payout.effectId)),
-            ).toMatchObject({ kind: "not_bound" });
-            expect(await rpc.readUsdcBalance(beneficiaryWallet)).toBe(901n);
-            let submissions = 0;
-            let sendHash: string | null = null;
-            let ids = 0;
-            await f.owner.query(
-              `GRANT UPDATE ON subject_keys,active_subject_key_bindings TO ${f.quote(app.role)}`,
-            );
-            await f.owner.query(
-              `GRANT EXECUTE ON FUNCTION lock_wallet_send_palm_assertions_v1(text,text) TO ${f.quote(app.role)}`,
-            );
-            const makeSends = () =>
-              makeWalletSponsoredSendService({
-                store: makeControlPlaneSponsoredSendStore(layer, {
-                  perAccountUtcDay: 1,
-                  perWalletUtcDay: 1,
-                  platformUtcDay: 1,
-                  gasBudgetPerSendWei: 1n,
-                  accountDailyGasBudgetWei: 1n,
-                  walletDailyGasBudgetWei: 1n,
-                  platformDailyGasBudgetWei: 1n,
-                }),
-                appId: "app_local_study",
-                appSecret: "local_fixture_secret",
-                ids: () => `safe_study_${++ids}`,
-                eligibleAsset: { chainId: 84532, tokenAddress: deployment.usdcAddress },
-                requiredConfirmations: 1,
-                chain: {
-                  readTokenBalance: (token, wallet) => {
-                    expect(token).toBe(deployment.usdcAddress);
-                    return rpc.readUsdcBalance(wallet);
-                  },
-                  readHead: async () => (await rpc.readHead()).blockNumber,
-                  readFinalizedHead: async () => (await rpc.readFinalizedHead()).blockNumber,
-                  readReceipt: async (hash) => {
-                    const receipt = await rpc.readReceipt(hash);
-                    if (!receipt) return null;
-                    const canonical = await rpc.readBlock(receipt.blockNumber);
-                    return {
-                      ...receipt,
-                      canonical: canonical.blockHash === receipt.blockHash,
-                      transfers: receipt.logs.map((log) => {
-                        const event = decodeEventLog({
-                          abi: erc20Abi,
-                          eventName: "Transfer",
-                          topics: log.topics as [Hex, ...Hex[]],
-                          data: log.data as Hex,
-                        });
-                        return {
-                          tokenAddress: log.address,
-                          from: event.args.from,
-                          to: event.args.to,
-                          amountAtomic: event.args.value,
-                        };
-                      }),
-                    };
-                  },
-                },
-                submit: async () => {
-                  submissions++;
-                  sendHash = chain.transfer(beneficiaryWallet, addr("8"), 901n);
-                  throw Error("Simulated response loss after provider acceptance");
-                },
-                findByReference: async (query) =>
-                  sendHash
-                    ? {
-                        id: "local_study_send",
-                        walletId: query.walletId,
-                        referenceId: query.referenceId,
-                        caip2: "eip155:84532",
-                        status: "confirmed",
-                        transactionHash: sendHash,
-                      }
-                    : null,
-              });
-            const sends = makeSends();
-            const send = await sends.reserve({
-              accountId: beneficiary,
-              personaId: `persona-${beneficiary}`,
-              chainId: 84532,
-              recipientAddress: addr("8"),
-              amountAtomic: 901n,
-              idempotencyKey: "safe_study_send_reserve_01",
-            });
-            expect(send.authorization).not.toBeNull();
-            await expect(
-              sends.submit({
-                accountId: beneficiary,
-                sendId: send.record.sendId,
-                signature: "YWJjZA==",
-              }),
-            ).rejects.toThrow("outcome unknown");
-            // Recreate both service and repository as after a Worker restart.
-            // Reference lookup and canonical chain proof resolve the held send.
-            const restarted = makeSends();
-            expect(
-              (await restarted.get({ accountId: beneficiary, sendId: send.record.sendId })).record
-                .status,
-            ).toBe("confirmed");
-            await expect(
-              sends.submit({
-                accountId: beneficiary,
-                sendId: send.record.sendId,
-                signature: "YWJjZA==",
-              }),
-            ).rejects.toThrow("conflict");
-            expect(submissions).toBe(1);
-            expect(await rpc.readUsdcBalance(beneficiaryWallet)).toBe(0n);
-            expect(await rpc.readUsdcBalance(addr("8"))).toBe(901n);
-            expect(await rpc.readUsdcBalance(deployment.custodyAddress)).toBe(0n);
-            expect(
-              (
+            if (treasury && empty) {
+              expect(await run(Effect.provide(layer)(creditEmptySafeTreasury(subject)))).toBe(true);
+              expect(await run(Effect.provide(layer)(creditEmptySafeTreasury(subject)))).toBe(true);
+              const allocated = (
                 await f.owner.query(
-                  "SELECT state,paid_atomic::text AS paid FROM reward_ledger_credits WHERE credit_id=$1",
-                  [credit.credit_id],
+                  "SELECT treasury_address,amount_atomic::text amount FROM reward_safe_treasury_allocations_v1 WHERE pool_leg_id=$1 AND drawing_id=101",
+                  [legId],
                 )
-              ).rows,
-            ).toEqual([{ state: "sent", paid: "901" }]);
+              ).rows;
+              expect(allocated).toEqual([
+                { treasury_address: deployment.custodyAddress, amount: "901" },
+              ]);
+              expect(
+                (
+                  await f.owner.query(
+                    "SELECT status FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=101",
+                    [legId],
+                  )
+                ).rows,
+              ).toEqual([{ status: "credited" }]);
+              expect(
+                (await f.owner.query("SELECT count(*)::int n FROM reward_ledger_credits")).rows,
+              ).toEqual([{ n: 0 }]);
+              expect(
+                (await f.owner.query("SELECT count(*)::int n FROM reward_payout_effects")).rows,
+              ).toEqual([{ n: 0 }]);
+              expect(await rpc.readUsdcBalance(deployment.custodyAddress)).toBe(901n);
+              await expect(
+                f.owner.query("UPDATE reward_safe_treasury_allocations_v1 SET amount_atomic=902"),
+              ).rejects.toThrow();
+              await expect(
+                f.owner.query("DELETE FROM reward_safe_treasury_allocations_v1"),
+              ).rejects.toThrow();
+            } else {
+              const allocation = makeMegapotAllocationCoordinator({
+                store: makeControlPlaneMegapotAllocationStore(layer),
+              });
+              await run(allocation.allocate(subject));
+              await run(allocation.allocate(subject));
+              const credits = (
+                await f.owner.query<{ credit_id: string; account_id: string; amount: string }>(
+                  "SELECT credit_id,account_id,amount_atomic::text AS amount FROM reward_ledger_credits WHERE source_kind IN ('megapot_allocation','external_fallback')",
+                )
+              ).rows;
+              expect(credits).toHaveLength(1);
+              const credit = credits[0];
+              if (!credit) throw Error("Study credit missing");
+              expect(credit).toMatchObject({ account_id: beneficiary, amount: "901" });
+              // Only the external verification ceremony is a local prerequisite.
+              // The participant Claim, solvency check and Safe payout execute normally.
+              await seedVeryRewardEvidence(f.admin, beneficiary, "safe-study-claim");
+              const projection = makeControlPlaneRewardProjectionStore(layer);
+              if (!funderWins) {
+                expect(
+                  await run(
+                    projection.claimCredit({ accountId: beneficiary, creditId: credit.credit_id }),
+                  ),
+                ).toMatchObject({ outcome: "accepted" });
+              }
+              await run(
+                makeCustodySolvencyCoordinator({
+                  store: makeControlPlaneCustodySolvencyStore(layer),
+                  rpc,
+                  requiredConfirmations: 1,
+                  safePilot,
+                }).observe("attestation"),
+              );
+              const payouts = makeRewardSafePayoutCoordinator(options);
+              let payout: { effectId: string };
+              if (throughJob) {
+                await job.tick();
+                const call = await job.prepared("reward_payout");
+                payout = call;
+                chain.execute(call, "success");
+                await job.tick();
+              } else {
+                const preparedPayout = await run(payouts.prepare(credit.credit_id));
+                payout = preparedPayout;
+                chain.execute(callOf(preparedPayout.transactionBuilderFile), "success");
+                await scan();
+                expect(await run(payouts.settle(payout.effectId))).toMatchObject({
+                  kind: "confirmed",
+                });
+              }
+              expect(
+                await run(makeRewardSafePayoutCoordinator(options).settle(payout.effectId)),
+              ).toMatchObject({ kind: "not_bound" });
+              expect(await rpc.readUsdcBalance(beneficiaryWallet)).toBe(901n);
+              let submissions = 0;
+              let sendHash: string | null = null;
+              let ids = 0;
+              await f.owner.query(
+                `GRANT UPDATE ON subject_keys,active_subject_key_bindings TO ${f.quote(app.role)}`,
+              );
+              await f.owner.query(
+                `GRANT EXECUTE ON FUNCTION lock_wallet_send_palm_assertions_v1(text,text) TO ${f.quote(app.role)}`,
+              );
+              const makeSends = () =>
+                makeWalletSponsoredSendService({
+                  store: makeControlPlaneSponsoredSendStore(layer, {
+                    perAccountUtcDay: 1,
+                    perWalletUtcDay: 1,
+                    platformUtcDay: 1,
+                    gasBudgetPerSendWei: 1n,
+                    accountDailyGasBudgetWei: 1n,
+                    walletDailyGasBudgetWei: 1n,
+                    platformDailyGasBudgetWei: 1n,
+                  }),
+                  appId: "app_local_study",
+                  appSecret: "local_fixture_secret",
+                  ids: () => `safe_study_${++ids}`,
+                  eligibleAsset: { chainId: 84532, tokenAddress: deployment.usdcAddress },
+                  requiredConfirmations: 1,
+                  chain: {
+                    readTokenBalance: (token, wallet) => {
+                      expect(token).toBe(deployment.usdcAddress);
+                      return rpc.readUsdcBalance(wallet);
+                    },
+                    readHead: async () => (await rpc.readHead()).blockNumber,
+                    readFinalizedHead: async () => (await rpc.readFinalizedHead()).blockNumber,
+                    readReceipt: async (hash) => {
+                      const receipt = await rpc.readReceipt(hash);
+                      if (!receipt) return null;
+                      const canonical = await rpc.readBlock(receipt.blockNumber);
+                      return {
+                        ...receipt,
+                        canonical: canonical.blockHash === receipt.blockHash,
+                        transfers: receipt.logs.map((log) => {
+                          const event = decodeEventLog({
+                            abi: erc20Abi,
+                            eventName: "Transfer",
+                            topics: log.topics as [Hex, ...Hex[]],
+                            data: log.data as Hex,
+                          });
+                          return {
+                            tokenAddress: log.address,
+                            from: event.args.from,
+                            to: event.args.to,
+                            amountAtomic: event.args.value,
+                          };
+                        }),
+                      };
+                    },
+                  },
+                  submit: async () => {
+                    submissions++;
+                    sendHash = chain.transfer(beneficiaryWallet, addr("8"), 901n);
+                    throw Error("Simulated response loss after provider acceptance");
+                  },
+                  findByReference: async (query) =>
+                    sendHash
+                      ? {
+                          id: "local_study_send",
+                          walletId: query.walletId,
+                          referenceId: query.referenceId,
+                          caip2: "eip155:84532",
+                          status: "confirmed",
+                          transactionHash: sendHash,
+                        }
+                      : null,
+                });
+              const sends = makeSends();
+              const send = await sends.reserve({
+                accountId: beneficiary,
+                personaId: `persona-${beneficiary}`,
+                chainId: 84532,
+                recipientAddress: addr("8"),
+                amountAtomic: 901n,
+                idempotencyKey: "safe_study_send_reserve_01",
+              });
+              expect(send.authorization).not.toBeNull();
+              await expect(
+                sends.submit({
+                  accountId: beneficiary,
+                  sendId: send.record.sendId,
+                  signature: "YWJjZA==",
+                }),
+              ).rejects.toThrow("outcome unknown");
+              // Recreate both service and repository as after a Worker restart.
+              // Reference lookup and canonical chain proof resolve the held send.
+              const restarted = makeSends();
+              expect(
+                (await restarted.get({ accountId: beneficiary, sendId: send.record.sendId })).record
+                  .status,
+              ).toBe("confirmed");
+              await expect(
+                sends.submit({
+                  accountId: beneficiary,
+                  sendId: send.record.sendId,
+                  signature: "YWJjZA==",
+                }),
+              ).rejects.toThrow("conflict");
+              expect(submissions).toBe(1);
+              expect(await rpc.readUsdcBalance(beneficiaryWallet)).toBe(0n);
+              expect(await rpc.readUsdcBalance(addr("8"))).toBe(901n);
+              expect(await rpc.readUsdcBalance(deployment.custodyAddress)).toBe(0n);
+              expect(
+                (
+                  await f.owner.query(
+                    "SELECT state,paid_atomic::text AS paid FROM reward_ledger_credits WHERE credit_id=$1",
+                    [credit.credit_id],
+                  )
+                ).rows,
+              ).toEqual([{ state: "sent", paid: "901" }]);
+            }
           }
           await f.owner.query(
             "SELECT set_reward_operations_paused_v1(revision,TRUE,'local_study_complete') FROM reward_operations_control WHERE singleton",
           );
+          if (treasury && empty && tier !== 2n) {
+            await expect(
+              run(Effect.provide(layer)(creditEmptySafeTreasury(subject))),
+            ).rejects.toThrow();
+          }
           expect(
             (
               await f.owner.query(

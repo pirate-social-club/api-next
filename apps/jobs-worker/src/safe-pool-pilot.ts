@@ -40,6 +40,7 @@ import { makeRewardSafeRefundCoordinator } from "@pirate/platform-cf/reward-safe
 import { makeControlPlaneRewardSafeRefundStore } from "@pirate/platform-cf/reward-safe-refund-repository";
 import { makeRewardSafeExecutionScanner } from "@pirate/platform-cf/reward-safe-settlement";
 import { makeControlPlaneRewardSafeWorkStore } from "@pirate/platform-cf/reward-safe-work-repository";
+import { creditEmptySafeTreasury } from "@pirate/platform-cf/safe-treasury-allocation";
 import { Effect, Layer } from "effect";
 import { observeMegapotDrawingForCycle } from "./megapot-rewards-cycle.ts";
 import { makeMegapotAttestedRpc } from "./megapot-rewards-runtime.ts";
@@ -102,6 +103,7 @@ const SAFE_POOL_PILOT_READS = [
   "postgres:platform_referral_revenue_ledger",
   "postgres:megapot_allocation_batches",
   "postgres:megapot_allocations",
+  "postgres:reward_safe_treasury_allocations_v1",
   "postgres:reward_ledger_credits",
   "postgres:reward_payout_effects",
   "postgres:reward_erc20_transfer_receipt_evidence",
@@ -273,7 +275,13 @@ export function makeSafePoolPilotJob(
       sweep: (value) => sweep.sweep(drawing(value)),
       settleClaim: (value) => claims.settle(drawing(value)),
       prepareClaim: (value) => claims.prepare(drawing(value)),
-      allocate: (value) => allocation.allocate(drawing(value)),
+      allocate: (value) =>
+        Effect.gen(function* () {
+          const subject = drawing(value);
+          if (yield* Effect.provide(layer)(creditEmptySafeTreasury(subject)))
+            return { kind: "treasury_credited" };
+          return yield* allocation.allocate(subject);
+        }),
       closeExpiredOffers: terminal.closeExpired,
       sealRefunds: (limit) => refundStore.seal(deployment.attestationId, limit),
       loadRefunds: (limit) => refundStore.loadPending(deployment.attestationId, limit),

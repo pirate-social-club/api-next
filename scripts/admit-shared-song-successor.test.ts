@@ -154,3 +154,21 @@ test("single-funder disposition changes only future template terms and preserves
     ).rejects.toThrow("single-funder accepted successor profile required");
   }
 });
+
+test("Safe treasury successor preserves the original profile and monetary/work limits", async () => {
+  const raw = await fixture();
+  const successor = await buildSharedSongSuccessorTemplate(raw);
+  const { accepted_by: _role, accepted_receipt_hash: _receipt, ...source } = successor.template;
+  const current = { ...raw, source, admissionHash: successor.admission.admission_hash };
+  const before = structuredClone(current);
+  const plan = await buildSharedSongSuccessorTemplate(current, "safe_treasury_terms");
+  expect(current).toEqual(before);
+  expect(plan.template.profile_id).toBe(source.profile_id);
+  expect(plan.template.qualification_templates).toEqual(source.qualification_templates);
+  expect(plan.template.operational_profile).toEqual({
+    ...source.operational_profile,
+    emptyBehavior: "safe_treasury_ticket_first_v1",
+    disclosureVersion: "shared-song-safe-pilot-staging-treasury-disclosure-v1",
+  });
+  expect(plan.template.template_hash).not.toBe(source.template_hash);
+});
