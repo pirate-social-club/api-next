@@ -41,7 +41,7 @@ export type SongFundingContextFacts = Readonly<{
   rewardPolicyTemplateHash: string;
   qualificationTemplates: readonly C.QualificationTemplateV2[];
   disclosureVersion: string;
-  emptyBehavior?: "no_purchase" | "single_funder_ticket_first_v1";
+  emptyBehavior?: "no_purchase" | "single_funder_ticket_first_v1" | "safe_treasury_ticket_first_v1";
   feePolicyId: string;
   chainId: number;
   tokenAddress: string;
@@ -129,7 +129,11 @@ export const SongFundingContextFactsSchema: Schema.Codec<SongFundingContextFacts
     }),
     costsReconciled: Schema.Boolean,
     emptyBehavior: Schema.optionalKey(
-      Schema.Literals(["no_purchase", "single_funder_ticket_first_v1"]),
+      Schema.Literals([
+        "no_purchase",
+        "single_funder_ticket_first_v1",
+        "safe_treasury_ticket_first_v1",
+      ]),
     ),
     fundingPolicyRevision: Natural,
     fundingPolicyHash: C.HashV2,
@@ -259,6 +263,9 @@ export const buildSongMegapotFundingContext = Effect.fn("SongFundingContext.buil
       start_rule: "allocation_linearization_time",
       budget_source: "leg_budget",
       empty_behavior: f.emptyBehavior ?? "no_purchase",
+      ...(f.emptyBehavior === "safe_treasury_ticket_first_v1"
+        ? { empty_winnings_recipient: f.custodyAddress }
+        : {}),
       eligible_activities: ["study", "karaoke", "dance"],
       dance_scope: "any_policy_accepted",
       qualification_templates: f.qualificationTemplates,

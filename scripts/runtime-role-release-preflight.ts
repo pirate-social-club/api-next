@@ -181,6 +181,7 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "reward_native_transfer_receipt_evidence", privilege: "INSERT", allowed: true },
   { object: "reward_payout_effects", privilege: "INSERT", allowed: true },
   ...[
+    "reward_safe_treasury_allocations_v1",
     "reward_safe_refunds_v1",
     "reward_safe_refund_attempts_v1",
     "reward_safe_refund_completions_v1",
@@ -196,6 +197,7 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
     "prepare_reward_safe_refund_v1(text,text,bigint)",
     "settle_reward_safe_refund_v1(jsonb)",
     "take_reward_joint_cycle_turn_v1()",
+    "credit_empty_safe_treasury_v1(text,numeric)",
   ].map((object) => ({ object, privilege: "EXECUTE" as const, allowed: true })),
   ...(["SELECT", "INSERT", "UPDATE"] as const).map((privilege) => ({
     object: "reward_joint_cycle_turn_v1",

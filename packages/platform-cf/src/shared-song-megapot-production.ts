@@ -109,7 +109,11 @@ const Natural = Schema.Int.check(
 const Positive = Natural.check(Schema.isGreaterThan(0));
 const Operations = Schema.Struct({
   emptyBehavior: Schema.optionalKey(
-    Schema.Literals(["no_purchase", "single_funder_ticket_first_v1"]),
+    Schema.Literals([
+      "no_purchase",
+      "single_funder_ticket_first_v1",
+      "safe_treasury_ticket_first_v1",
+    ]),
   ),
   disclosureVersion: C.IdV2,
   feePolicyId: C.IdV2,

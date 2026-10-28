@@ -138,14 +138,17 @@ export function makeMegapotTicketFirstCutoff(options: {
                 },
               ]
             : shares;
+          const treasury =
+            shares.length === 0 && row.empty_behavior === "safe_treasury_ticket_first_v1";
           const snapshot =
-            beneficiaries.length === 0
+            beneficiaries.length === 0 && !treasury
               ? null
               : buildMegapotBeneficiarySnapshot({
                   poolLegId: input.poolLegId,
                   drawingId: input.drawingId,
                   termsHash: input.termsHash,
                   fallback,
+                  ...(treasury ? { emptyTreasury: true as const } : {}),
                   beneficiaries,
                   sha256: (bytes) => sha256(bytes, "bytes"),
                 });

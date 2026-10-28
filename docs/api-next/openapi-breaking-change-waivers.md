@@ -239,3 +239,9 @@ Genuine client136 has archive SHA2565b565aff657fd7655f2bacca4704549c9e31305501aa
 This declaration carries the adopted rule through the maintained compatibility process; it does not expand production or funding authority. Remove the consumed declarations after API684 integration. Historical artifacts and previous declarations remain unchanged.
 
 API684 landed as699c359bee814657e8cb9158a85a02cce0a3b78f. Its six consumed exact-baseline declarations, covering seven enum additions, are retired from the active policy. The original declarations remain in scripts/fixtures/openapi-single-funder-waivers-20261028.json for the historical closed-decoder regression proof. Later changes require their own exact-baseline review.
+
+## 2026-10-28 Safe treasury disposition transition
+
+The workspace_owner selected retention of net zero-qualifier winnings in the pot Safe, separately recorded as treasury funds. New safe_treasury_ticket_first_v1 terms freeze empty_winnings_recipient in the prospective and committed hashes. Existing no_purchase and single_funder_ticket_first_v1 histories retain their meaning; there is no retrospective transfer or expiry of participant credits.
+
+At exact baseline1b8a9bb9b5683a995dba2bd5c18609af45755a61, six declarations admit fourteen complete diagnostics: seven added response enum values and seven named recipient fields in closed responses. No operation, request, status, error, other field, other enum or later baseline is admitted. The paired genuine137 client must serve before new terms admission, and older tabs must reload. Retire these declarations after acceptance.

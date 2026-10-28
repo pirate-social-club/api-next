@@ -144,10 +144,10 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0326 set", () => {
-  expect(migrations).toHaveLength(326);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0327 set", () => {
+  expect(migrations).toHaveLength(327);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 326 }, (_, i) => i + 1),
+    Array.from({ length: 327 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
@@ -279,6 +279,10 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   expect(migrations[325]).toMatchObject({
     version: "0326_reward_joint_cycle_fairness.sql",
     checksum: "c182b124392f311f513844e93a04af70131739da7cd6f6a82d96b3a266a74932",
+  });
+  expect(migrations[326]).toMatchObject({
+    version: "0327_reward_safe_treasury_disposition.sql",
+    checksum: "39cdcc53149be886ffdbb91aef2969be3a838f43cdde36c2d3607ad48bbb12b6",
   });
 });
 

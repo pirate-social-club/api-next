@@ -489,6 +489,7 @@ TRUNCATE TABLE
   "reward_safe_refund_attempts_v1",
   "reward_safe_refund_completions_v1",
   "reward_safe_refunds_v1",
+  "reward_safe_treasury_allocations_v1",
   "reward_safe_unbound_executions",
   "reward_shared_song_template_admissions_v2",
   "reward_shared_song_templates_v2",

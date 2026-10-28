@@ -837,6 +837,9 @@ const createContribution = Effect.fn("SongMegapotContribution.create")(function*
       funding_policy_hash: prospectus.funding_policy_hash,
       budget_source: "leg_budget",
       empty_behavior: prospectus.empty_behavior,
+      ...(prospectus.empty_winnings_recipient === undefined
+        ? {}
+        : { empty_winnings_recipient: prospectus.empty_winnings_recipient }),
       eligible_activities: ["study", "karaoke", "dance"],
       dance_scope: "any_policy_accepted",
       starts_at: now,

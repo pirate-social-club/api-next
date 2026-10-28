@@ -43,6 +43,7 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_safe_refund_completions_v1",
   ],
   "0326_reward_joint_cycle_fairness.sql": ["reward_joint_cycle_turn_v1"],
+  "0327_reward_safe_treasury_disposition.sql": ["reward_safe_treasury_allocations_v1"],
   "0312_reward_safe_execution_scans.sql": [
     "reward_safe_execution_cursors",
     "reward_safe_unbound_executions",
@@ -116,6 +117,7 @@ export const REWARDS_MONEY_TABLES = [
   "reward_safe_refund_attempts_v1",
   "reward_safe_refund_completions_v1",
   "reward_safe_unbound_executions",
+  "reward_safe_treasury_allocations_v1",
   "reward_signer_nonces",
   "reward_shared_song_template_admissions_v2",
   "reward_shared_song_templates_v2",
