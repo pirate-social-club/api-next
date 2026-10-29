@@ -270,7 +270,8 @@
                               "enum": [
                                 "hands_on_head",
                                 "arms_t",
-                                "hands_on_hips"
+                                "hands_on_hips",
+                                "none"
                               ]
                             },
                             "start_ms": {
@@ -286,7 +287,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -295,7 +296,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -1488,7 +1489,8 @@
                     "attestation_version": {
                       "type": "string",
                       "enum": [
-                        "dance-owner-verdict-attestation-v1"
+                        "dance-owner-verdict-attestation-v1",
+                        "dance-owner-verdict-attestation-v2"
                       ]
                     }
                   },
@@ -2034,7 +2036,8 @@
                             "version": {
                               "type": "string",
                               "enum": [
-                                "moderator-review-policy-v1"
+                                "moderator-review-policy-v1",
+                                "moderator-review-policy-v2"
                               ]
                             },
                             "hash": {
@@ -2224,7 +2227,8 @@
                               "type": "string",
                               "enum": [
                                 "affirmed",
-                                "not_attested"
+                                "not_attested",
+                                "not_required"
                               ]
                             },
                             {
@@ -3054,7 +3058,8 @@
                             "version": {
                               "type": "string",
                               "enum": [
-                                "moderator-review-policy-v1"
+                                "moderator-review-policy-v1",
+                                "moderator-review-policy-v2"
                               ]
                             },
                             "hash": {
@@ -3244,7 +3249,8 @@
                               "type": "string",
                               "enum": [
                                 "affirmed",
-                                "not_attested"
+                                "not_attested",
+                                "not_required"
                               ]
                             },
                             {
@@ -4058,7 +4064,8 @@
                             "version": {
                               "type": "string",
                               "enum": [
-                                "moderator-review-policy-v1"
+                                "moderator-review-policy-v1",
+                                "moderator-review-policy-v2"
                               ]
                             },
                             "hash": {
@@ -4248,7 +4255,8 @@
                               "type": "string",
                               "enum": [
                                 "affirmed",
-                                "not_attested"
+                                "not_attested",
+                                "not_required"
                               ]
                             },
                             {
@@ -4774,7 +4782,8 @@
                   "version": {
                     "type": "string",
                     "enum": [
-                      "dance-owner-verdict-attestation-v1"
+                      "dance-owner-verdict-attestation-v1",
+                      "dance-owner-verdict-attestation-v2"
                     ]
                   },
                   "operation": {
@@ -5070,7 +5079,8 @@
                             "version": {
                               "type": "string",
                               "enum": [
-                                "moderator-review-policy-v1"
+                                "moderator-review-policy-v1",
+                                "moderator-review-policy-v2"
                               ]
                             },
                             "hash": {
@@ -5260,7 +5270,8 @@
                               "type": "string",
                               "enum": [
                                 "affirmed",
-                                "not_attested"
+                                "not_attested",
+                                "not_required"
                               ]
                             },
                             {
@@ -5927,7 +5938,8 @@
                         "version": {
                           "type": "string",
                           "enum": [
-                            "moderator-review-policy-v1"
+                            "moderator-review-policy-v1",
+                            "moderator-review-policy-v2"
                           ]
                         },
                         "hash": {
@@ -6117,7 +6129,8 @@
                           "type": "string",
                           "enum": [
                             "affirmed",
-                            "not_attested"
+                            "not_attested",
+                            "not_required"
                           ]
                         },
                         {
@@ -7107,7 +7120,8 @@
                                 "version": {
                                   "type": "string",
                                   "enum": [
-                                    "moderator-review-policy-v1"
+                                    "moderator-review-policy-v1",
+                                    "moderator-review-policy-v2"
                                   ]
                                 },
                                 "hash": {
@@ -7297,7 +7311,8 @@
                                   "type": "string",
                                   "enum": [
                                     "affirmed",
-                                    "not_attested"
+                                    "not_attested",
+                                    "not_required"
                                   ]
                                 },
                                 {
@@ -8523,7 +8538,7 @@
                           "type": "integer",
                           "allOf": [
                             {
-                              "minimum": 1,
+                              "minimum": 0,
                               "maximum": 9007199254740991
                             }
                           ]
@@ -8575,7 +8590,8 @@
                     "attestation_version": {
                       "type": "string",
                       "enum": [
-                        "dance-owner-verdict-attestation-v1"
+                        "dance-owner-verdict-attestation-v1",
+                        "dance-owner-verdict-attestation-v2"
                       ]
                     }
                   },
@@ -9302,7 +9318,8 @@
                               "enum": [
                                 "hands_on_head",
                                 "arms_t",
-                                "hands_on_hips"
+                                "hands_on_hips",
+                                "none"
                               ]
                             },
                             "start_ms": {
@@ -9318,7 +9335,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -9327,7 +9344,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -10184,7 +10201,8 @@
                               "enum": [
                                 "hands_on_head",
                                 "arms_t",
-                                "hands_on_hips"
+                                "hands_on_hips",
+                                "none"
                               ]
                             },
                             "start_ms": {
@@ -10200,7 +10218,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -10209,7 +10227,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -11064,7 +11082,8 @@
                               "enum": [
                                 "hands_on_head",
                                 "arms_t",
-                                "hands_on_hips"
+                                "hands_on_hips",
+                                "none"
                               ]
                             },
                             "start_ms": {
@@ -11080,7 +11099,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -11089,7 +11108,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -11928,7 +11947,8 @@
                               "enum": [
                                 "hands_on_head",
                                 "arms_t",
-                                "hands_on_hips"
+                                "hands_on_hips",
+                                "none"
                               ]
                             },
                             "start_ms": {
@@ -11944,7 +11964,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -11953,7 +11973,7 @@
                               "type": "integer",
                               "allOf": [
                                 {
-                                  "minimum": 1,
+                                  "minimum": 0,
                                   "maximum": 9007199254740991
                                 }
                               ]
@@ -12677,7 +12697,8 @@
                           "enum": [
                             "hands_on_head",
                             "arms_t",
-                            "hands_on_hips"
+                            "hands_on_hips",
+                            "none"
                           ]
                         },
                         "start_ms": {
@@ -12693,7 +12714,7 @@
                           "type": "integer",
                           "allOf": [
                             {
-                              "minimum": 1,
+                              "minimum": 0,
                               "maximum": 9007199254740991
                             }
                           ]
@@ -12702,7 +12723,7 @@
                           "type": "integer",
                           "allOf": [
                             {
-                              "minimum": 1,
+                              "minimum": 0,
                               "maximum": 9007199254740991
                             }
                           ]
