@@ -132,7 +132,8 @@ export const postgresHnsSuiteCostEstimates = {
   },
   "packages/platform-cf/src/hns-root-import-repository.pg.test.ts": {
     sourceCallCount: 12,
-    milliseconds: 57553,
+    // The hosted owner-TXT scenarios took 123702 ms before full completion.
+    milliseconds: 130000,
   },
   "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts": {
     sourceCallCount: 4,
