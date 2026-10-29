@@ -679,9 +679,9 @@ BEGIN
  RETURN jsonb_build_object('integrity',CASE WHEN blocked THEN 'blocked' ELSE 'unique' END);
 END $$;
 
--- Replacements retain their existing ACLs. Only the two new pure helpers
--- need PUBLIC revocation; every function gets the same confined trusted path.
-DO $paths$ DECLARE f RECORD; trusted TEXT:=current_schema(); BEGIN
+-- Replacements retain their existing ACLs. The two new owner-only helpers
+-- must also discard any privileges inherited from hostile function defaults.
+DO $paths$ DECLARE f RECORD; grant_row RECORD; trusted TEXT:=current_schema(); BEGIN
  FOR f IN SELECT oid,proname,oid::regprocedure AS signature FROM pg_proc
  WHERE pronamespace=trusted::regnamespace AND proname IN(
  'moderated_dance_capture_mode_valid_v2','moderated_dance_policy_profile_matches_v2',
@@ -691,6 +691,11 @@ DO $paths$ DECLARE f RECORD; trusted TEXT:=current_schema(); BEGIN
   EXECUTE format('ALTER FUNCTION %s SET search_path=%I,pg_catalog,pg_temp',f.signature,trusted);
   IF f.proname IN('moderated_dance_capture_mode_valid_v2','moderated_dance_policy_profile_matches_v2') THEN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC CASCADE',f.signature);
+   FOR grant_row IN SELECT DISTINCT a.grantee FROM pg_proc p,
+    LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+    WHERE p.oid=f.oid AND a.grantee<>0 AND a.grantee<>p.proowner LOOP
+    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I CASCADE',f.signature,pg_get_userbyid(grant_row.grantee));
+   END LOOP;
   END IF;
  END LOOP;
 END $paths$;

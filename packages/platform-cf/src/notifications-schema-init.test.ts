@@ -298,7 +298,7 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   });
   expect(migrations[330]).toMatchObject({
     version: "0331_moderated_dance_no_pose_policy.sql",
-    checksum: "b804f9c0e525d8281b2f48542325fd9d1dc033007835401133d718090cd2f844",
+    checksum: "04c541b0ed8068f6d404ca2a6c6a4e1dcf34a101b2f01b6b55ade9e2bd3af38b",
   });
 });
 
