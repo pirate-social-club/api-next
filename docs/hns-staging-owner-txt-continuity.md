@@ -6,15 +6,29 @@ resource hash changes. Ordinary inventory renewal deliberately refuses that
 change. A distinct `staging_owner_txt_refreshed` adoption records the reviewed
 successor without relaxing ordinary renewal or using gateway relocation.
 
-This path requires an activated staging import, a current active creator-owned
-route, and a verified parent-chain TXT recovery descended directly from that
-route's recorded database-time expiry transition. It refuses other recovery
-authority kinds and authoritative-DNS challenges. It does not recover a pair
-whose DNS inventory and ownership proof have both expired. Before starting the
-one-hour owner challenge, establish at least three hours of remaining validity
-in the old DNS inventory and health. Retain exclusive chain, zone and namespace
-writer custody through recovery and adoption. A family/limit expiry operation
-needs a fresh candidate read proving its exact selection before execution.
+This path requires an activated staging import and a genuine creator-owned
+parent-chain TXT recovery descended directly from the route's recorded
+database-time expiry transition. It refuses other recovery authority kinds and
+authoritative-DNS challenges. The one-hour owner challenge remains bounded by
+its actual deadline. Retain exclusive chain, zone and namespace writer custody
+through recovery and adoption. A family/limit expiry operation needs a fresh
+candidate read proving its exact selection before execution.
+
+With live predecessor DNS and health, normal recovery refreshes the existing
+active app and sale dependencies before adoption. The historical live-DNS
+operation requires at least three hours of old serving validity when starting
+its owner challenge; its sealed receipts and expired execution windows remain
+historical evidence.
+
+When both ownership and DNS validity have expired, staging recovery may retain
+the fresh verified ownership while deferring host refresh. Deferral requires
+both active app and sale revisions to reference the exact ownership evidence
+from the database-expiry transition and the same current expired DNS generation.
+It does not advance their pointers or restore serving. Mixed current and
+predecessor references, suspended capabilities and unrelated predecessors do
+not qualify. A fresh reviewed operation must obtain the complete current-chain,
+DNSSEC and DANE observation and perform the authority adoption below before
+claiming that hosts are available. The old live-DNS operation is not replayed.
 
 Retain the validated complete parent records before the wallet UPDATE and after
 its current-chain confirmation. Inspect the unsigned transaction under the
@@ -25,10 +39,11 @@ recovery challenge. TXT chunks are joined to identify each control value; all
 other record bytes, order and chunk boundaries must remain identical. Duplicate
 old or new identities, appending a challenge and unrelated changes are refused.
 
-After normal owner recovery has refreshed its app and sale dependencies, read
-their current activation identities and generations, the DNS generation and
-health generation, and the canonical route's exact evidence and consumed
-recovery attempt. Bind them in one review file:
+After genuine owner recovery, read the current app and sale activation identities
+and generations, the DNS and health generations, and the canonical route's exact
+evidence and consumed recovery attempt. App and sale must either both reference
+that recovered ownership or both retain the exact expired predecessor described
+above. Bind the actual identities and generations in one review file:
 
 ```json
 {
