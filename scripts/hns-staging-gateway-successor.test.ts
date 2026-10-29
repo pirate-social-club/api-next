@@ -17,7 +17,10 @@ describe("staging gateway fingerprint successor", () => {
   test("freezes distinct root operations, retains DNS identities and caps the actual health lifetime", async () => {
     const input = await fixture();
     const plan = await prepareStagingGatewaySuccessor(input);
-    expect(plan.entries[0].successor_id).not.toBe(plan.entries[1].successor_id);
+    const first = plan.entries[0],
+      second = plan.entries[1];
+    if (!first || !second) throw new Error("Expected both staging fixture entries");
+    expect(first.successor_id).not.toBe(second.successor_id);
     expect(await prepareStagingGatewaySuccessor(input)).toEqual(plan);
     for (const entry of plan.entries) {
       const dns = await decodeHnsDnsZonePersistenceDocumentV1(Buffer.from(entry.dns_hex, "hex"));
@@ -105,7 +108,10 @@ describe("staging gateway fingerprint successor", () => {
       throw new Error("must not reach database");
     };
     const changed = structuredClone(plan);
-    changed.entries[0].health_hex = changed.entries[1].health_hex;
+    const first = changed.entries[0],
+      second = changed.entries[1];
+    if (!first || !second) throw new Error("Expected both staging fixture entries");
+    first.health_hex = second.health_hex;
     await expect(
       applyStagingGatewaySuccessor({ client: { query }, plan: changed, confirmedSha256: hash }),
     ).rejects.toThrow("Unreviewed plan");

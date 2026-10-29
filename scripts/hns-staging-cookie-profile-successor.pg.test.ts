@@ -291,8 +291,10 @@ suite("staging cookie profile PostgreSQL authority boundary", () => {
       plan = await prepare();
 
       // Force expiry after the transaction enters, before its first census read.
-      const elapsed = structuredClone(plan);
-      elapsed.execute_by = new Date(Date.parse(elapsed.census.database_time) + 1000).toISOString();
+      const elapsed = {
+        ...plan,
+        execute_by: new Date(Date.parse(plan.census.database_time) + 1000).toISOString(),
+      };
       const rebuilt = await prepareCookieProfileSuccessor({
         ...manifests,
         states: elapsed.entries.map((entry) => entry.predecessor),

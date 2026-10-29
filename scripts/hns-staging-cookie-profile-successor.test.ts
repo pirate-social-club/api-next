@@ -102,8 +102,10 @@ describe("exact staging cookie-profile successor", () => {
       }),
     ).rejects.toThrow("Only the Solid ingress fingerprint");
     expect(() => decodeCookiePlan({ ...cookie, arbitrary_roots: ["a18n"] })).toThrow();
-    const edited = structuredClone(cookie);
-    edited.entries[0]!.health_hex = "00";
+    const edited = { ...cookie, entries: cookie.entries.map((entry) => ({ ...entry })) };
+    const firstEdited = edited.entries[0];
+    if (!firstEdited) throw new Error("Expected selected fixture entry");
+    firstEdited.health_hex = "00";
     await expect(
       applyCookieProfileSuccessor({ client, plan: edited, confirmedSha256: digest(edited) }),
     ).rejects.toThrow("does not reproduce exactly");
