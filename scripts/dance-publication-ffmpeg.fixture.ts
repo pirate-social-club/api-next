@@ -1,11 +1,13 @@
 import { expect } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Effect } from "effect";
 import {
   makeModeratedDancePublicationBodyCommands,
   measureModeratedDancePublicationBody,
   readModeratedDancePublicationBody,
 } from "../packages/platform-cf/src/moderated-dance-publication-body.ts";
+import { makeQencodeMediaTransform } from "../packages/platform-cf/src/qencode-media-transform.ts";
 import { sha256Hex } from "../packages/platform-cf/src/r2-upload-signing.ts";
 import {
   inspectSilentSongVideoInputStructure,
@@ -39,6 +41,7 @@ const boxOffset = (bytes: Uint8Array, type: string) => {
  * red precedes a moving test pattern. This uses local pinned6.1.1, not a claim
  * that CloudConvert6.1.4 conformance or phone alignment has been accepted. */
 export async function proveDancePublicationBodyWithPinnedFfmpeg(directory: string) {
+  const bodies: { bytes: Uint8Array; durationMs: number; sha256: string }[] = [];
   // Only an owned mkdtemp path is interpolated into these fixed command strings.
   if (!/^\/tmp\/pirate-song-engine-test-[A-Za-z0-9_-]+$/u.test(directory))
     throw new Error("Owned native path refused");
@@ -129,6 +132,82 @@ export async function proveDancePublicationBodyWithPinnedFfmpeg(directory: strin
     });
     expect(() => inspectSongVideoMasterStructure(bytes, duration * 48)).toThrow();
     const plan = await measureModeratedDancePublicationBody(binding, bytes, metadata);
+    const probe = await Effect.runPromise(
+      makeQencodeMediaTransform({
+        enabled: true,
+        apiKey: "native-test-not-live",
+        clock: () => 2000,
+        transport: {
+          createTask: async () => {
+            throw new Error("Native probe must not create a job");
+          },
+          startTask: async () => {
+            throw new Error("Native probe must not start a job");
+          },
+          getStatus: async () => ({
+            state: "completed",
+            outputs: [
+              {
+                kind: "metadata",
+                userTag: "pirate-probe-v1",
+                url: "https://test.qencode.com/native.json",
+                outputFormat: "metadata",
+                mediaFacts: {
+                  codec: null,
+                  sampleRateHz: null,
+                  channels: null,
+                  width: null,
+                  height: null,
+                },
+              },
+            ],
+          }),
+        },
+        sourceGateway: {
+          issue: async () => {
+            throw new Error("Native probe must not issue a source grant");
+          },
+        },
+        artifacts: {
+          readJson: async () => metadata,
+          seal: async () => {
+            throw new Error("Native probe must not seal an artifact");
+          },
+        },
+      }).observe({
+        version: "media-transform-video-probe-input-v1",
+        binding: {
+          operationId: `native-${duration}`,
+          videoRevision: 1,
+          creationRevision: 1,
+          analysisRevision: 1,
+          canonicalVideoSha256: plan.sha256,
+          requestId: `native-probe-${duration}`,
+        },
+        source: {
+          objectKey: plan.key,
+          sha256: plan.sha256,
+          byteLength: bytes.length,
+          mediaType: "video/mp4",
+        },
+        attempt: {
+          version: "media-transform-attempt-v1",
+          providerJobId: "b".repeat(32),
+          providerJobPhase: "started",
+          runtimeFence: { submittedAtMs: 1000, runtimeDeadlineMs: 60000 },
+        },
+      }),
+    );
+    expect(probe.status).toBe("completed");
+    if (probe.status !== "completed")
+      throw new Error("Real silent body did not pass the publication probe");
+    expect(probe.probe).toMatchObject({
+      durationMs: duration,
+      videoCodec: "h264",
+      hasAudio: false,
+      audioCodec: null,
+    });
+    bodies.push({ bytes, durationMs: duration, sha256: plan.sha256 });
     expect(plan).toEqual({
       key: `immutable/dance-post-operation:native-${duration}/video/1`,
       sha256: await sha256Hex(bytes),
@@ -204,4 +283,5 @@ export async function proveDancePublicationBodyWithPinnedFfmpeg(directory: strin
     new DataView(timing.buffer).setUint32(at + 20, duration * 48 - 1);
     expect(() => inspectSilentSongVideoInputStructure(timing, duration * 48)).toThrow();
   }
+  return bodies;
 }

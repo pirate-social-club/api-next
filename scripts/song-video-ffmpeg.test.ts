@@ -339,7 +339,24 @@ suite("local song-video engine", () => {
   }, 180_000);
 
   test("trims a private Dance body with exact partial-frame timing, no cue/audio and independent complete-frame verification", async () => {
-    await proveDancePublicationBodyWithPinnedFfmpeg(directory);
+    const bodies = await proveDancePublicationBodyWithPinnedFfmpeg(directory);
+    const body = bodies.find((value) => value.durationMs === 6000);
+    if (!body) throw new Error("Missing real silent Dance body");
+    const reference = "media://immutable/native-silent-dance-body";
+    media.set(reference, body.bytes);
+    const result = await engine.render({
+      source: { reference, sha256: body.sha256, byteLength: body.bytes.length },
+      song: { ...song, durationSamples: songDurationSamples },
+      clipStartSamples: 0,
+      clipDurationSamples: (body.durationMs * SECOND) / 1000,
+    });
+    if (!result.ok) throw new Error(`Silent body master render refused: ${result.reason}`);
+    const canonical = await intervalDigest(0, 6 * SECOND);
+    expect(result.soundtrackSha256).toBe(canonical);
+    expect(await verifySongVideoMasterAudio(result.masterBytes, 6 * SECOND, canonical)).toEqual({
+      pcmSha256: canonical,
+      sampleCount: 6 * SECOND,
+    });
     completedTestCount++;
   }, 180_000);
 

@@ -89,17 +89,17 @@ export type VideoTrustedAnalysis = Readonly<{
   canonicalVideoSha256: string;
   byteLength: number;
   mediaType: "video/mp4" | "video/quicktime";
-  probe: Readonly<{
-    evidenceRef: string;
-    ingestPolicyRevision: number;
-    durationMs: number;
-    width: number;
-    height: number;
-    frameRateMillihertz: number;
-    videoCodec: "h264" | "hevc";
-    audioCodec: "aac";
-    hasAudio: true;
-  }>;
+  probe: Readonly<
+    {
+      evidenceRef: string;
+      ingestPolicyRevision: number;
+      durationMs: number;
+      width: number;
+      height: number;
+      frameRateMillihertz: number;
+      videoCodec: "h264" | "hevc";
+    } & ({ audioCodec: "aac"; hasAudio: true } | { audioCodec: null; hasAudio: false })
+  >;
   audio:
     | Readonly<{
         intent: "original_audio";
@@ -350,6 +350,9 @@ export function validateVideoTrustedAnalysis(
   )
     return "lineage";
   const probe = analysis.probe;
+  const sourceAudioValid =
+    (probe.hasAudio === true && probe.audioCodec === "aac") ||
+    (state.intent === "song_reference" && probe.hasAudio === false && probe.audioCodec === null);
   if (
     probe.ingestPolicyRevision !== VIDEO_INGEST_POLICY_V1.policyRevision ||
     !present(probe.evidenceRef) ||
@@ -361,8 +364,7 @@ export function validateVideoTrustedAnalysis(
     !positiveInteger(probe.frameRateMillihertz) ||
     probe.frameRateMillihertz > VIDEO_INGEST_POLICY_V1.maxFrameRateMillihertz ||
     probe.videoCodec !== "h264" ||
-    probe.audioCodec !== "aac" ||
-    probe.hasAudio !== true
+    !sourceAudioValid
   )
     return "probe";
   if (analysis.audio.intent !== (state.intent ?? "original_audio")) return "soundtrack";
