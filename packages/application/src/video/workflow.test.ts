@@ -64,7 +64,7 @@ function songReferenceState() {
   };
 }
 
-function fixture(options: { songReference?: boolean } = {}) {
+function fixture(options: { songReference?: boolean; silentProbe?: boolean } = {}) {
   let now = Date.parse("2026-09-05T00:00:00Z");
   let record: VideoSubmissionRecord = {
     state: options.songReference ? songReferenceState() : analysisState(),
@@ -140,6 +140,8 @@ function fixture(options: { songReference?: boolean } = {}) {
         return adapter.observe(input).pipe(
           Effect.map((result) => {
             if (result.status !== "completed") return result;
+            if ("probe" in result && options.silentProbe)
+              return { ...result, probe: { ...result.probe, audioCodec: null, hasAudio: false } };
             if ("artifact" in result)
               return {
                 ...result,
@@ -642,24 +644,35 @@ test("v1 gate: a gate allow persisted before the flag was turned off cannot publ
   expect(gate.waited()).toBe(1);
 });
 
-test("v1 gate, song video: a clean take goes straight to render with no approval", async () => {
-  const f = fixture({ songReference: true });
-  const gate = gateSafety(f, "allow");
-  // No render host is composed in this fixture; the run stops at the render stage.
+test.each([false, true])(
+  "v1 gate, song video: a clean take with silent source %s goes to render",
+  async (silentProbe) => {
+    const f = fixture({ songReference: true, silentProbe });
+    const gate = gateSafety(f, "allow");
+    // No render host is composed in this fixture; the run stops at the render stage.
+    await expect(runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).rejects.toThrow();
+    expect(f.record().state).toMatchObject({
+      intent: "song_reference",
+      status: "processing",
+      phase: "render",
+      postId: null,
+    });
+    expect(f.record().state.decision?.outcome).toEqual({ kind: "publish" });
+    expect(f.record().state.analysis?.safetyRequest).toMatchObject({
+      gateKind: "sampled_frame_openai_v1",
+      minorSafetyEvidenceRef: null,
+    });
+    expect(f.calls.publications).toBe(0);
+    expect(gate.waited()).toBe(0);
+  },
+);
+
+test("silent original-audio source cannot publish even when later fake stages complete", async () => {
+  const f = fixture({ silentProbe: true });
+  gateSafety(f, "allow");
   await expect(runVideoAnalysisWorkflow(f.identity, f.step, f.runtime)).rejects.toThrow();
-  expect(f.record().state).toMatchObject({
-    intent: "song_reference",
-    status: "processing",
-    phase: "render",
-    postId: null,
-  });
-  expect(f.record().state.decision?.outcome).toEqual({ kind: "publish" });
-  expect(f.record().state.analysis?.safetyRequest).toMatchObject({
-    gateKind: "sampled_frame_openai_v1",
-    minorSafetyEvidenceRef: null,
-  });
   expect(f.calls.publications).toBe(0);
-  expect(gate.waited()).toBe(0);
+  expect(f.record().state.postId).toBeNull();
 });
 
 test("v1 gate, song video: an uncleared take never renders or posts", async () => {
