@@ -47,6 +47,11 @@ export const prepareModeratedDancePolicyPublication = Effect.fn(
   const input = Schema.decodeUnknownSync(ModeratedDancePolicyDraft, { onExcessProperty: "error" })(
     value,
   );
+  if (
+    (input.policy.version === "moderator-review-policy-v2") !==
+    (input.profile.version === "dance-moderated-intake-profile-v2")
+  )
+    throw new TypeError("Policy and capture profile mode differ");
   const lastDispositionMs =
     Date.parse(input.valid_until) +
     input.profile.sessionTtlMs +
@@ -79,7 +84,9 @@ export const prepareModeratedDancePolicyPublication = Effect.fn(
     retentionHash,
   ]);
   const rubricHash = yield* canonicalBodyHash([
-    "dance-owner-rubric-v1",
+    input.policy.version === "moderator-review-policy-v2"
+      ? "dance-owner-rubric-v2"
+      : "dance-owner-rubric-v1",
     input.policy.rubricVersion,
     input.disclosure.owner_rubric_text,
   ]);
@@ -100,6 +107,9 @@ export const prepareModeratedDancePolicyPublication = Effect.fn(
     score_bps: null,
     calibration: null,
     numeric_floor_bps: null,
+    ...(input.policy.version === "moderator-review-policy-v2"
+      ? { opening_pose: "not_required" }
+      : {}),
     producer_id: input.policy.producerId,
     admission: input.policy.admission,
     admission_version: input.policy.admissionVersion,
@@ -127,7 +137,9 @@ export const prepareModeratedDancePolicyPublication = Effect.fn(
     qualificationHash,
   };
   const hash = yield* canonicalBodyHash([
-    "dance-moderated-policy-v1",
+    input.policy.version === "moderator-review-policy-v2"
+      ? "dance-moderated-policy-v2"
+      : "dance-moderated-policy-v1",
     policyWithoutHash,
     input.profile,
     disposition,

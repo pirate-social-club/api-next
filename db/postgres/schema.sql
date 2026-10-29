@@ -1436,7 +1436,15 @@ BEGIN
   -- Re-read original authority; terms were built from this exact locked snapshot.
   result:=load_moderated_dance_creation_facts_v1(p_actor,p_command);
   profile:=p_terms->'profile';
-  IF (result->>'mediaReady')::BOOLEAN IS DISTINCT FROM TRUE OR profile IS DISTINCT FROM result->'profile' OR p_terms->'capture'->'policy' IS DISTINCT FROM result->'policy'
+  IF moderated_dance_capture_mode_valid_v2(p_terms->'capture') IS NOT TRUE
+  OR p_terms->>'version' IS DISTINCT FROM (CASE result->'policy'->>'version'
+    WHEN 'moderator-review-policy-v1' THEN 'dance-moderated-capture-terms-v1'
+    WHEN 'moderator-review-policy-v2' THEN 'dance-moderated-capture-terms-v2' END)
+  OR p_terms->'capture'->'bodyStartMs' IS DISTINCT FROM profile->'bodyStartMs'
+  OR p_terms->'capture'->'cueStartMs' IS DISTINCT FROM profile->'cueStartMs'
+  OR p_terms->'capture'->'cueEndMs' IS DISTINCT FROM profile->'cueEndMs'
+  OR p_terms->'capture'->'cueHoldMs' IS DISTINCT FROM profile->'cueHoldMs'
+  OR (result->>'mediaReady')::BOOLEAN IS DISTINCT FROM TRUE OR profile IS DISTINCT FROM result->'profile' OR p_terms->'capture'->'policy' IS DISTINCT FROM result->'policy'
   OR p_terms->'capture'->'objectives' IS DISTINCT FROM result->'objectives'
   OR p_terms->'safety_policy' IS DISTINCT FROM result->'safetyPolicy' OR p_terms->'disposition' IS DISTINCT FROM result->'disposition'
   OR p_terms->>'policy_id' IS DISTINCT FROM result->>'policyId'
@@ -6761,7 +6769,10 @@ BEGIN
     AND terminal>=r.uploaded_at AND terminal<=clock_timestamp()
     AND next->>'verdict' IN('passed','not_passed') AND evidence.safety_status='accepted'
     AND evidence.integrity_status='unique' AND can_account_view_content_rating_v1(owner.account_id,evidence.content_rating)
-    AND next->'attestation'->>'version'='dance-owner-verdict-attestation-v1'
+    AND moderated_dance_capture_mode_valid_v2(r.state->'capture')
+    AND next->'attestation'->>'version'=CASE r.state->'capture'->'policy'->>'version'
+      WHEN 'moderator-review-policy-v2' THEN 'dance-owner-verdict-attestation-v2'
+      ELSE 'dance-owner-verdict-attestation-v1' END
     AND next->'attestation'->>'reviewerAccountId'=owner.account_id
     AND next->'attestation'->>'assignmentId'=owner.role_assignment_id
     AND (next->'attestation'->>'assignmentRevision')::BIGINT=owner.authority_revision
@@ -6772,7 +6783,7 @@ BEGIN
     AND next->'attestation'->>'cueId'=r.state->'capture'->>'cueId'
     AND (next->'attestation'->>'bodyStartMs')::BIGINT=(r.state->'capture'->>'bodyStartMs')::BIGINT
     AND (next->'attestation'->>'bodyEndMs')::BIGINT=(r.state->'capture'->>'bodyEndMs')::BIGINT
-    AND next->'attestation'->>'cue'=CASE next->>'verdict' WHEN 'passed' THEN 'affirmed' ELSE 'not_attested' END) IS NOT TRUE THEN
+    AND next->'attestation'->>'cue'=CASE WHEN r.state->'capture'->'policy'->>'version'='moderator-review-policy-v2' THEN 'not_required' WHEN next->>'verdict'='passed' THEN 'affirmed' ELSE 'not_attested' END) IS NOT TRUE THEN
    RAISE EXCEPTION 'current owner, inspection or verdict deadline unavailable' USING ERRCODE='DRV05';
   END IF;
   INSERT INTO dance_moderated_verdict_audits_v1 VALUES(r.review_id,owner.account_id,owner.role_assignment_id,
@@ -6830,7 +6841,7 @@ BEGIN
     AND q->>'policyHash'=next->'capture'->'policy'->>'qualificationHash') IS NOT TRUE THEN
     RAISE EXCEPTION 'unadmitted categorical qualification' USING ERRCODE='DRV04'; END IF;
    expected_evidence:=jsonb_build_object('kind','dance_owner_verdict_v1','review_id',r.review_id,
-    'grading_mode','moderator_verdict','verdict','passed','cue_attestation','affirmed',
+    'grading_mode','moderator_verdict','verdict','passed','cue_attestation',next->'attestation'->>'cue',
     'policy_hash',next->'capture'->'policy'->>'qualificationHash','admission_hash',next->'capture'->'policy'->>'admissionHash',
     'submission_timezone',next->'capture'->>'timezone','submission_timezone_version',next->'capture'->>'timezoneVersion');
    INSERT INTO activity_qualifications(qualification_id,account_id,persona_id,community_id,post_id,audio_revision,
@@ -11261,6 +11272,7 @@ $$;
 
 CREATE FUNCTION guard_activity_qualification() RETURNS trigger
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
     AS $$
 DECLARE
   study_record study_sessions%ROWTYPE;
@@ -11280,15 +11292,21 @@ BEGIN
     SELECT * INTO dance_record FROM dance_moderated_reviews_v1 WHERE review_id=NEW.dance_review_id FOR SHARE;
     SELECT * INTO dance_policy FROM qualification_policy_versions WHERE qualification_policy_version_id=NEW.qualification_policy_version_id;
     expected_evidence:=jsonb_build_object('kind','dance_owner_verdict_v1','review_id',dance_record.review_id,
-      'grading_mode','moderator_verdict','verdict','passed','cue_attestation','affirmed',
+      'grading_mode','moderator_verdict','verdict','passed','cue_attestation',dance_record.state->'attestation'->>'cue',
       'policy_hash',dance_record.state->'capture'->'policy'->>'qualificationHash',
       'admission_hash',dance_record.state->'capture'->'policy'->>'admissionHash',
       'submission_timezone',dance_record.state->'capture'->>'timezone',
       'submission_timezone_version',dance_record.state->'capture'->>'timezoneVersion');
     IF (dance_record.status='reviewed' AND dance_record.state->>'verdict'='passed'
-      AND dance_record.state->'attestation'->>'cue'='affirmed'
-      AND dance_record.state->'attestation'->>'version'='dance-owner-verdict-attestation-v1'
+      AND moderated_dance_capture_mode_valid_v2(dance_record.state->'capture')
+      AND dance_record.state->'attestation'->>'cue'=CASE dance_record.state->'capture'->'policy'->>'version'
+        WHEN 'moderator-review-policy-v2' THEN 'not_required' ELSE 'affirmed' END
+      AND dance_record.state->'attestation'->>'version'=CASE dance_record.state->'capture'->'policy'->>'version'
+        WHEN 'moderator-review-policy-v2' THEN 'dance-owner-verdict-attestation-v2'
+        ELSE 'dance-owner-verdict-attestation-v1' END
       AND dance_record.state->'capture'->'policy'->>'admission' IN('streak_admitted','money_admitted')
+      AND (dance_record.state->'capture'->'policy'->>'version'<>'moderator-review-policy-v2'
+        OR dance_policy.policy_document->>'opening_pose'='not_required')
       AND dance_policy.activity_key='dance' AND dance_policy.policy_kind='dance_owner_verdict_v1'
       AND dance_policy.policy_document->>'policy_hash'=dance_record.state->'capture'->'policy'->>'qualificationHash'
       AND NEW.grading_mode='moderator_verdict' AND NEW.categorical_verdict='passed'
@@ -11424,6 +11442,18 @@ BEGIN
   RAISE EXCEPTION 'reserved activities cannot produce qualifications';
 END
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_activity_qualification'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_activity_registry_change() RETURNS trigger
     LANGUAGE plpgsql
@@ -24746,7 +24776,7 @@ BEGIN
  OR now_at<policy.valid_from OR now_at>=policy.valid_until OR policy.policy_hash IS DISTINCT FROM p_command->>'expected_policy_hash'
  OR zone.account_id IS NULL OR disclosure.policy_id IS NULL OR (policy.disposition_profile->>'accepted')::BOOLEAN IS DISTINCT FROM TRUE
  OR (policy.disposition_profile->>'validUntilMs')::NUMERIC<=extract(epoch FROM now_at)*1000
- OR policy.operational_profile->>'version' IS DISTINCT FROM 'dance-moderated-intake-profile-v1' THEN
+ OR moderated_dance_policy_profile_matches_v2(policy.review_policy,policy.operational_profile) IS NOT TRUE THEN
   RAISE EXCEPTION 'private Dance policy unavailable' USING ERRCODE='DRV07';
  END IF;
  -- Stabilize the shared offer while capturing objectives BEFORE any bytes.
@@ -25886,6 +25916,34 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION moderated_dance_capture_mode_valid_v2(c jsonb) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT CASE c->'policy'->>'version'
+ WHEN 'moderator-review-policy-v1' THEN
+  (c->>'cueStartMs')::NUMERIC>=0 AND (c->>'cueEndMs')::NUMERIC>(c->>'cueStartMs')::NUMERIC
+  AND (c->>'cueEndMs')::NUMERIC<=(c->>'bodyStartMs')::NUMERIC
+  AND (c->>'cueHoldMs')::NUMERIC>0
+  AND (c->>'cueHoldMs')::NUMERIC<=(c->>'cueEndMs')::NUMERIC-(c->>'cueStartMs')::NUMERIC
+ WHEN 'moderator-review-policy-v2' THEN c->>'cueId'='none'
+  AND c->'cueStartMs'='0'::JSONB AND c->'cueEndMs'='0'::JSONB
+  AND c->'cueHoldMs'='0'::JSONB AND c->'bodyStartMs'='0'::JSONB
+ ELSE FALSE END
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='moderated_dance_capture_mode_valid_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='c jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION moderated_dance_media_runtime_v1() RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -25901,6 +25959,30 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='moderated_dance_media_runtime_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION moderated_dance_policy_profile_matches_v2(policy jsonb, profile jsonb) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT CASE policy->>'version'
+ WHEN 'moderator-review-policy-v1' THEN profile->>'version'='dance-moderated-intake-profile-v1'
+ WHEN 'moderator-review-policy-v2' THEN profile->>'version'='dance-moderated-intake-profile-v2'
+  AND profile->'cueStartMs'='0'::JSONB AND profile->'cueEndMs'='0'::JSONB
+  AND profile->'cueHoldMs'='0'::JSONB AND profile->'bodyStartMs'='0'::JSONB
+ ELSE FALSE END
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='moderated_dance_policy_profile_matches_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='policy jsonb, profile jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -26787,7 +26869,7 @@ BEGIN
   'cue',jsonb_build_object('id',c->>'cueId','start_ms',c->'cueStartMs','end_ms',c->'cueEndMs','hold_ms',c->'cueHoldMs'),
   'body',jsonb_build_object('start_ms',c->'bodyStartMs','end_ms',c->'bodyEndMs'),
   'rubric_version',c->'policy'->>'rubricVersion','rubric_hash',c->'policy'->>'rubricHash',
-  'attestation_version','dance-owner-verdict-attestation-v1');
+  'attestation_version',CASE c->'policy'->>'version' WHEN 'moderator-review-policy-v2' THEN 'dance-owner-verdict-attestation-v2' ELSE 'dance-owner-verdict-attestation-v1' END);
 END $$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -27079,7 +27161,8 @@ BEGIN
  IF u.server_sha256=(SELECT reference_digest FROM dance_moderator_reference_revisions_v1 WHERE choreography_id=s.choreography_id AND revision=s.choreography_revision) THEN blocked:=TRUE; END IF;
  FOR frame IN SELECT value FROM jsonb_array_elements(p_frames) LOOP
   IF (jsonb_typeof(frame->'index')='number' AND (frame->>'index')::INTEGER BETWEEN 0 AND 2
-   AND frame->>'sha256'~'^[a-f0-9]{64}$' AND (frame->>'timestampMs')::BIGINT=CASE (frame->>'index')::INTEGER WHEN 0 THEN 0 WHEN 1 THEN floor((s.terms->'capture'->>'bodyStartMs')::NUMERIC/2) WHEN 2 THEN floor(((s.terms->'capture'->>'bodyStartMs')::NUMERIC+(s.terms->'capture'->>'bodyEndMs')::NUMERIC)/2) END
+   AND frame->>'sha256'~'^[a-f0-9]{64}$' AND (frame->>'timestampMs')::BIGINT=CASE (frame->>'index')::INTEGER WHEN 0 THEN 0 WHEN 1 THEN CASE WHEN profile->>'version'='dance-moderated-intake-profile-v2' THEN floor((s.terms->'capture'->>'bodyEndMs')::NUMERIC/4) ELSE floor((s.terms->'capture'->>'bodyStartMs')::NUMERIC/2) END
+    WHEN 2 THEN CASE WHEN profile->>'version'='dance-moderated-intake-profile-v2' THEN floor((s.terms->'capture'->>'bodyEndMs')::NUMERIC*3/4) ELSE floor(((s.terms->'capture'->>'bodyStartMs')::NUMERIC+(s.terms->'capture'->>'bodyEndMs')::NUMERIC)/2) END END
    AND frame->'identity'->>'key'='moderated-dance/derived/'||p_upload||'/frame-'||(frame->>'index')||'.jpg'
    AND (frame->'identity'->>'size')::BIGINT BETWEEN 1 AND (profile->>'maximumFrameBytes')::BIGINT
    AND length(frame->'identity'->>'version')>0 AND length(frame->'identity'->>'etag')>0) IS NOT TRUE THEN RAISE EXCEPTION 'private frame proof invalid' USING ERRCODE='DRV06'; END IF;
@@ -30212,8 +30295,8 @@ BEGIN
  IF session_user<>pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='dance_review_policy_versions_v1'::regclass)) THEN RAISE EXCEPTION 'policy publication requires admitted owner custody' USING ERRCODE='DRV02'; END IF;
  IF (p_input->>'version'='dance-moderated-policy-publication-v1' AND length(p_input->>'accepted_by')>0
  AND length(p_input->>'acceptance_ref')>0 AND p_input->>'acceptance_hash'~'^[a-f0-9]{64}$'
- AND policy->>'version'='moderator-review-policy-v1' AND policy->>'hash'~'^[a-f0-9]{64}$'
- AND (policy->>'reviewWindowMs')::BIGINT=604800000 AND profile->>'version'='dance-moderated-intake-profile-v1'
+ AND moderated_dance_policy_profile_matches_v2(policy,profile) AND policy->>'hash'~'^[a-f0-9]{64}$'
+ AND (policy->>'reviewWindowMs')::BIGINT=604800000
  AND (profile->>'maximumProviderCalls')::BIGINT>=6 AND (profile->>'maximumProviderSpendMicrounits')::NUMERIC>0
  AND policy->>'retentionHash'=disposition->>'hash' AND (disposition->>'accepted')::BOOLEAN
  AND (disposition->'hold'->>'accepted')::BOOLEAN AND length(disposition->'hold'->>'authorityRef')>0
@@ -30253,7 +30336,8 @@ BEGIN
  OR q.policy_document->>'producer_id' IS DISTINCT FROM policy->>'producerId'
  OR q.policy_document->>'admission' IS DISTINCT FROM policy->>'admission'
  OR q.policy_document->>'admission_version' IS DISTINCT FROM policy->>'admissionVersion'
- OR q.policy_document->>'admission_hash' IS DISTINCT FROM policy->>'admissionHash' THEN
+ OR q.policy_document->>'admission_hash' IS DISTINCT FROM policy->>'admissionHash'
+ OR (policy->>'version'='moderator-review-policy-v2' AND q.policy_document->>'opening_pose' IS DISTINCT FROM 'not_required') THEN
   RAISE EXCEPTION 'qualification admission is a separate prerequisite' USING ERRCODE='DRV07';
  END IF;
  SELECT * INTO existing FROM dance_review_policy_versions_v1 WHERE policy_id=p_input->>'policy_id';
@@ -49234,6 +49318,7 @@ CREATE TABLE dance_review_policy_versions_v1 (
     valid_from timestamp with time zone NOT NULL,
     valid_until timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_review_policy_version_v2 CHECK ((((review_policy ->> 'version'::text) = ANY (ARRAY['moderator-review-policy-v1'::text, 'moderator-review-policy-v2'::text])) IS TRUE)),
     CONSTRAINT dance_review_policy_versions_v1_accepted_by_check CHECK ((btrim(accepted_by) <> ''::text)),
     CONSTRAINT dance_review_policy_versions_v1_check CHECK ((valid_until > valid_from)),
     CONSTRAINT dance_review_policy_versions_v1_check1 CHECK ((((review_policy ->> 'hash'::text) = policy_hash) IS TRUE)),
@@ -49243,7 +49328,6 @@ CREATE TABLE dance_review_policy_versions_v1 (
     CONSTRAINT dance_review_policy_versions_v1_policy_hash_check CHECK ((policy_hash ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT dance_review_policy_versions_v1_policy_id_check CHECK (is_dance_identifier(policy_id)),
     CONSTRAINT dance_review_policy_versions_v1_review_policy_check CHECK ((jsonb_typeof(review_policy) = 'object'::text)),
-    CONSTRAINT dance_review_policy_versions_v1_review_policy_check1 CHECK ((((review_policy ->> 'version'::text) = 'moderator-review-policy-v1'::text) IS TRUE)),
     CONSTRAINT dance_review_policy_versions_v1_review_policy_check2 CHECK (((((review_policy ->> 'reviewWindowMs'::text))::numeric = (604800000)::numeric) IS TRUE))
 );
 
