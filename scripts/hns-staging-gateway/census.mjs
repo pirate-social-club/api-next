@@ -6,6 +6,8 @@ import { digest, fail, stateIdentity } from "./identity.mjs";
 
 // Every query is fixed source, never an operator-supplied table or predicate.
 const snapshots = {
+  community_handle_sales_authority_grants:
+    "t.community_id IN (SELECT community_id FROM community_canonical_route_bindings WHERE family='hns' AND root_label=$1)",
   communities:
     "t.community_id IN (SELECT community_id FROM community_canonical_route_bindings WHERE family='hns' AND root_label=$1)",
   community_canonical_route_bindings: "t.family='hns' AND t.root_label=$1",
@@ -221,6 +223,19 @@ export function requireCookieCensus(value, selectedState, gateway = PREVIOUS_GAT
             Number(proof.binding_generation),
         "Selected recovery and serving predecessors disagree",
       );
+    if (selectedState !== undefined) {
+      const grants = tenant.rows.community_handle_sales_authority_grants.filter(
+        (grant) =>
+          grant.community_id === selectedState.sale.community_id &&
+          grant.principal_account_id === selectedState.sale.actor_account_id &&
+          grant.authority === "manage_handle_sales" &&
+          grant.status === "active",
+      );
+      fail(
+        grants.length === 1 && grants[0].grant_id === selectedState.sale.authority_grant_id,
+        "Selected sales authority is missing, ambiguous or changed",
+      );
+    }
     for (const host of tenant.handles) active(host);
   }
   return census;

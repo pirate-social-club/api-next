@@ -1,4 +1,3 @@
-import { decodeHnsDnsZonePersistenceDocumentV1 } from "../../packages/application/src/hns-host-persistence.ts";
 import { readContinuityState } from "../hns-continuity/database.mjs";
 import {
   cookieCensusIdentity,
@@ -14,7 +13,8 @@ import {
   requireCookieManifestPair,
 } from "./cookie-plan.ts";
 import { prepareGatewayEntries } from "./entries.mjs";
-import { bytes, digest, fail, stateIdentity } from "./identity.mjs";
+import { digest, fail, stateIdentity } from "./identity.mjs";
+import { requireExactCookieSuccessor } from "./successor-state.mjs";
 import { executeGatewayEntries } from "./transaction.mjs";
 
 export async function prepareCookieProfileSuccessor({
@@ -125,6 +125,7 @@ export async function applyCookieProfileSuccessor({
       requireUnchangedCookieCensus(plan.census, after, mode !== "preflight");
       requireCookieCensus(after, undefined, mode === "preflight" ? undefined : NEXT_GATEWAY);
       const state = await readContinuityState(client, "8s28");
+      if (mode !== "preflight") await requireExactCookieSuccessor(plan, after, state);
       fail(
         Date.parse(state.database_time) <= Date.parse(plan.execute_by),
         "Cookie execution window elapsed",
@@ -158,33 +159,8 @@ export async function readbackCookieProfileSuccessor({ client, plan: raw, confir
       try {
         requireUnchangedCookieCensus(plan.census, census, true);
         requireCookieCensus(census, undefined, NEXT_GATEWAY);
-        const dns = await decodeHnsDnsZonePersistenceDocumentV1(bytes(entry.dns_hex));
-        const operations = await client.query(
-          `SELECT
-          (SELECT count(*)::int FROM hns_community_app_host_operations WHERE operation_id=$1 AND request_hash=$3) AS app,
-          (SELECT count(*)::int FROM hns_dns_zone_health_operations WHERE operation_id=$2 AND request_hash=$3) AS health`,
-          [
-            `staging-gateway:app:${entry.successor_id}`,
-            `staging-gateway:health:${entry.successor_id}`,
-            entry.successor_id,
-          ],
-        );
-        if (
-          Number(current.dns.dns_zone_activation_generation) ===
-            entry.generations.dns_activation_generation &&
-          Number(current.app.app_host_activation_generation) ===
-            entry.generations.app_host_activation_generation &&
-          Number(current.sale.sale_namespace_activation_generation) ===
-            Number(entry.predecessor.sale.sale_namespace_activation_generation) + 1 &&
-          Number(current.health.health_generation) === entry.generations.health_generation &&
-          Buffer.from(current.dns.activation_document_bytes).equals(
-            Buffer.from(dns.activation_document_bytes),
-          ) &&
-          operations.rows[0]?.app === 1 &&
-          operations.rows[0]?.health === 1 &&
-          new Date(current.health.valid_until).getTime() <= Date.parse(entry.health_deadline)
-        )
-          outcome = "committed";
+        await requireExactCookieSuccessor(plan, census, current);
+        outcome = "committed";
       } catch {
         outcome = "unknown";
       }

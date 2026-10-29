@@ -1,9 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import {
+  decodeHnsDnsHealthDocumentV1,
+  encodeHnsDnsHealthDocumentV1,
+} from "../packages/application/src/hns-host-persistence.ts";
 import { resolveActiveHnsHostAuthority } from "../packages/application/src/hns-host-serving.ts";
+import { promoteHnsAuthoritySuccessorInTransaction } from "../packages/platform-cf/src/hns-authority-successor-promotion.ts";
 import { readContinuityState } from "./hns-continuity/database.mjs";
 import { transactionAuthoritySources } from "./hns-staging-gateway/authority.ts";
-import { cookieCensusIdentity, readCookieCensus } from "./hns-staging-gateway/census.mjs";
+import {
+  cookieCensusIdentity,
+  lockCookieCensus,
+  readCookieCensus,
+} from "./hns-staging-gateway/census.mjs";
 import {
   applyCookieProfileSuccessor,
   prepareCookieProfileSuccessor,
@@ -36,6 +45,92 @@ function scopedClient(client: Client, schema: string): Client {
 }
 
 suite("staging cookie profile PostgreSQL authority boundary", () => {
+  test("readback refuses a healthy payload-divergent result written through the maintained promotion", async () => {
+    if (connection === undefined) throw new Error("Fixture connection unavailable");
+    const schema = `hns_cookie_divergent_${crypto.randomUUID().replaceAll("-", "")}`;
+    const admin = new Client({ connectionString: connection });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    try {
+      await applyPostgresTestBaselineConnection({
+        connectionString: `${connection}${connection.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${schema}`)}`,
+      });
+      await admin.query(`SET search_path TO "${schema}"`);
+      const client = scopedClient(admin, schema);
+      const manifests = await seedCookieProfileFixture(admin);
+      const state = await readContinuityState(admin, "8s28");
+      const census = await readCookieCensus(admin);
+      const manifest = JSON.parse(manifests.nextManifest);
+      const plan = await prepareCookieProfileSuccessor({
+        ...manifests,
+        states: [state],
+        census,
+        executeBy: new Date(Date.parse(census.database_time) + 600000).toISOString(),
+        readiness: {
+          version: "hns-reviewed-gateway-rotation-v1",
+          previous_gateway_reference: PREVIOUS_GATEWAY,
+          gateway_reference: NEXT_GATEWAY,
+          profile_sha256: manifest.profile_sha256,
+          handle_profile_sha256: manifest.handle_profile_sha256,
+          manifest_json: manifests.nextManifest,
+          observed_at: census.database_time,
+          readiness: "operator_attested_shadow_ready",
+        },
+      });
+      const entry = plan.entries[0];
+      if (!entry) throw new Error("Expected selected entry");
+      const health = decodeHnsDnsHealthDocumentV1(Buffer.from(entry.health_hex, "hex"));
+      await admin.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await lockCookieCensus(admin);
+      await admin.query(
+        "SELECT 1 FROM hns_dns_zone_activation_current WHERE canonical_root='8s28' FOR UPDATE",
+      );
+      await admin.query(
+        "SELECT 1 FROM hns_community_app_host_activation_current WHERE normalized_host='app.8s28' FOR UPDATE",
+      );
+      await admin.query(
+        "SELECT 1 FROM community_handle_sale_namespace_activation_current WHERE canonical_root='8s28' FOR UPDATE",
+      );
+      // The supplied intent hash and all operation IDs/generations stay equal.
+      // The real generic writer permits this different still-live lifetime.
+      await promoteHnsAuthoritySuccessorInTransaction({
+        client: admin,
+        inventoryRegistryReference: state.inventory.registry_reference,
+        authorityInventoryBytes: Buffer.from(state.inventory.bytes_hex, "hex"),
+        dnsActivationBytes: Buffer.from(entry.dns_hex, "hex"),
+        appActivationBytes: Buffer.from(entry.app_hex, "hex"),
+        healthObservationBytes: encodeHnsDnsHealthDocumentV1({
+          ...health,
+          valid_for_seconds: health.valid_for_seconds - 1,
+        }),
+        successorId: entry.successor_id,
+        gatewayRotation: {
+          reviewed: plan.readiness,
+          previousHealthGeneration: Number(state.health.health_generation),
+        },
+        rootLabel: "8s28",
+        generations: entry.generations,
+        sale: state.sale,
+      });
+      await admin.query("COMMIT");
+      const actual = await readContinuityState(admin, "8s28");
+      expect(
+        new Date(actual.health.valid_until).getTime() -
+          new Date(actual.health.checked_at).getTime(),
+      ).toBe((health.valid_for_seconds - 1) * 1000);
+      expect(
+        resolveActiveHnsHostAuthority(await transactionAuthoritySources(admin).app("app.8s28")),
+      ).not.toBeNull();
+      expect(
+        await readbackCookieProfileSuccessor({ client, plan, confirmedSha256: digest(plan) }),
+      ).toMatchObject({ outcome: "unknown", automatic_retry: false });
+    } finally {
+      await admin.query("ROLLBACK").catch(() => undefined);
+      await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+      await admin.end();
+    }
+  }, 120000);
+
   test("executes real 8-only rollback/promotion, fences co-tenants and never retries an uncertain commit", async () => {
     if (connection === undefined) throw new Error("Fixture connection unavailable");
     const schema = `hns_cookie_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -197,7 +292,7 @@ suite("staging cookie profile PostgreSQL authority boundary", () => {
 
       // Force expiry after the transaction enters, before its first census read.
       const elapsed = structuredClone(plan);
-      elapsed.execute_by = new Date(Date.parse(elapsed.census.database_time) + 1).toISOString();
+      elapsed.execute_by = new Date(Date.parse(elapsed.census.database_time) + 1000).toISOString();
       const rebuilt = await prepareCookieProfileSuccessor({
         ...manifests,
         states: elapsed.entries.map((entry) => entry.predecessor),
@@ -205,15 +300,33 @@ suite("staging cookie profile PostgreSQL authority boundary", () => {
         executeBy: elapsed.execute_by,
         readiness: elapsed.readiness,
       });
-      await Bun.sleep(5);
+      let enteredBeforeDeadline = false;
+      const delayed = new Proxy(client, {
+        get(target, property, receiver) {
+          if (property === "query")
+            return async (query: string | { text: string }, values?: unknown[]) => {
+              const result =
+                typeof query === "string"
+                  ? await target.query(query, values)
+                  : await target.query(query);
+              if (typeof query === "string" && query.startsWith("LOCK TABLE ")) {
+                enteredBeforeDeadline = Date.now() < Date.parse(rebuilt.execute_by);
+                await Bun.sleep(Math.max(1, Date.parse(rebuilt.execute_by) - Date.now() + 20));
+              }
+              return result;
+            };
+          return Reflect.get(target, property, receiver);
+        },
+      });
       await expect(
         applyCookieProfileSuccessor({
-          client,
+          client: delayed,
           plan: rebuilt,
           confirmedSha256: digest(rebuilt),
           mode: "rehearse",
         }),
       ).rejects.toThrow("window elapsed");
+      expect(enteredBeforeDeadline).toBe(true);
       expect((await readContinuityState(admin, "8s28")).dns.gateway_deployment_reference).toBe(
         PREVIOUS_GATEWAY,
       );

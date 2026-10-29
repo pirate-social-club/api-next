@@ -140,6 +140,16 @@ describe("exact staging cookie-profile successor", () => {
       (v: typeof base) => {
         v.states.push(v.states[0]);
       },
+      (v: typeof base) => {
+        const tenant = v.census.roots[0];
+        if (!tenant) throw new Error("Expected selected tenant");
+        tenant.rows.community_handle_sales_authority_grants = [];
+      },
+      (v: typeof base) => {
+        const grants = v.census.roots[0]?.rows.community_handle_sales_authority_grants;
+        if (!grants) throw new Error("Expected selected grants");
+        grants.push(grants[0]);
+      },
     ];
     for (const mutate of mutations) {
       const v = structuredClone(base);

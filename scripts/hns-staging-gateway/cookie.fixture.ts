@@ -89,6 +89,15 @@ export async function cookieProfileFixture() {
       COOKIE_CENSUS_TABLES.map((table: string) => [table, []]),
     ) as Record<string, unknown[]>;
     rows.handle_grants = [{ namespace_root: root, handle_label: "participant" }];
+    rows.community_handle_sales_authority_grants = [
+      {
+        community_id: state.sale.community_id,
+        principal_account_id: state.sale.actor_account_id,
+        authority: "manage_handle_sales",
+        status: "active",
+        grant_id: state.sale.authority_grant_id,
+      },
+    ];
     tenants.push({
       root,
       rows,
