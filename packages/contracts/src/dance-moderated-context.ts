@@ -82,7 +82,10 @@ export const ModeratedDanceOwnerRubric = Schema.Struct({
   rubric_version: IdV2,
   rubric_hash: HashV2,
   rubric_text: Schema.NonEmptyString.check(Schema.isMaxLength(12000)),
-  attestation_version: Schema.Literal("dance-owner-verdict-attestation-v1"),
+  attestation_version: Schema.Literals([
+    "dance-owner-verdict-attestation-v1",
+    "dance-owner-verdict-attestation-v2",
+  ]),
 });
 export type ModeratedDanceOwnerRubric = typeof ModeratedDanceOwnerRubric.Type;
 

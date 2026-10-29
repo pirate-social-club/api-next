@@ -161,3 +161,26 @@ describe("moderated Dance original frozen-context projection", () => {
     expect(() => decode({ ...f.packet.session, reward_mode: "practice" })).toThrow();
   });
 });
+
+describe("no-pose frozen-context projection", () => {
+  test.each([false, true])(
+    "projects funded=%s immutable no-pose terms and truthful owner rubric",
+    async (funded) => {
+      const f = await moderatedDanceContextFixture(funded, true);
+      const wire = await read(f);
+      expect(wire.session.cue).toEqual({ kind: "none", start_ms: 0, end_ms: 0, hold_ms: 0 });
+      expect(wire.session.body_start_ms).toBe(0);
+      expect(wire.reward_mode).toBe(funded ? "reward_eligible" : "practice");
+      const owner = await Effect.runPromise(
+        decodeModeratedDanceOwnerRubric(
+          f.ownerPacket,
+          f.ownerPacket.community_id,
+          f.ownerPacket.review_id,
+        ),
+      );
+      expect(owner.attestation_version).toBe("dance-owner-verdict-attestation-v2");
+      f.packet.terms.version = "dance-moderated-capture-terms-v1";
+      await expect(read(f)).rejects.toBeDefined();
+    },
+  );
+});
