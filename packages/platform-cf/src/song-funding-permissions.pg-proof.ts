@@ -117,6 +117,38 @@ export async function proveSongFundingPermissions(url: string) {
           .replace(
             "AND p.status IN('active','pending_wallet')",
             "AND owned_persona.status IN('active','pending_wallet')",
+          )
+          // 0329 adds the create path's funding work envelope check to both branches.
+          .replace(
+            "THEN 'legacy_pool_incompatible' ELSE 'policy_unavailable' END;",
+            `THEN 'legacy_pool_incompatible'
+      -- An admitted community's song without room in the account, leg or global
+      -- funding envelope is unfundable, not merely awaiting its first quote.
+      WHEN EXISTS(SELECT 1 FROM reward_shared_song_template_admissions_v2 admission
+        JOIN reward_shared_song_templates_v2 template USING(community_id,template_id)
+        JOIN reward_funding_profiles_v2 admitted ON admitted.profile_id=template.profile_id
+        WHERE admission.community_id=slot.community_id AND admission.accepted
+          AND admission.effective_at<=statement_timestamp() AND admission.valid_until>statement_timestamp()
+          AND (SELECT count(*) FROM reward_funding_work_envelopes_v2 envelope
+            WHERE envelope.profile_id=admitted.profile_id AND envelope.valid_until>statement_timestamp()
+              AND envelope.allocated-envelope.used-envelope.reserved>=(admitted.policy->>'workPerInstruction')::BIGINT
+              AND (envelope.scope,envelope.scope_key) IN (('account',i->>'accountId'),
+                ('leg',coalesce(slot.target->>'pool_leg_id','empty-slot:'||slot.slot_id)),('global','funding')))<>3)
+        THEN 'work_budget_exhausted'
+      ELSE 'policy_unavailable' END;`,
+          )
+          .replace(
+            "WHEN slot.status<>'open' THEN 'recovery_required'\n",
+            `WHEN slot.status<>'open' THEN 'recovery_required'
+    -- The same envelopes create_song_contribution_v2 charges; a quote it would
+    -- refuse is never shown as ready.
+    WHEN (SELECT count(*) FROM reward_funding_work_envelopes_v2 envelope
+      WHERE envelope.profile_id=p.profile_id AND envelope.valid_until>statement_timestamp()
+        AND envelope.allocated-envelope.used-envelope.reserved>=(p.policy->>'workPerInstruction')::BIGINT
+        AND (envelope.scope,envelope.scope_key) IN (('account',i->>'accountId'),
+          ('leg',coalesce(slot.target->>'pool_leg_id','empty-slot:'||slot.slot_id)),('global','funding')))<>3
+      THEN 'work_budget_exhausted'
+`,
           ),
       }));
       expect(await definitionSnapshot()).toEqual(expectedDefinitions);
