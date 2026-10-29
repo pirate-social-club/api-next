@@ -29,6 +29,8 @@ import { makeControlPlaneHnsCommunityRootImportRepository } from "./hns-communit
 import { verifyHnsImportedInventoryRenewal } from "./hns-imported-inventory-renewal.pg-cases.ts";
 import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
+import { seedOwnership, seedSatisfiedOwnership } from "./hns-root-ownership.pg-fixture.ts";
+import { verifyHnsStagingOwnerTxt } from "./hns-staging-owner-txt.pg-cases.ts";
 import { verifyHnsStagingRelocation } from "./hns-staging-relocation.pg-cases.ts";
 import { verifyHnsZoneAdoption } from "./hns-zone-adoption.pg-cases.ts";
 import { hnsZoneAdoptionFixtureZone } from "./hns-zone-adoption-fixture.ts";
@@ -62,7 +64,10 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
+async function withSchema<A>(
+  use: (connection: string, admin: Client) => Promise<A>,
+  ownerTxt = false,
+): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
   const admin = new Client({ connectionString });
@@ -72,111 +77,13 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   try {
     const scoped = connectionForSchema(connectionString, schema);
     await applyPostgresTestBaselineConnection({ connectionString: scoped });
-    await seedOwnership(admin);
+    await seedOwnership(admin, ownerTxt);
     return await use(scoped, admin);
   } finally {
     await admin.query("ROLLBACK");
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
     await admin.end();
   }
-}
-
-async function seedOwnership(client: Client): Promise<void> {
-  await client.query("INSERT INTO users (user_id) VALUES ('actor-root-import')");
-  await client.query(
-    `INSERT INTO community_creation_intents (
-       intent_id, actor_id, create_idempotency_key, create_request_hash, revision, status,
-       draft, canonical_policy_revision, canonical_policy_hash, verification_requirement_hash,
-       verification_provider_id, provider_configuration_kind, provider_configuration_ref,
-       provider_configuration_version, expires_at
-     ) VALUES (
-       'intent-root-import', 'actor-root-import', 'create-root-import', $1, 1,
-       'verification_required', '{}'::jsonb, 1, $1, $2, 'namespace-provider',
-       'managed', 'namespace-config', 'v1', $3::timestamptz
-     )`,
-    [SHA_A, SHA_B, expiresAt],
-  );
-  await client.query(
-    `INSERT INTO community_creation_requirement_states (
-       intent_id, actor_id, requirement_kind, status, requirement_hash, provider_id,
-       provider_binding_hash, provider_configuration_kind, provider_configuration_ref,
-       provider_configuration_version, route_family, route_root_label,
-       route_root_label_display, route_path_segment
-     ) VALUES (
-       'intent-root-import', 'actor-root-import', 'namespace_ownership', 'unmet', $1,
-       'namespace-provider', $2, 'managed', 'namespace-config', 'v1', 'hns',
-       'newroot', 'newroot', 'app.newroot'
-     )`,
-    [SHA_B, SHA_C],
-  );
-  await client.query(
-    `INSERT INTO community_creation_ceremony_attempts (
-       ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
-       requirement_hash, provider_id, provider_binding_hash, provider_configuration_kind,
-       provider_configuration_ref, provider_configuration_version, route_family,
-       route_root_label, route_root_label_display, route_path_segment,
-       reservation_request_hash, reservation_request, expires_at
-     ) VALUES (
-       'ceremony-root-import', 'actor-root-import', 'intent-root-import',
-       'namespace_ownership', 1, $1, 'namespace-provider', $2, 'managed',
-       'namespace-config', 'v1', 'hns', 'newroot', 'newroot', 'app.newroot',
-       $3, '{}'::jsonb, $4::timestamptz
-     )`,
-    [SHA_B, SHA_C, SHA_A, expiresAt],
-  );
-  await client.query(
-    `UPDATE community_creation_requirement_states
-        SET status = 'pending', generation = 1,
-            current_ceremony_intent_id = 'ceremony-root-import',
-            updated_at = clock_timestamp()
-      WHERE intent_id = 'intent-root-import'
-        AND requirement_kind = 'namespace_ownership'`,
-  );
-  await client.query("BEGIN");
-  await client.query(
-    `INSERT INTO namespace_ownership_start_reservations (
-       reservation_id, namespace_session_id, actor_id, creation_intent_id,
-       ceremony_intent_id, generation, requirement_hash, expected_revision,
-       client_idempotency_key, request_hash, provider_id, provider_binding_hash,
-       provider_configuration_kind, provider_configuration_ref, provider_configuration_version,
-       protocol_version, environment, route_family, route_root_label,
-       route_root_label_display, route_path_segment, route_href, route_app_host,
-       state, fence_token, lease_expires_at
-     ) VALUES (
-       'reservation-root-import', 'namespace-root-import', 'actor-root-import',
-       'intent-root-import', 'ceremony-root-import', 1, $1, 1, 'start-root-import',
-       $2, 'namespace-provider', $3, 'managed', 'namespace-config', 'v1',
-       'hns-txt-v1', 'test', 'hns', 'newroot', 'newroot', 'app.newroot',
-       '/c/app.newroot', NULL, 'acquired', 1, clock_timestamp() + interval '30 minutes'
-     )`,
-    [SHA_B, SHA_A, SHA_C],
-  );
-  await client.query(
-    `INSERT INTO namespace_ownership_sessions (
-       namespace_session_id, actor_id, creation_intent_id, ceremony_intent_id,
-       start_reservation_id, start_fence_token, expected_revision, generation,
-       requirement_hash, request_hash, provider_id, provider_binding_hash,
-       provider_configuration_kind, provider_configuration_ref,
-       provider_configuration_version, protocol_version, environment, route_family,
-       route_root_label, route_root_label_display, route_path_segment, route_href,
-       route_app_host, upstream_session_ref, presentation_kind, presentation_payload,
-       status, started_at, expires_at
-     ) VALUES (
-       'namespace-root-import', 'actor-root-import', 'intent-root-import',
-       'ceremony-root-import', 'reservation-root-import', 1, 1, 1, $1, $2,
-       'namespace-provider', $3, 'managed', 'namespace-config', 'v1', 'hns-txt-v1',
-       'test', 'hns', 'newroot', 'newroot', 'app.newroot', '/c/app.newroot', NULL,
-       'upstream-root-import', 'poll', '{"session_id":"upstream-root-import"}'::jsonb,
-       'pending', clock_timestamp() - interval '1 minute', $4::timestamptz
-     )`,
-    [SHA_B, SHA_A, SHA_C, expiresAt],
-  );
-  await client.query(
-    `UPDATE namespace_ownership_start_reservations
-        SET state = 'finalized', updated_at = clock_timestamp()
-      WHERE reservation_id = 'reservation-root-import'`,
-  );
-  await client.query("COMMIT");
 }
 
 function startRecord(): HnsRootImportStartRecord {
@@ -285,97 +192,6 @@ async function provisionRootImport(
     ],
   );
   return { record, planBytes, resultBytes, ownershipResultHash };
-}
-
-async function seedSatisfiedOwnership(admin: Client): Promise<string> {
-  const resultHash = "d".repeat(64);
-  await admin.query("BEGIN");
-  try {
-    await admin.query(
-      `INSERT INTO namespace_ownership_completion_attempts (
-         completion_attempt_id,namespace_session_id,actor_id,idempotency_key,
-         completion_request_hash,evidence_ref,submission_channel,state,fence_token,
-         lease_expires_at
-       ) VALUES ('completion-root-import','namespace-root-import','actor-root-import',
-         'complete-root-import',$1,'evidence-root-import','poll_result','leased',1,
-         clock_timestamp()+interval '30 minutes')`,
-      [SHA_A],
-    );
-    await admin.query(
-      `UPDATE namespace_ownership_completion_attempts
-          SET state='consumed',consumption_kind='verified',updated_at=clock_timestamp()
-        WHERE completion_attempt_id='completion-root-import'`,
-    );
-    await admin.query(
-      `INSERT INTO namespace_ownership_evidence_snapshots (
-         evidence_ref,completion_attempt_id,namespace_session_id,actor_id,creation_intent_id,
-         ceremony_intent_id,generation,requirement_hash,request_hash,provider_id,
-         provider_binding_hash,provider_configuration_kind,provider_configuration_ref,
-         provider_configuration_version,protocol_version,environment,family,root_label,
-         root_label_display,path_segment,href,app_host,upstream_session_ref,fence_token,
-         abi_version,ownership_source,challenge_name,challenge_value_sha256,root_exists,
-         root_control_verified,expiry_horizon_sufficient,chain_network,chain_anchor_height,
-         chain_anchor_block_hash,chain_anchor_median_time,expiry_height,observed_at,expires_at,
-         provider_evidence_ref,observation_sha256,provider_identity_digest,evidence_digest,
-         observation,raw_response_bytes
-       ) VALUES (
-         'evidence-root-import','completion-root-import','namespace-root-import',
-         'actor-root-import','intent-root-import','ceremony-root-import',1,$1,$2,
-         'namespace-provider',$3,'managed','namespace-config','v1','hns-txt-v1','test',
-         'hns','newroot','newroot','app.newroot','/c/app.newroot',NULL,
-         'upstream-root-import',1,'pirate-hns-ownership-evidence-v1',
-         'hns_parent_chain_txt','newroot',$2,TRUE,TRUE,TRUE,'hns-main',100,$2,1000,200,
-         clock_timestamp()-interval '1 minute',$4::timestamptz,
-         'provider-evidence-root-import',$2,$2,$2,
-         '{"status":"verified"}'::jsonb,'{"status":"verified"}'::bytea
-       )`,
-      [SHA_B, SHA_A, SHA_C, expiresAt],
-    );
-    await admin.query(
-      `INSERT INTO community_creation_ceremony_results (
-         ceremony_intent_id,actor_id,intent_id,requirement_kind,generation,
-         requirement_hash,provider_id,provider_binding_hash,provider_configuration_version,
-         callback_idempotency_key,callback_request_hash,outcome_status,result_hash,
-         evidence_ref,evidence_digest,provider_identity_digest,terminal_at,satisfied_at,
-         namespace_session_id,completion_attempt_id,submission_channel
-       ) VALUES (
-         'ceremony-root-import','actor-root-import','intent-root-import','namespace_ownership',1,
-         $1,'namespace-provider',$2,'v1','complete-root-import',$3,'satisfied',$4,
-         'evidence-root-import',$3,$3,transaction_timestamp()-interval '1 minute',
-         transaction_timestamp()-interval '1 minute','namespace-root-import',
-         'completion-root-import','poll_result'
-       )`,
-      [SHA_B, SHA_C, SHA_A, resultHash],
-    );
-    await admin.query(
-      `UPDATE community_creation_requirement_states
-          SET status='satisfied',satisfied_at=transaction_timestamp()-interval '1 minute',
-              updated_at=clock_timestamp()
-        WHERE intent_id='intent-root-import' AND requirement_kind='namespace_ownership'`,
-    );
-    await admin.query(
-      `INSERT INTO community_route_ownership_evidence (
-         evidence_ref,creation_ceremony_intent_id,verified_by_actor_id,family,root_label,
-         root_label_display,path_segment,requirement_hash,provider_id,provider_binding_hash,
-         provider_configuration_version,provider_identity_digest,evidence_digest,
-         binding_generation,verified_at,expires_at
-       ) VALUES ('evidence-root-import','ceremony-root-import','actor-root-import','hns',
-         'newroot','newroot','app.newroot',$1,'namespace-provider',$2,'v1',$3,$3,1,
-         transaction_timestamp()-interval '1 minute',$4::timestamptz)`,
-      [SHA_B, SHA_C, SHA_A, expiresAt],
-    );
-    await admin.query(
-      `UPDATE namespace_ownership_sessions
-          SET status='completed',terminal_at=transaction_timestamp()-interval '1 minute',
-              completed_at=transaction_timestamp()-interval '1 minute',updated_at=clock_timestamp()
-        WHERE namespace_session_id='namespace-root-import'`,
-    );
-    await admin.query("COMMIT");
-    return resultHash;
-  } catch (error) {
-    await admin.query("ROLLBACK");
-    throw error;
-  }
 }
 
 async function makeReadinessArtifact(input: {
@@ -998,11 +814,23 @@ suite("Postgres 17 HNS root-import repository", () => {
     });
   }, 20_000);
 
-  test.each([false, true, "staging-relocation"] as const)(
+  test.each([
+    false,
+    true,
+    "staging-relocation",
+    "staging-owner-txt",
+    "staging-owner-txt-expired-dns",
+    "staging-owner-txt-expired-observation",
+  ] as const)(
     "observes readiness and atomically activates serving plus handle issuance (inventory renewal %s)",
     async (scenario) => {
       const inventoryRenewal = scenario === true;
       const relocation = scenario === "staging-relocation";
+      const ownerTxt =
+        scenario === "staging-owner-txt" ||
+        scenario === "staging-owner-txt-expired-dns" ||
+        scenario === "staging-owner-txt-expired-observation";
+      const dnsExpired = scenario === "staging-owner-txt-expired-dns";
       await withSchema(async (connection, admin) => {
         const store = makeControlPlaneHnsRootImportStore(
           makeDirectPostgresControlPlaneLayer(connection),
@@ -1072,7 +900,20 @@ suite("Postgres 17 HNS root-import repository", () => {
         // the atomic readiness writer accepts the result and completes the
         // readiness job in one statement.
         const ready = await driveLifecycleToReady(admin, provisioned, {
-          readinessValidForSeconds: inventoryRenewal ? 5 : 3600,
+          readinessValidForSeconds: inventoryRenewal || dnsExpired ? 5 : ownerTxt ? 172800 : 3600,
+          ...(ownerTxt
+            ? {
+                environment: "staging" as const,
+                chainResourceSha256: sha256(
+                  new TextEncoder().encode(
+                    canonicalJson(
+                      JSON.parse(new TextDecoder().decode(provisioned.planBytes))
+                        .replacement_records,
+                    ),
+                  ),
+                ),
+              }
+            : {}),
           ...(relocation
             ? {
                 environment: "staging" as const,
@@ -1175,9 +1016,32 @@ suite("Postgres 17 HNS root-import repository", () => {
           dns_operation_state: "finalized",
         });
         expect(state.rows[0]?.health_seconds_remaining).toBeGreaterThan(
-          inventoryRenewal ? 0 : 3_590,
+          inventoryRenewal || dnsExpired ? 0 : 3_590,
         );
 
+        if (ownerTxt) {
+          const previous = JSON.parse(
+            new TextDecoder().decode(provisioned.planBytes),
+          ).replacement_records;
+          await verifyHnsStagingOwnerTxt(
+            admin,
+            connection,
+            previous,
+            (chainHash) =>
+              makeReadinessArtifact({
+                ownershipResultHash,
+                publishPlanSha256: sha256(provisioned.planBytes),
+                provisionResultSha256: sha256(provisioned.resultBytes),
+                inventoryVersion: `owner-txt-${randomUUID()}`,
+                environment: "staging",
+                chainResourceSha256: chainHash,
+                validForSeconds: 172800,
+              }),
+            dnsExpired,
+            scenario === "staging-owner-txt-expired-observation",
+          );
+          return;
+        }
         if (relocation) {
           await verifyHnsStagingRelocation(admin, connection, (zone, serial) =>
             makeReadinessArtifact({
@@ -1358,9 +1222,9 @@ suite("Postgres 17 HNS root-import repository", () => {
             ),
           ),
         ).toEqual({ kind: "not_found" });
-      });
+      }, ownerTxt);
     },
-    60_000,
+    90_000,
   );
 
   test("atomically commits a community attachment before activating its HNS services", async () => {

@@ -7,6 +7,43 @@ import {
 import { canonicalZone, encoder, sha256, world } from "./zone-adoption-command-fixture.ts";
 
 describe("HNS zone adoption command arguments", () => {
+  test("requires a digest-bound owner TXT review exclusively for its staging delta", () => {
+    const args = [
+      "adopt",
+      "--observation",
+      "/var/lib/observation.json",
+      "--expect-result-sha256",
+      "a".repeat(64),
+      "--expect-delta",
+      "staging_owner_txt_refreshed",
+      "--mode",
+      "dry-run",
+    ];
+    expect(() => parseHnsZoneAdoptionArgumentsV1(args)).toThrow();
+    const reviewed = [
+      ...args,
+      "--owner-txt",
+      "/var/lib/owner-txt.json",
+      "--expect-owner-txt-sha256",
+      "b".repeat(64),
+    ];
+    expect(parseHnsZoneAdoptionArgumentsV1(reviewed)).toMatchObject({
+      owner_txt: { path: "/var/lib/owner-txt.json", sha256: "b".repeat(64) },
+    });
+    for (const invalid of [
+      reviewed.map((arg) => (arg === "staging_owner_txt_refreshed" ? "serial_only" : arg)),
+      [
+        ...reviewed,
+        "--relocation",
+        "/var/lib/relocation.json",
+        "--expect-relocation-sha256",
+        "c".repeat(64),
+      ],
+      reviewed.map((arg) => (arg === "/var/lib/owner-txt.json" ? "relative.json" : arg)),
+      reviewed.map((arg) => (arg === "b".repeat(64) ? "not-a-digest" : arg)),
+    ])
+      expect(() => parseHnsZoneAdoptionArgumentsV1(invalid)).toThrow();
+  });
   test("requires an exact relocation file digest only for the relocation delta", () => {
     const args = [
       "adopt",
