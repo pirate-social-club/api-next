@@ -1,13 +1,34 @@
 import { createHash } from "node:crypto";
 import {
+  HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+  prepareHnsDnsZoneActivationDocumentV1,
+} from "../../packages/application/src/hns-host-persistence.ts";
+import {
   encodeHnsAuthorityInventory,
   hnsAuthorityCapabilitySetDigest,
 } from "../../packages/application/src/namespace-ownership/hns-authority-inventory.ts";
+import { handleSaleNamespaceActivationHash } from "../../packages/domain/src/handles/sales-v2.ts";
 import { seedContinuityFixture } from "../hns-continuity/promotion.pg-fixture.mjs";
 import { cookieProfileFixture } from "./cookie.fixture.ts";
 import { PREVIOUS_GATEWAY } from "./cookie-plan.ts";
 
 const sha = (value) => createHash("sha256").update(value).digest("hex");
+const saleHash = (
+  state,
+  reference = state.sale.namespace_authority_reference,
+  generation = Number(state.sale.namespace_authority_generation),
+) =>
+  handleSaleNamespaceActivationHash({
+    sale_namespace_activation_id: state.sale.sale_namespace_activation_id,
+    sale_namespace_activation_generation: Number(state.sale.sale_namespace_activation_generation),
+    community_id: state.sale.community_id,
+    family: "hns",
+    canonical_root: state.dns.canonical_root,
+    namespace_authority_reference: reference,
+    namespace_authority_generation: generation,
+    dns_zone_activation_id: state.dns.dns_zone_activation_id,
+    dns_zone_activation_generation: Number(state.dns.dns_zone_activation_generation),
+  }).sha256;
 
 /** Historical authority is explicitly seeded with fixture-only replication
  * controls. The operation under test uses the real readers and atomic writers;
@@ -55,25 +76,41 @@ export async function seedCookieProfileFixture(client) {
           .replaceAll(original.dns.canonical_root, root),
       ).toString("hex");
       state.dns.zone_bytes_digest = sha(Buffer.from(state.dns.zone_hex, "hex"));
-      const activation = JSON.parse(
-        Buffer.from(state.dns.activation_document_bytes.data).toString(),
-      );
-      activation.canonical_root = root;
-      activation.dns_zone_activation_id = state.dns.dns_zone_activation_id;
-      activation.pirate_dns_authority_inventory = [
-        state.dns.pirate_dns_authority_inventory_reference,
-        state.dns.pirate_dns_authority_inventory_version,
-        state.dns.pirate_dns_authority_inventory_digest,
-      ];
-      activation.gateway = [PREVIOUS_GATEWAY, next.gateway_certificate_spki_sha256];
-      activation.zone[1] = state.dns.zone_bytes_digest;
-      state.dns.activation_document_bytes = Buffer.from(JSON.stringify(activation)).toJSON();
+      const activation = await prepareHnsDnsZoneActivationDocumentV1({
+        payload: {
+          version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
+          dns_zone_activation_id: state.dns.dns_zone_activation_id,
+          canonical_root: root,
+          dns_authority: [
+            state.dns.dns_authority_kind,
+            state.dns.dns_authority_reference,
+            Number(state.dns.dns_authority_generation),
+          ],
+          pirate_dns_authority_inventory: [
+            state.dns.pirate_dns_authority_inventory_reference,
+            state.dns.pirate_dns_authority_inventory_version,
+            state.dns.pirate_dns_authority_inventory_digest,
+          ],
+          zone_revision: Number(state.dns.zone_revision),
+          dnssec_keyset: [state.dns.dnssec_keyset_reference, state.dns.dnssec_keyset_version],
+          gateway: [PREVIOUS_GATEWAY, next.gateway_certificate_spki_sha256],
+          stable_chain_delegation_snapshot: [
+            state.dns.stable_chain_delegation_snapshot_reference,
+            state.dns.stable_chain_delegation_snapshot_digest,
+          ],
+        },
+        zone_bytes: Buffer.from(state.dns.zone_hex, "hex"),
+      });
+      state.dns.activation_document_bytes = Buffer.from(
+        activation.activation_document_bytes,
+      ).toJSON();
       state.app.gateway_deployment_reference = PREVIOUS_GATEWAY;
       state.app.route_authority_kind = "verified_namespace_v1";
       state.app.route_authority_reference = `evidence-${root}`;
       state.app.route_authority_generation = "1";
       state.sale.namespace_authority_reference = `evidence-${root}`;
       state.sale.namespace_authority_generation = "1";
+      state.sale.sale_namespace_activation_hash = saleHash(state);
       state.health.observed_gateway_deployment_reference = PREVIOUS_GATEWAY;
       state.health.observed_gateway_certificate_spki_sha256 = next.gateway_certificate_spki_sha256;
       state.health.observed_zone_bytes_digest = state.dns.zone_bytes_digest;
@@ -97,8 +134,8 @@ export async function seedCookieProfileFixture(client) {
         [`persona-${root}`, `actor-${root}`],
       );
       await client.query(
-        `INSERT INTO handle_grants(grant_id,community_id,offering_id,offering_hash,claim_id,owner_account_id,owner_persona_id,sale_namespace_activation_id,sale_namespace_activation_generation,fulfillment_kind,family,namespace_root,handle_label,display_identifier,status,issued_at,updated_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'hosted_persona_v1','hns',$10,'participant',$11,'active',clock_timestamp(),clock_timestamp())`,
+        `INSERT INTO handle_grants(grant_id,grant_generation,community_id,offering_id,offering_hash,claim_id,owner_account_id,owner_persona_id,sale_namespace_activation_id,sale_namespace_activation_generation,fulfillment_kind,family,namespace_root,handle_label,display_identifier,status,issued_at,updated_at)
+        VALUES($1,1,$2,$3,$4,$5,$6,$7,$8,$9,'hosted_persona_v1','hns',$10,'participant',$11,'active',clock_timestamp(),clock_timestamp())`,
         [
           `grant-${root}`,
           communityId,
@@ -177,7 +214,7 @@ async function seedRecoveredLineage(client, state) {
   await client.query("SET session_replication_role=replica");
   try {
     await client.query(
-      "UPDATE community_route_ownership_evidence SET provider_id='hns.owner.v1',provider_binding_hash=$1,provider_configuration_version='1',expires_at=$2 WHERE evidence_ref='evidence-8s28'",
+      "UPDATE community_route_ownership_evidence SET provider_id='hns.owner.v1',provider_binding_hash=$1,provider_configuration_version='1',verified_at=$2::timestamptz-interval '1 hour',expires_at=$2 WHERE evidence_ref='evidence-8s28'",
       [hex, expired],
     );
     await insert("community_route_lifecycle_transitions", {
@@ -305,8 +342,8 @@ async function seedRecoveredLineage(client, state) {
       [evidence],
     );
     await client.query(
-      "UPDATE community_handle_sale_namespace_activation_revisions SET namespace_authority_reference=$1,namespace_authority_generation=3 WHERE canonical_root='8s28'",
-      [evidence],
+      "UPDATE community_handle_sale_namespace_activation_revisions SET namespace_authority_reference=$1,namespace_authority_generation=3,sale_namespace_activation_hash=$2 WHERE canonical_root='8s28'",
+      [evidence, saleHash(state, evidence, 3)],
     );
     await insert("hns_root_import_activation_operations", {
       operation_id: "cookie-import",

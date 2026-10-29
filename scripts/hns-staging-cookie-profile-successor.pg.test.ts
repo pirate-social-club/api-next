@@ -291,6 +291,7 @@ suite("staging cookie profile PostgreSQL authority boundary", () => {
       plan = await prepare();
 
       // Force expiry after the transaction enters, before its first census read.
+      const deadlinePredecessorCensus = await readCookieCensus(admin);
       const elapsed = {
         ...plan,
         execute_by: new Date(Date.parse(plan.census.database_time) + 1000).toISOString(),
@@ -329,6 +330,9 @@ suite("staging cookie profile PostgreSQL authority boundary", () => {
         }),
       ).rejects.toThrow("window elapsed");
       expect(enteredBeforeDeadline).toBe(true);
+      expect(cookieCensusIdentity(await readCookieCensus(admin))).toBe(
+        cookieCensusIdentity(deadlinePredecessorCensus),
+      );
       expect((await readContinuityState(admin, "8s28")).dns.gateway_deployment_reference).toBe(
         PREVIOUS_GATEWAY,
       );
