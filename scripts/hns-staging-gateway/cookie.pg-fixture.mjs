@@ -16,11 +16,15 @@ export async function seedCookieProfileFixture(client) {
   const manifests = await cookieProfileFixture();
   const next = JSON.parse(manifests.nextManifest);
   for (const root of ["8s28", "a18n"]) {
+    const communityId =
+      root === "8s28"
+        ? "community_00000000-0000-4000-8000-000000000001"
+        : "community_00000000-0000-4000-8000-000000000002";
     const result = await seedContinuityFixture(client, async (raw) => {
       const original = raw.state;
       const mappings = [
         [original.sale.actor_account_id, `actor-${root}`],
-        [original.app.community_id, `community-${root}`],
+        [original.app.community_id, communityId],
         [original.app.route_binding_id, `route-${root}`],
         [original.sale.namespace_authority_reference, `evidence-${root}`],
         [original.sale.authority_grant_id, `sales-authority-${root}`],
@@ -97,7 +101,7 @@ export async function seedCookieProfileFixture(client) {
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'hosted_persona_v1','hns',$10,'participant',$11,'active',clock_timestamp(),clock_timestamp())`,
         [
           `grant-${root}`,
-          `community-${root}`,
+          communityId,
           `offering-${root}`,
           "a".repeat(64),
           `claim-${root}`,
@@ -154,7 +158,7 @@ async function seedRecoveredLineage(client, state) {
   const common = {
     ...route,
     ...provider,
-    community_id: "community-8s28",
+    community_id: state.app.community_id,
     route_binding_id: "route-8s28",
     expected_binding_generation: 2,
     requirement_hash: hex,
@@ -181,7 +185,7 @@ async function seedRecoveredLineage(client, state) {
       route_lifecycle_transition_id: "expiry-8s28",
       version: "pirate-community-route-lifecycle-transition-v1",
       transition_kind: "database_time_expired",
-      community_id: "community-8s28",
+      community_id: state.app.community_id,
       route_binding_id: "route-8s28",
       principal_kind: "system",
       principal_id: "fixture",
@@ -312,7 +316,7 @@ async function seedRecoveredLineage(client, state) {
       idempotency_key: "cookie-import",
       request_sha256: hex,
       expected_session_revision: 1,
-      community_id: "community-8s28",
+      community_id: state.app.community_id,
       dns_zone_activation_id: state.dns.dns_zone_activation_id,
       app_host_activation_id: state.app.app_host_activation_id,
       sale_namespace_activation_id: state.sale.sale_namespace_activation_id,
