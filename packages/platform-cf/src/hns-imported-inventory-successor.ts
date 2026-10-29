@@ -122,12 +122,14 @@ export async function promoteImportedHnsInventorySuccessor(
   // Predecessor structure remains fenced even after its evidence expires.
   // Fresh observed evidence below restores serving; requiring old liveness
   // here would make an expiry outage impossible to recover automatically.
+  const namespaceReference = recovery?.evidence_ref ?? state.namespace_authority_reference;
+  const namespaceGeneration = recovery?.binding_generation ?? state.namespace_authority_generation;
   const dependency = await client.query(
     `SELECT * FROM current_hns_sale_namespace_dependency_v1($1,$2,$3,$4,$5,clock_timestamp())`,
     [
       state.community_id,
-      state.namespace_authority_reference,
-      Number(state.namespace_authority_generation),
+      namespaceReference,
+      Number(namespaceGeneration),
       state.dns_zone_activation_id,
       Number(state.dns_generation),
     ],
@@ -281,6 +283,10 @@ export async function promoteImportedHnsInventorySuccessor(
       app_host_activation_generation: Number(state.app_generation) + 1,
       health_generation: healthGeneration + 1,
     },
-    sale: state,
+    sale: {
+      ...state,
+      namespace_authority_reference: namespaceReference,
+      namespace_authority_generation: namespaceGeneration,
+    },
   });
 }

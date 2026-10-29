@@ -1,5 +1,6 @@
 import { expect } from "bun:test";
 import { createHash } from "node:crypto";
+import { ControlPlaneDb } from "@pirate/application";
 import {
   deriveHnsEvidenceLease,
   hnsControlIdentityDigest,
@@ -15,6 +16,7 @@ import { Client } from "pg";
 import { makeControlPlaneCommunityRouteExpiryStore } from "./community-route-expiry-repository.ts";
 import { finalizeImportedInventoryRenewal } from "./hns-imported-inventory-renewal.ts";
 import { promoteImportedHnsInventorySuccessor } from "./hns-imported-inventory-successor.ts";
+import { deferExpiredHnsRecoveryHosts } from "./hns-owner-recovery-expired-dns.ts";
 import { makeControlPlaneHnsOwnerRecoveryPollStore } from "./hns-owner-recovery-poll-repository.ts";
 import {
   makeControlPlaneHnsOwnerRecoveryAuthorityResolver,
@@ -22,6 +24,7 @@ import {
 } from "./hns-owner-recovery-start-repository.ts";
 import { verifyHnsOwnerTxtServingGenerationFences } from "./hns-staging-owner-txt-generation.pg-cases.ts";
 import { verifyHnsOwnerTxtLockOrder } from "./hns-staging-owner-txt-locks.pg-cases.ts";
+import { readHnsStagingOwnerTxtRecovery } from "./hns-staging-owner-txt-recovery.ts";
 import {
   verifyHnsOwnerTxtExpiryDuringObservation,
   verifyHnsOwnerTxtLateRollback,
@@ -186,19 +189,23 @@ export async function verifyHnsStagingOwnerTxt(
       ),
     );
   const afterExpiry = await pointers();
+  expect(await poll()).toMatchObject({ status: "verified", generation: 3 });
   if (dnsExpired) {
-    await expect(poll()).rejects.toThrow();
-    expect(await pointers()).toEqual(afterExpiry);
+    // Ownership is real, but no host, DNS, inventory or health pointer may
+    // advance before the separately observed and reviewed authority adoption.
+    expect(await pointers()).toEqual({ ...afterExpiry, route: "3" });
     expect(
       (
         await admin.query(
           "SELECT count(*)::int AS count FROM community_route_ownership_evidence WHERE evidence_ref='owner-txt-evidence'",
         )
       ).rows[0]?.count,
-    ).toBe(0);
-    return;
+    ).toBe(1);
+    const unavailable = await admin.query(`SELECT dns_delegation_current
+      FROM current_hns_sale_namespace_dependency_v1(
+        'community-root-import','owner-txt-evidence',3,'dns-root-import',1,clock_timestamp())`);
+    expect(unavailable.rows[0]?.dns_delegation_current).toBe(false);
   }
-  expect(await poll()).toMatchObject({ status: "verified", generation: 3 });
   const operator = new Client({ connectionString: connection });
   await operator.connect();
   try {
@@ -246,23 +253,67 @@ export async function verifyHnsStagingOwnerTxt(
           )
         ).result_bytes,
     });
+    if (dnsExpired) {
+      for (const mismatch of [{ recovery_id: "unrelated" }, { expected_binding_generation: 1 }]) {
+        expect(
+          await Effect.runPromise(
+            Effect.gen(function* () {
+              const db = yield* ControlPlaneDb;
+              return yield* db.withTransaction((transaction) =>
+                deferExpiredHnsRecoveryHosts(transaction, {
+                  community_id: "community-root-import",
+                  route_binding_id: "route-binding-root-import",
+                  expected_binding_generation: 2,
+                  evidence_ref: "owner-txt-evidence",
+                  recovery_id: "owner-txt-recovery",
+                  ...mismatch,
+                }),
+              );
+            }).pipe(Effect.provide(layer)),
+          ),
+        ).toBe(false);
+      }
+      const beforeMixed = await pointers();
+      await admin.query("BEGIN");
+      try {
+        await admin.query(
+          `SELECT * FROM change_hns_community_app_host_status_v1(
+          'txt-mixed-app','txt-mixed-app',repeat('f',64),'app-root-import',$1,'active',NULL)`,
+          [review.app_generation],
+        );
+        // Even a review updated to the real new app generation cannot mix
+        // current app ownership with a sale on the expired predecessor.
+        await expect(
+          readHnsStagingOwnerTxtRecovery(admin, {
+            review: { ...review, app_generation: review.app_generation + 1 },
+            root_import_session_id: state.root_import_session_id,
+            lock: false,
+          }),
+        ).rejects.toThrow("recovery lineage is unavailable");
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+      expect(await pointers()).toEqual(beforeMixed);
+    }
     if (expireDuringObservation) {
       await verifyHnsOwnerTxtExpiryDuringObservation(admin, operator, request("commit"), pointers);
       return;
     }
-    const generations = await verifyHnsOwnerTxtServingGenerationFences({
-      admin,
-      connection,
-      dns_id: state.dns_zone_activation_id,
-      dns_generation: state.current_generation,
-      app_generation: review.app_generation,
-      sale_generation: review.sale_generation,
-      refuse_stale: () => adoptHnsRootZone(operator, request("commit")),
-    });
-    review.app_generation = generations.app_generation;
-    await generations.change_sale();
-    await expect(adoptHnsRootZone(operator, request("commit"))).rejects.toThrow("fence changed");
-    review.sale_generation = generations.sale_generation;
+    if (!dnsExpired) {
+      const generations = await verifyHnsOwnerTxtServingGenerationFences({
+        admin,
+        connection,
+        dns_id: state.dns_zone_activation_id,
+        dns_generation: state.current_generation,
+        app_generation: review.app_generation,
+        sale_generation: review.sale_generation,
+        refuse_stale: () => adoptHnsRootZone(operator, request("commit")),
+      });
+      review.app_generation = generations.app_generation;
+      await generations.change_sale();
+      await expect(adoptHnsRootZone(operator, request("commit"))).rejects.toThrow("fence changed");
+      review.sale_generation = generations.sale_generation;
+    }
     const before = await pointers();
     await verifyHnsOwnerTxtLockOrder(admin, operator, request("rehearse"));
     expect(await pointers()).toEqual(before);
@@ -339,6 +390,16 @@ export async function verifyHnsStagingOwnerTxt(
     expect(adopted.current_generation).toBe(state.current_generation + 1);
     expect(adopted.retained_zone_bytes_sha256).toBe(state.retained_zone_bytes_sha256);
     expect(adopted.stable_chain_delegation_snapshot_reference).toBe(`hns-root-chain:${hash(next)}`);
+    expect(
+      (
+        await admin.query(
+          `SELECT dns_delegation_current
+        FROM current_hns_sale_namespace_dependency_v1(
+          'community-root-import','owner-txt-evidence',3,'dns-root-import',$1,clock_timestamp())`,
+          [adopted.current_generation],
+        )
+      ).rows[0]?.dns_delegation_current,
+    ).toBe(true);
     // A captured old generation cannot be replayed after pointer advancement.
     await expect(adoptHnsRootZone(operator, request("commit"))).rejects.toThrow();
     const renewed = await artifact(hash(next));

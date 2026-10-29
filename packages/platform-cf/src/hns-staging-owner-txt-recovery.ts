@@ -122,21 +122,54 @@ export async function readHnsStagingOwnerTxtRecovery(
        AND app_revision.app_host_activation_generation=app.current_generation
        AND app_revision.community_id=c.community_id AND app_revision.canonical_root=b.root_label
        AND app_revision.route_binding_id=b.route_binding_id
-       AND app_revision.route_authority_reference=e.evidence_ref
-       AND app_revision.route_authority_generation=b.binding_generation
+       AND app_revision.route_authority_kind='verified_namespace_v1'
      JOIN community_handle_sale_namespace_activation_current sale
        ON sale.sale_namespace_activation_id=activation.sale_namespace_activation_id
      JOIN community_handle_sale_namespace_activation_revisions sale_revision
        ON sale_revision.sale_namespace_activation_id=sale.sale_namespace_activation_id
        AND sale_revision.sale_namespace_activation_generation=sale.current_generation
        AND sale_revision.community_id=c.community_id
-       AND sale_revision.namespace_authority_reference=e.evidence_ref
-       AND sale_revision.namespace_authority_generation=b.binding_generation
+       AND sale_revision.namespace_authority_kind='verified_namespace_v1'
      WHERE c.community_id=$1 AND b.route_binding_id=$2 AND c.status='active'
        AND b.family='hns' AND b.route_authority_kind='verified_namespace_v1'
        AND b.ownership_status='verified' AND b.route_lifecycle_status='active'
        AND e.verified_at<=clock_timestamp() AND e.expires_at>clock_timestamp()
-       AND snapshot.expires_at>clock_timestamp()`,
+       AND snapshot.expires_at>clock_timestamp()
+       AND (
+         (app_revision.route_authority_reference=e.evidence_ref
+           AND app_revision.route_authority_generation=b.binding_generation
+           AND sale_revision.namespace_authority_reference=e.evidence_ref
+           AND sale_revision.namespace_authority_generation=b.binding_generation)
+         OR
+         (app_revision.route_authority_reference=previous.evidence_ref
+           AND app_revision.route_authority_generation=previous.binding_generation
+           AND sale_revision.namespace_authority_reference=previous.evidence_ref
+           AND sale_revision.namespace_authority_generation=previous.binding_generation
+           AND sale_revision.dns_zone_activation_id=app_revision.dns_zone_activation_id
+           AND sale_revision.dns_zone_activation_generation=app_revision.dns_zone_activation_generation
+           AND EXISTS (
+             SELECT 1 FROM hns_dns_zone_activation_current dns
+             JOIN hns_dns_zone_activation_revisions revision
+               ON revision.dns_zone_activation_id=dns.dns_zone_activation_id
+               AND revision.dns_zone_activation_generation=dns.current_generation
+               AND revision.status='active'
+             JOIN hns_authority_inventories inventory
+               ON inventory.authority_inventory_reference=revision.pirate_dns_authority_inventory_reference
+               AND inventory.authority_inventory_version=revision.pirate_dns_authority_inventory_version
+               AND inventory.authority_inventory_digest=revision.pirate_dns_authority_inventory_digest
+               AND inventory.environment='staging'
+             JOIN LATERAL (
+               SELECT health.valid_until FROM hns_dns_zone_health_observations health
+               WHERE health.dns_zone_activation_id=dns.dns_zone_activation_id
+                 AND health.activation_generation=dns.current_generation
+               ORDER BY health.health_generation DESC LIMIT 1
+             ) health ON TRUE
+             WHERE dns.dns_zone_activation_id=app_revision.dns_zone_activation_id
+               AND dns.current_generation=app_revision.dns_zone_activation_generation
+               AND dns.canonical_root=b.root_label
+               AND LEAST(health.valid_until,inventory.expires_at)<=clock_timestamp()
+           ))
+       )`,
     [review.community_id, review.route_binding_id, input.root_import_session_id],
   );
   const proof = result.rows[0];
