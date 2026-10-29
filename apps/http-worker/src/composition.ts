@@ -14,6 +14,7 @@ import {
   REWARD_WINNER_SEND_CHAIN_ID,
   RewardGasTopupBalanceUnavailable,
 } from "@pirate/application/rewards/song-reward-offers";
+import { makeBrowserSessionService } from "@pirate/application/use-cases/browser-sessions";
 import { TextModerationProviderError } from "@pirate/application/use-cases/content/text-post";
 import type {
   DanceAttemptSessionAuthorityResolver,
@@ -266,6 +267,8 @@ import { makeWalletSponsoredSendService } from "@pirate/platform-cf/wallet-spons
 import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { Effect, Redacted, Schema } from "effect";
 import { GetSharedSongMegapotSummaryV2 } from "../../../packages/contracts/src/shared-song-megapot.ts";
+import { makeBrowserSessionCrypto } from "../../../packages/platform-cf/src/browser-session-crypto.ts";
+import { makeControlPlaneBrowserSessionStore } from "../../../packages/platform-cf/src/browser-session-repository.ts";
 import {
   makeControlPlaneModeratedDanceIntakeStore,
   makeModeratedDanceUploadSigner,
@@ -1882,6 +1885,13 @@ export async function createProductionHttpWorker(
         })
       : makeUnavailableSongRewardOfferHandlers();
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
+  const browserSessions = makeBrowserSessionService({
+    store: makeControlPlaneBrowserSessionStore(controlPlane),
+    crypto: makeBrowserSessionCrypto(sessionCrypto),
+    identities: identityStore,
+    providerAppId: config.PRIVY_APP_ID,
+    userScope: tokenMinter.scope,
+  });
   const sessionExchange = {
     proofVerifier,
     identityStore: makePrivySessionIdentityStore({
@@ -1905,6 +1915,7 @@ export async function createProductionHttpWorker(
   };
   const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore, {
     additionalUserScopes: [PERSONA_WALLET_SETUP_SESSION_SCOPE],
+    browserSessions,
   });
   const authenticate = async ({
     endpoint,
@@ -2142,6 +2153,7 @@ export async function createProductionHttpWorker(
     },
     beforeDecode: makeLegacyModerationActionCompatibility(moderationStore),
     sessionExchange,
+    browserSessions,
     identityRegistration,
     profile,
     authenticate,

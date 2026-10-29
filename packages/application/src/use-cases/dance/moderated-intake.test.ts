@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Schema } from "effect";
-import { moderatedDanceIntakeFacts } from "../../../../testing/src/moderated-dance-intake-fixture.ts";
+import {
+  moderatedDanceIntakeFacts,
+  noPoseModeratedDanceIntakeFacts,
+} from "../../../../testing/src/moderated-dance-intake-fixture.ts";
 import {
   ModeratedDanceIntakeProfile,
   prepareModeratedDanceTerms,
@@ -111,5 +114,62 @@ describe("moderated capture terms", () => {
     expect(reads).toBe(2);
     expect(() => selectModeratedDanceCue(() => -1)).toThrow();
     expect(() => selectModeratedDanceCue(() => 0xffffffff)).toThrow();
+  });
+});
+
+describe("prospective no-pose capture", () => {
+  test.each([false, true])(
+    "starts immediately and freezes funded=%s objectives without a pose",
+    async (funded) => {
+      const f = noPoseModeratedDanceIntakeFacts();
+      const objective = {
+        id: "leg",
+        version: "no-pose-v2",
+        termsHash: "a".repeat(64),
+        fundingPolicyHash: "b".repeat(64),
+        gradingMode: "moderator_verdict" as const,
+      };
+      const terms = await Effect.runPromise(
+        prepareModeratedDanceTerms(
+          {
+            ...f,
+            policy: { ...f.policy, admission: funded ? "money_admitted" : "streak_admitted" },
+            objectives: funded ? [objective] : [],
+          },
+          ids,
+          "none",
+        ),
+      );
+      expect(terms.version).toBe("dance-moderated-capture-terms-v2");
+      expect(terms.capture.cueId).toBe("none");
+      expect([
+        terms.capture.bodyStartMs,
+        terms.capture.cueStartMs,
+        terms.capture.cueEndMs,
+        terms.capture.cueHoldMs,
+      ]).toEqual([0, 0, 0, 0]);
+      expect(terms.capture.bodyEndMs).toBe(f.bodyDurationMs);
+      expect(terms.capture.objectives).toEqual(funded ? [objective] : []);
+      expect(terms.capture.rewardMode).toBe(funded ? "reward_eligible" : "practice");
+    },
+  );
+  test("rejects mixed policy/profile modes, a disguised cue and any pre-roll", async () => {
+    const f = noPoseModeratedDanceIntakeFacts(),
+      old = moderatedDanceIntakeFacts();
+    for (const facts of [
+      { ...f, profile: old.profile },
+      { ...old, profile: f.profile },
+      { ...f, profile: { ...f.profile, bodyStartMs: 1 } },
+      { ...f, profile: { ...f.profile, cueHoldMs: 1 } },
+    ])
+      await expect(
+        Effect.runPromise(prepareModeratedDanceTerms(facts, ids, "none")),
+      ).rejects.toBeDefined();
+    await expect(
+      Effect.runPromise(prepareModeratedDanceTerms(f, ids, "arms_t")),
+    ).rejects.toBeDefined();
+    await expect(
+      Effect.runPromise(prepareModeratedDanceTerms(old, ids, "none")),
+    ).rejects.toBeDefined();
   });
 });

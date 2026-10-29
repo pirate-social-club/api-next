@@ -54,6 +54,7 @@ export interface SessionClaimsInput {
   readonly scope: string;
   /** Optional wallet authenticated by the upstream Privy proof. */
   readonly walletAddress?: string;
+  readonly browserSessionId?: string;
   readonly iat?: number;
   readonly exp?: number;
   readonly ttlSeconds?: number;
@@ -66,6 +67,8 @@ export interface VerifiedSessionClaims {
   readonly scope: string;
   /** Present only when the session exchange authenticated a wallet. */
   readonly wallet_address?: string;
+  readonly sid?: string;
+  readonly token_use?: "browser_access";
   readonly iat: number;
   readonly exp: number;
   readonly nbf?: number;
@@ -248,6 +251,8 @@ function validateClaimsInput(
   if (walletAddress !== undefined && !/^0x[0-9a-f]{40}$/u.test(walletAddress)) {
     throw error("mint", "claims_invalid");
   }
+  if (input.browserSessionId !== undefined && !/^bs_[a-f0-9]{32}$/u.test(input.browserSessionId))
+    throw error("mint", "claims_invalid");
   const iat = input.iat ?? nowSeconds;
   positiveInteger(iat, "mint");
   if (iat > nowSeconds) throw error("mint", "claims_invalid");
@@ -266,6 +271,9 @@ function validateClaimsInput(
       sub,
       scope,
       ...(walletAddress === undefined ? {} : { wallet_address: walletAddress }),
+      ...(input.browserSessionId === undefined
+        ? {}
+        : { sid: input.browserSessionId, token_use: "browser_access" as const }),
       iat,
       exp,
     },
@@ -477,6 +485,16 @@ export async function makeSessionCrypto(options: SessionCryptoOptions): Promise<
     const sub = requiredString(payload, "sub");
     const scope = requiredString(payload, "scope");
     const walletAddress = payload.wallet_address;
+    let sid: string | undefined;
+    if (payload.sid !== undefined) {
+      if (
+        typeof payload.sid !== "string" ||
+        !/^bs_[a-f0-9]{32}$/u.test(payload.sid) ||
+        payload.token_use !== "browser_access"
+      )
+        throw error("verify", "claims_invalid");
+      sid = payload.sid;
+    } else if (payload.token_use !== undefined) throw error("verify", "claims_invalid");
     if (
       walletAddress !== undefined &&
       (typeof walletAddress !== "string" || !/^0x[0-9a-f]{40}$/u.test(walletAddress))
@@ -503,6 +521,7 @@ export async function makeSessionCrypto(options: SessionCryptoOptions): Promise<
           sub,
           scope,
           ...(walletAddress === undefined ? {} : { wallet_address: walletAddress }),
+          ...(sid === undefined ? {} : { sid, token_use: "browser_access" as const }),
           iat,
           exp,
         }
@@ -512,6 +531,7 @@ export async function makeSessionCrypto(options: SessionCryptoOptions): Promise<
           sub,
           scope,
           ...(walletAddress === undefined ? {} : { wallet_address: walletAddress }),
+          ...(sid === undefined ? {} : { sid, token_use: "browser_access" as const }),
           iat,
           exp,
           nbf,

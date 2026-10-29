@@ -26,6 +26,7 @@ import {
   decodeModeratedDanceFramehash,
   makeModeratedDanceNormalizationJob,
   moderatedDanceReplayDigests,
+  moderatedDanceSafetySampleOffsets,
   readModeratedDanceExport,
 } from "./moderated-dance-normalization.ts";
 import { bindModeratedDanceReplayKeys } from "./moderated-dance-public-replay.ts";
@@ -66,7 +67,10 @@ const Work = Schema.Struct({
   communityId: Id,
   accountFence: Natural,
   terms: Schema.Struct({
-    version: Schema.Literal("dance-moderated-capture-terms-v1"),
+    version: Schema.Literals([
+      "dance-moderated-capture-terms-v1",
+      "dance-moderated-capture-terms-v2",
+    ]),
     session_id: Id,
     created_at_ms: Natural,
     policy_id: Id,
@@ -75,7 +79,14 @@ const Work = Schema.Struct({
     terms_hash: Hash,
     safety_policy: ModeratedDanceSafetyPolicySnapshot,
     disposition: ModeratedDanceDisposition,
-  }),
+  }).check(
+    Schema.makeFilter((t) =>
+      (t.version === "dance-moderated-capture-terms-v2") ===
+      (t.profile.version === "dance-moderated-intake-profile-v2")
+        ? undefined
+        : "Capture terms/profile mode mismatch",
+    ),
+  ),
   ingressKey: Id,
   contentType: Schema.Literals(["video/mp4", "video/quicktime"]),
   sizeBytes: Natural,
@@ -617,20 +628,27 @@ export function makeModeratedDanceMediaRuntime(
         keys: selectedKeys,
       });
       // Sequential bounded stills avoid multiplying memory and provider work.
-      const a = await frameArtifact(work, 0, observation.exports.frames[0], controller.signal, 0),
+      const offsets = moderatedDanceSafetySampleOffsets(body.bodyStartMs, body.bodyEndMs, p);
+      const a = await frameArtifact(
+          work,
+          0,
+          observation.exports.frames[0],
+          controller.signal,
+          offsets[0],
+        ),
         b = await frameArtifact(
           work,
           1,
           observation.exports.frames[1],
           controller.signal,
-          Math.floor(body.bodyStartMs / 2),
+          offsets[1],
         ),
         c = await frameArtifact(
           work,
           2,
           observation.exports.frames[2],
           controller.signal,
-          Math.floor((body.bodyStartMs + body.bodyEndMs) / 2),
+          offsets[2],
         );
       frames = [a, b, c];
       // Persistence errors are outside the provider-error catch below; no retry.

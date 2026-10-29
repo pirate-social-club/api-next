@@ -1436,7 +1436,15 @@ BEGIN
   -- Re-read original authority; terms were built from this exact locked snapshot.
   result:=load_moderated_dance_creation_facts_v1(p_actor,p_command);
   profile:=p_terms->'profile';
-  IF (result->>'mediaReady')::BOOLEAN IS DISTINCT FROM TRUE OR profile IS DISTINCT FROM result->'profile' OR p_terms->'capture'->'policy' IS DISTINCT FROM result->'policy'
+  IF moderated_dance_capture_mode_valid_v2(p_terms->'capture') IS NOT TRUE
+  OR p_terms->>'version' IS DISTINCT FROM (CASE result->'policy'->>'version'
+    WHEN 'moderator-review-policy-v1' THEN 'dance-moderated-capture-terms-v1'
+    WHEN 'moderator-review-policy-v2' THEN 'dance-moderated-capture-terms-v2' END)
+  OR p_terms->'capture'->'bodyStartMs' IS DISTINCT FROM profile->'bodyStartMs'
+  OR p_terms->'capture'->'cueStartMs' IS DISTINCT FROM profile->'cueStartMs'
+  OR p_terms->'capture'->'cueEndMs' IS DISTINCT FROM profile->'cueEndMs'
+  OR p_terms->'capture'->'cueHoldMs' IS DISTINCT FROM profile->'cueHoldMs'
+  OR (result->>'mediaReady')::BOOLEAN IS DISTINCT FROM TRUE OR profile IS DISTINCT FROM result->'profile' OR p_terms->'capture'->'policy' IS DISTINCT FROM result->'policy'
   OR p_terms->'capture'->'objectives' IS DISTINCT FROM result->'objectives'
   OR p_terms->'safety_policy' IS DISTINCT FROM result->'safetyPolicy' OR p_terms->'disposition' IS DISTINCT FROM result->'disposition'
   OR p_terms->>'policy_id' IS DISTINCT FROM result->>'policyId'
@@ -3785,6 +3793,89 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION browser_session_account_matches_v1(source_id text, expected_id text) RETURNS boolean
+    LANGUAGE plpgsql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cursor_id TEXT:=source_id; next_id TEXT; visited TEXT[]:=ARRAY[]::TEXT[]; depth INTEGER;
+BEGIN
+  IF NOT EXISTS(SELECT 1 FROM users WHERE user_id=source_id AND status='active') THEN RETURN FALSE; END IF;
+  FOR depth IN 0..8 LOOP
+    IF cursor_id=ANY(visited) THEN RETURN FALSE; END IF;
+    visited:=array_append(visited,cursor_id);
+    SELECT canonical_user_id INTO next_id FROM account_aliases
+      WHERE source_user_id=cursor_id AND ((kind='alias' AND status='active') OR
+        (kind='merge' AND status IN ('finalizing','completed')));
+    IF NOT FOUND THEN
+      RETURN cursor_id=expected_id AND EXISTS(SELECT 1 FROM users WHERE user_id=cursor_id AND status='active');
+    END IF;
+    IF depth=8 OR next_id IS NULL OR btrim(next_id)='' OR next_id<>btrim(next_id) THEN RETURN FALSE; END IF;
+    cursor_id:=next_id;
+  END LOOP;
+  RETURN FALSE;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='browser_session_account_matches_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='source_id text, expected_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE TABLE browser_sessions (
+    session_id text NOT NULL,
+    account_id text NOT NULL,
+    credential_id text NOT NULL,
+    credential_user_id text NOT NULL,
+    provider_app_id text NOT NULL,
+    provider_subject text NOT NULL,
+    scope text NOT NULL,
+    browser_origin text NOT NULL,
+    renewable boolean NOT NULL,
+    renewal_secret_hash text,
+    csrf_hash text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    idle_expires_at timestamp with time zone NOT NULL,
+    absolute_expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    CONSTRAINT browser_sessions_browser_origin_check CHECK ((browser_origin ~ '^https://[^/[:space:]?#@]+$'::text)),
+    CONSTRAINT browser_sessions_check CHECK (((renewable AND (renewal_secret_hash IS NOT NULL) AND (renewal_secret_hash ~ '^[a-f0-9]{64}$'::text)) OR ((NOT renewable) AND (renewal_secret_hash IS NULL)))),
+    CONSTRAINT browser_sessions_check1 CHECK (((created_at < idle_expires_at) AND (idle_expires_at <= absolute_expires_at))),
+    CONSTRAINT browser_sessions_check2 CHECK ((absolute_expires_at <= (created_at + '90 days'::interval))),
+    CONSTRAINT browser_sessions_check3 CHECK ((renewable OR ((scope = 'persona-wallet-setup-v1'::text) AND (absolute_expires_at <= (created_at + '01:00:00'::interval))))),
+    CONSTRAINT browser_sessions_csrf_hash_check CHECK ((csrf_hash ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT browser_sessions_scope_check CHECK (((btrim(scope) <> ''::text) AND (scope = btrim(scope)))),
+    CONSTRAINT browser_sessions_session_id_check CHECK ((session_id ~ '^bs_[a-f0-9]{32}$'::text))
+);
+
+CREATE FUNCTION browser_session_packet_v1(s browser_sessions) RETURNS jsonb
+    LANGUAGE sql
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT jsonb_build_object('sessionId',(s).session_id,'accountId',(s).account_id,
+  'credentialUserId',(s).credential_user_id,'scope',(s).scope,'origin',(s).browser_origin,
+  'renewable',(s).renewable,'idleExpiresAt',floor(extract(epoch FROM (s).idle_expires_at)),
+  'absoluteExpiresAt',floor(extract(epoch FROM (s).absolute_expires_at)),
+  'now',floor(extract(epoch FROM clock_timestamp())))
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='browser_session_packet_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='s browser_sessions';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION can_account_access_activity_song(expected_account_id text, expected_community_id text, expected_post_id text) RETURNS boolean
     LANGUAGE plpgsql
     AS $$
@@ -5709,6 +5800,33 @@ BEGIN
    AND template.valid_from<=clock_timestamp() AND template.valid_until>clock_timestamp() AND p.accepted AND p.valid_until>clock_timestamp()
    AND account.status='active' AND persona.status='active' AND a.status='active' AND a.chain_account_kind='evm'
    AND can_account_access_activity_song(account.user_id,s.community_id,s.post_id)
+   -- A committed pot is a candidate only while create_song_contribution_v2 could
+   -- still admit a contribution: its frozen terms have not ended, and neither the
+   -- leg nor this account has reached the profile's admitted-contribution limit.
+   AND (s.target IS NULL OR (
+     ((s.terms->>'ends_at')::TIMESTAMPTZ<=clock_timestamp()) IS NOT TRUE
+     AND ((SELECT count(*) FROM song_megapot_contributions_v2 c WHERE c.pool_leg_id=s.target->>'pool_leg_id'
+       AND c.state->>'fundingState'<>'nonce_closed_no_principal')
+       >=least((p.policy->>'maxLegLiabilities')::BIGINT,(p.policy->>'maxAdmittedLeg')::BIGINT)) IS NOT TRUE
+     AND ((SELECT count(*) FROM song_megapot_contributions_v2 c WHERE c.account_id=account.user_id
+       AND c.pool_leg_id=s.target->>'pool_leg_id' AND c.state->>'fundingState'<>'nonce_closed_no_principal')
+       >=(p.policy->>'maxAdmittedAccountLeg')::BIGINT) IS NOT TRUE))
+   -- Skip an account, or the whole profile, without room for one more charged
+   -- attempt, so an exhausted counter cannot raise for or block other candidates.
+   AND NOT EXISTS(SELECT 1 FROM reward_context_work_counters_v2 counter
+     WHERE counter.profile_id=p.profile_id AND counter.account_id IN ('',account.user_id)
+       AND (counter.maximum_units IS DISTINCT FROM (CASE WHEN counter.account_id='' THEN template.operational_profile->>'maximumContextWorkGlobal'
+             ELSE template.operational_profile->>'maximumContextWorkPerAccount' END)::BIGINT
+         OR counter.used_units+(template.operational_profile->>'contextWorkPerAttempt')::BIGINT>counter.maximum_units))
+   -- Quote only what create_song_contribution_v2 could admit: the account, this
+   -- slot's leg and the global funding envelope each hold one more instruction.
+   -- A song published after provisioning has no leg envelope and is skipped
+   -- before any context work is charged.
+   AND (SELECT count(*) FROM reward_funding_work_envelopes_v2 envelope
+     WHERE envelope.profile_id=p.profile_id AND envelope.valid_until>clock_timestamp()
+       AND envelope.allocated-envelope.used-envelope.reserved>=(p.policy->>'workPerInstruction')::BIGINT
+       AND (envelope.scope,envelope.scope_key) IN (('account',account.user_id),
+         ('leg',coalesce(s.target->>'pool_leg_id','empty-slot:'||s.slot_id)),('global','funding')))=3
    AND (s.target IS NOT NULL OR NOT EXISTS(SELECT 1 FROM song_reward_offers existing WHERE existing.community_id=s.community_id AND existing.post_id=s.post_id
      AND existing.status IN('draft','active','paused','operational_hold')))
    AND ((template.operational_profile->>'maximumContextAttempts')::BIGINT>0
@@ -5755,7 +5873,8 @@ BEGIN
  WHERE reward_context_work_counters_v2.maximum_units=excluded.maximum_units
    AND reward_context_work_counters_v2.used_units+excluded.used_units<=reward_context_work_counters_v2.maximum_units;
  GET DIAGNOSTICS affected=ROW_COUNT;
- IF affected<>2 THEN RAISE EXCEPTION 'context work budget exhausted' USING ERRCODE='PCV04'; END IF;
+ -- PCV13 is only this concurrent-charge refusal. Configuration errors stay PCV04.
+ IF affected<>2 THEN RAISE EXCEPTION 'context work budget exhausted' USING ERRCODE='PCV13'; END IF;
  actor:=jsonb_build_object('account_id',wallet.account_id,'persona_id',wallet.persona_id,'community_id',slot.community_id,
    'wallet_assignment_id',wallet.assignment_id,'wallet_index',wallet.hd_wallet_index,'sender_address',wallet.address);
  target:=coalesce(slot.target,jsonb_build_object('kind','empty','community_id',slot.community_id,'post_id',slot.post_id,
@@ -6650,7 +6769,10 @@ BEGIN
     AND terminal>=r.uploaded_at AND terminal<=clock_timestamp()
     AND next->>'verdict' IN('passed','not_passed') AND evidence.safety_status='accepted'
     AND evidence.integrity_status='unique' AND can_account_view_content_rating_v1(owner.account_id,evidence.content_rating)
-    AND next->'attestation'->>'version'='dance-owner-verdict-attestation-v1'
+    AND moderated_dance_capture_mode_valid_v2(r.state->'capture')
+    AND next->'attestation'->>'version'=CASE r.state->'capture'->'policy'->>'version'
+      WHEN 'moderator-review-policy-v2' THEN 'dance-owner-verdict-attestation-v2'
+      ELSE 'dance-owner-verdict-attestation-v1' END
     AND next->'attestation'->>'reviewerAccountId'=owner.account_id
     AND next->'attestation'->>'assignmentId'=owner.role_assignment_id
     AND (next->'attestation'->>'assignmentRevision')::BIGINT=owner.authority_revision
@@ -6661,7 +6783,7 @@ BEGIN
     AND next->'attestation'->>'cueId'=r.state->'capture'->>'cueId'
     AND (next->'attestation'->>'bodyStartMs')::BIGINT=(r.state->'capture'->>'bodyStartMs')::BIGINT
     AND (next->'attestation'->>'bodyEndMs')::BIGINT=(r.state->'capture'->>'bodyEndMs')::BIGINT
-    AND next->'attestation'->>'cue'=CASE next->>'verdict' WHEN 'passed' THEN 'affirmed' ELSE 'not_attested' END) IS NOT TRUE THEN
+    AND next->'attestation'->>'cue'=CASE WHEN r.state->'capture'->'policy'->>'version'='moderator-review-policy-v2' THEN 'not_required' WHEN next->>'verdict'='passed' THEN 'affirmed' ELSE 'not_attested' END) IS NOT TRUE THEN
    RAISE EXCEPTION 'current owner, inspection or verdict deadline unavailable' USING ERRCODE='DRV05';
   END IF;
   INSERT INTO dance_moderated_verdict_audits_v1 VALUES(r.review_id,owner.account_id,owner.role_assignment_id,
@@ -6719,7 +6841,7 @@ BEGIN
     AND q->>'policyHash'=next->'capture'->'policy'->>'qualificationHash') IS NOT TRUE THEN
     RAISE EXCEPTION 'unadmitted categorical qualification' USING ERRCODE='DRV04'; END IF;
    expected_evidence:=jsonb_build_object('kind','dance_owner_verdict_v1','review_id',r.review_id,
-    'grading_mode','moderator_verdict','verdict','passed','cue_attestation','affirmed',
+    'grading_mode','moderator_verdict','verdict','passed','cue_attestation',next->'attestation'->>'cue',
     'policy_hash',next->'capture'->'policy'->>'qualificationHash','admission_hash',next->'capture'->'policy'->>'admissionHash',
     'submission_timezone',next->'capture'->>'timezone','submission_timezone_version',next->'capture'->>'timezoneVersion');
    INSERT INTO activity_qualifications(qualification_id,account_id,persona_id,community_id,post_id,audio_revision,
@@ -7255,6 +7377,76 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='converge_proved_empty_guest_sources_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION create_browser_session_v1(p jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE c identity_credentials; s browser_sessions; prior browser_sessions;
+  observed TIMESTAMPTZ; access_seconds INTEGER; replacement JSONB;
+BEGIN
+  IF jsonb_typeof(p->'renewable') IS DISTINCT FROM 'boolean' OR
+    jsonb_typeof(p->'accessSeconds') IS DISTINCT FROM 'number' OR
+    ((p->>'accessSeconds') ~ '^[0-9]{1,4}$') IS NOT TRUE
+  THEN RAISE EXCEPTION 'invalid browser session' USING ERRCODE='22023'; END IF;
+  access_seconds:=(p->>'accessSeconds')::INTEGER;
+  IF access_seconds<1 OR access_seconds>3600 OR
+    ((p->>'scope'='persona-wallet-setup-v1')=(NOT (p->>'renewable')::BOOLEAN)) IS NOT TRUE
+  THEN RAISE EXCEPTION 'invalid browser session authority' USING ERRCODE='22023'; END IF;
+  -- SHARE stabilizes absent aliases and status changes, matching the existing
+  -- identity-topology protocols. Order is alias table, session, credential/user.
+  LOCK TABLE account_aliases IN SHARE MODE;
+  replacement:=p->'replacement';
+  IF replacement IS NOT NULL AND replacement<>'null'::jsonb THEN
+    SELECT * INTO prior FROM browser_sessions WHERE session_id=replacement->>'sessionId' FOR UPDATE;
+    IF NOT FOUND OR prior.csrf_hash IS DISTINCT FROM replacement->>'csrfHash'
+      OR prior.browser_origin IS DISTINCT FROM replacement->>'origin'
+      OR prior.browser_origin IS DISTINCT FROM p->>'origin'
+      OR (CASE WHEN replacement->>'secretHash' IS NOT NULL
+        THEN prior.renewal_secret_hash IS DISTINCT FROM replacement->>'secretHash'
+        ELSE replacement->>'accountId' IS NULL OR prior.account_id IS DISTINCT FROM replacement->>'accountId' END)
+    THEN RAISE EXCEPTION 'browser replacement unavailable' USING ERRCODE='28000'; END IF;
+    IF prior.revoked_at IS NULL THEN
+      UPDATE browser_sessions SET revoked_at=clock_timestamp() WHERE session_id=prior.session_id;
+    END IF;
+  END IF;
+  SELECT * INTO c FROM identity_credentials
+    WHERE provider='privy' AND provider_app_id=p->>'providerAppId'
+      AND provider_subject=p->>'providerSubject' AND status='active' FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'browser credential unavailable' USING ERRCODE='28000'; END IF;
+  PERFORM 1 FROM users WHERE user_id IN(c.canonical_user_id,p->>'accountId') ORDER BY user_id FOR SHARE;
+  IF NOT browser_session_account_matches_v1(c.canonical_user_id,p->>'accountId')
+  THEN RAISE EXCEPTION 'browser account unavailable' USING ERRCODE='28000'; END IF;
+  observed:=clock_timestamp();
+  IF jsonb_typeof(p->'proofExpiresAt') IS DISTINCT FROM 'number'
+    OR (p->>'proofExpiresAt' ~ '^[0-9]{1,15}$') IS NOT TRUE
+    OR observed>=to_timestamp((p->>'proofExpiresAt')::DOUBLE PRECISION)
+  THEN RAISE EXCEPTION 'browser proof expired' USING ERRCODE='28000'; END IF;
+  INSERT INTO browser_sessions(session_id,account_id,credential_id,credential_user_id,
+    provider_app_id,provider_subject,scope,browser_origin,renewable,renewal_secret_hash,
+    csrf_hash,created_at,idle_expires_at,absolute_expires_at)
+  VALUES(p->>'sessionId',p->>'accountId',c.credential_id,c.canonical_user_id,
+    c.provider_app_id,c.provider_subject,p->>'scope',p->>'origin',(p->>'renewable')::BOOLEAN,
+    p->>'secretHash',p->>'csrfHash',observed,
+    observed+CASE WHEN (p->>'renewable')::BOOLEAN THEN interval '30 days'
+      ELSE least(access_seconds*interval '1 second',to_timestamp((p->>'proofExpiresAt')::DOUBLE PRECISION)-observed) END,
+    observed+CASE WHEN (p->>'renewable')::BOOLEAN THEN interval '90 days'
+      ELSE least(access_seconds*interval '1 second',to_timestamp((p->>'proofExpiresAt')::DOUBLE PRECISION)-observed) END)
+  RETURNING * INTO s;
+  RETURN browser_session_packet_v1(s);
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='create_browser_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -11080,6 +11272,7 @@ $$;
 
 CREATE FUNCTION guard_activity_qualification() RETURNS trigger
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
     AS $$
 DECLARE
   study_record study_sessions%ROWTYPE;
@@ -11099,15 +11292,21 @@ BEGIN
     SELECT * INTO dance_record FROM dance_moderated_reviews_v1 WHERE review_id=NEW.dance_review_id FOR SHARE;
     SELECT * INTO dance_policy FROM qualification_policy_versions WHERE qualification_policy_version_id=NEW.qualification_policy_version_id;
     expected_evidence:=jsonb_build_object('kind','dance_owner_verdict_v1','review_id',dance_record.review_id,
-      'grading_mode','moderator_verdict','verdict','passed','cue_attestation','affirmed',
+      'grading_mode','moderator_verdict','verdict','passed','cue_attestation',dance_record.state->'attestation'->>'cue',
       'policy_hash',dance_record.state->'capture'->'policy'->>'qualificationHash',
       'admission_hash',dance_record.state->'capture'->'policy'->>'admissionHash',
       'submission_timezone',dance_record.state->'capture'->>'timezone',
       'submission_timezone_version',dance_record.state->'capture'->>'timezoneVersion');
     IF (dance_record.status='reviewed' AND dance_record.state->>'verdict'='passed'
-      AND dance_record.state->'attestation'->>'cue'='affirmed'
-      AND dance_record.state->'attestation'->>'version'='dance-owner-verdict-attestation-v1'
+      AND moderated_dance_capture_mode_valid_v2(dance_record.state->'capture')
+      AND dance_record.state->'attestation'->>'cue'=CASE dance_record.state->'capture'->'policy'->>'version'
+        WHEN 'moderator-review-policy-v2' THEN 'not_required' ELSE 'affirmed' END
+      AND dance_record.state->'attestation'->>'version'=CASE dance_record.state->'capture'->'policy'->>'version'
+        WHEN 'moderator-review-policy-v2' THEN 'dance-owner-verdict-attestation-v2'
+        ELSE 'dance-owner-verdict-attestation-v1' END
       AND dance_record.state->'capture'->'policy'->>'admission' IN('streak_admitted','money_admitted')
+      AND (dance_record.state->'capture'->'policy'->>'version'<>'moderator-review-policy-v2'
+        OR dance_policy.policy_document->>'opening_pose'='not_required')
       AND dance_policy.activity_key='dance' AND dance_policy.policy_kind='dance_owner_verdict_v1'
       AND dance_policy.policy_document->>'policy_hash'=dance_record.state->'capture'->'policy'->>'qualificationHash'
       AND NEW.grading_mode='moderator_verdict' AND NEW.categorical_verdict='passed'
@@ -11243,6 +11442,18 @@ BEGIN
   RAISE EXCEPTION 'reserved activities cannot produce qualifications';
 END
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_activity_qualification'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_activity_registry_change() RETURNS trigger
     LANGUAGE plpgsql
@@ -11313,6 +11524,36 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_browser_session_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF ROW(NEW.session_id,NEW.account_id,NEW.credential_id,NEW.credential_user_id,
+      NEW.provider_app_id,NEW.provider_subject,NEW.scope,NEW.browser_origin,
+      NEW.renewable,NEW.renewal_secret_hash,NEW.csrf_hash,NEW.created_at,NEW.absolute_expires_at)
+    IS DISTINCT FROM ROW(OLD.session_id,OLD.account_id,OLD.credential_id,OLD.credential_user_id,
+      OLD.provider_app_id,OLD.provider_subject,OLD.scope,OLD.browser_origin,
+      OLD.renewable,OLD.renewal_secret_hash,OLD.csrf_hash,OLD.created_at,OLD.absolute_expires_at)
+    OR NEW.idle_expires_at<OLD.idle_expires_at
+    OR (OLD.revoked_at IS NOT NULL AND
+      ROW(NEW.idle_expires_at,NEW.revoked_at) IS DISTINCT FROM ROW(OLD.idle_expires_at,OLD.revoked_at))
+  THEN RAISE EXCEPTION 'browser session binding is immutable' USING ERRCODE='23514'; END IF;
+  RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_browser_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_captured_audio_cleanup_private_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -24535,7 +24776,7 @@ BEGIN
  OR now_at<policy.valid_from OR now_at>=policy.valid_until OR policy.policy_hash IS DISTINCT FROM p_command->>'expected_policy_hash'
  OR zone.account_id IS NULL OR disclosure.policy_id IS NULL OR (policy.disposition_profile->>'accepted')::BOOLEAN IS DISTINCT FROM TRUE
  OR (policy.disposition_profile->>'validUntilMs')::NUMERIC<=extract(epoch FROM now_at)*1000
- OR policy.operational_profile->>'version' IS DISTINCT FROM 'dance-moderated-intake-profile-v1' THEN
+ OR moderated_dance_policy_profile_matches_v2(policy.review_policy,policy.operational_profile) IS NOT TRUE THEN
   RAISE EXCEPTION 'private Dance policy unavailable' USING ERRCODE='DRV07';
  END IF;
  -- Stabilize the shared offer while capturing objectives BEFORE any bytes.
@@ -25675,6 +25916,34 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION moderated_dance_capture_mode_valid_v2(c jsonb) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT CASE c->'policy'->>'version'
+ WHEN 'moderator-review-policy-v1' THEN
+  (c->>'cueStartMs')::NUMERIC>=0 AND (c->>'cueEndMs')::NUMERIC>(c->>'cueStartMs')::NUMERIC
+  AND (c->>'cueEndMs')::NUMERIC<=(c->>'bodyStartMs')::NUMERIC
+  AND (c->>'cueHoldMs')::NUMERIC>0
+  AND (c->>'cueHoldMs')::NUMERIC<=(c->>'cueEndMs')::NUMERIC-(c->>'cueStartMs')::NUMERIC
+ WHEN 'moderator-review-policy-v2' THEN c->>'cueId'='none'
+  AND c->'cueStartMs'='0'::JSONB AND c->'cueEndMs'='0'::JSONB
+  AND c->'cueHoldMs'='0'::JSONB AND c->'bodyStartMs'='0'::JSONB
+ ELSE FALSE END
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='moderated_dance_capture_mode_valid_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='c jsonb';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION moderated_dance_media_runtime_v1() RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -25690,6 +25959,30 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='moderated_dance_media_runtime_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION moderated_dance_policy_profile_matches_v2(policy jsonb, profile jsonb) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT CASE policy->>'version'
+ WHEN 'moderator-review-policy-v1' THEN profile->>'version'='dance-moderated-intake-profile-v1'
+ WHEN 'moderator-review-policy-v2' THEN profile->>'version'='dance-moderated-intake-profile-v2'
+  AND profile->'cueStartMs'='0'::JSONB AND profile->'cueEndMs'='0'::JSONB
+  AND profile->'cueHoldMs'='0'::JSONB AND profile->'bodyStartMs'='0'::JSONB
+ ELSE FALSE END
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='moderated_dance_policy_profile_matches_v2'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='policy jsonb, profile jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -26576,7 +26869,7 @@ BEGIN
   'cue',jsonb_build_object('id',c->>'cueId','start_ms',c->'cueStartMs','end_ms',c->'cueEndMs','hold_ms',c->'cueHoldMs'),
   'body',jsonb_build_object('start_ms',c->'bodyStartMs','end_ms',c->'bodyEndMs'),
   'rubric_version',c->'policy'->>'rubricVersion','rubric_hash',c->'policy'->>'rubricHash',
-  'attestation_version','dance-owner-verdict-attestation-v1');
+  'attestation_version',CASE c->'policy'->>'version' WHEN 'moderator-review-policy-v2' THEN 'dance-owner-verdict-attestation-v2' ELSE 'dance-owner-verdict-attestation-v1' END);
 END $$;
 DO $baseline_function_path$
 DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
@@ -26868,7 +27161,8 @@ BEGIN
  IF u.server_sha256=(SELECT reference_digest FROM dance_moderator_reference_revisions_v1 WHERE choreography_id=s.choreography_id AND revision=s.choreography_revision) THEN blocked:=TRUE; END IF;
  FOR frame IN SELECT value FROM jsonb_array_elements(p_frames) LOOP
   IF (jsonb_typeof(frame->'index')='number' AND (frame->>'index')::INTEGER BETWEEN 0 AND 2
-   AND frame->>'sha256'~'^[a-f0-9]{64}$' AND (frame->>'timestampMs')::BIGINT=CASE (frame->>'index')::INTEGER WHEN 0 THEN 0 WHEN 1 THEN floor((s.terms->'capture'->>'bodyStartMs')::NUMERIC/2) WHEN 2 THEN floor(((s.terms->'capture'->>'bodyStartMs')::NUMERIC+(s.terms->'capture'->>'bodyEndMs')::NUMERIC)/2) END
+   AND frame->>'sha256'~'^[a-f0-9]{64}$' AND (frame->>'timestampMs')::BIGINT=CASE (frame->>'index')::INTEGER WHEN 0 THEN 0 WHEN 1 THEN CASE WHEN profile->>'version'='dance-moderated-intake-profile-v2' THEN floor((s.terms->'capture'->>'bodyEndMs')::NUMERIC/4) ELSE floor((s.terms->'capture'->>'bodyStartMs')::NUMERIC/2) END
+    WHEN 2 THEN CASE WHEN profile->>'version'='dance-moderated-intake-profile-v2' THEN floor((s.terms->'capture'->>'bodyEndMs')::NUMERIC*3/4) ELSE floor(((s.terms->'capture'->>'bodyStartMs')::NUMERIC+(s.terms->'capture'->>'bodyEndMs')::NUMERIC)/2) END END
    AND frame->'identity'->>'key'='moderated-dance/derived/'||p_upload||'/frame-'||(frame->>'index')||'.jpg'
    AND (frame->'identity'->>'size')::BIGINT BETWEEN 1 AND (profile->>'maximumFrameBytes')::BIGINT
    AND length(frame->'identity'->>'version')>0 AND length(frame->'identity'->>'etag')>0) IS NOT TRUE THEN RAISE EXCEPTION 'private frame proof invalid' USING ERRCODE='DRV06'; END IF;
@@ -30001,8 +30295,8 @@ BEGIN
  IF session_user<>pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid='dance_review_policy_versions_v1'::regclass)) THEN RAISE EXCEPTION 'policy publication requires admitted owner custody' USING ERRCODE='DRV02'; END IF;
  IF (p_input->>'version'='dance-moderated-policy-publication-v1' AND length(p_input->>'accepted_by')>0
  AND length(p_input->>'acceptance_ref')>0 AND p_input->>'acceptance_hash'~'^[a-f0-9]{64}$'
- AND policy->>'version'='moderator-review-policy-v1' AND policy->>'hash'~'^[a-f0-9]{64}$'
- AND (policy->>'reviewWindowMs')::BIGINT=604800000 AND profile->>'version'='dance-moderated-intake-profile-v1'
+ AND moderated_dance_policy_profile_matches_v2(policy,profile) AND policy->>'hash'~'^[a-f0-9]{64}$'
+ AND (policy->>'reviewWindowMs')::BIGINT=604800000
  AND (profile->>'maximumProviderCalls')::BIGINT>=6 AND (profile->>'maximumProviderSpendMicrounits')::NUMERIC>0
  AND policy->>'retentionHash'=disposition->>'hash' AND (disposition->>'accepted')::BOOLEAN
  AND (disposition->'hold'->>'accepted')::BOOLEAN AND length(disposition->'hold'->>'authorityRef')>0
@@ -30042,7 +30336,8 @@ BEGIN
  OR q.policy_document->>'producer_id' IS DISTINCT FROM policy->>'producerId'
  OR q.policy_document->>'admission' IS DISTINCT FROM policy->>'admission'
  OR q.policy_document->>'admission_version' IS DISTINCT FROM policy->>'admissionVersion'
- OR q.policy_document->>'admission_hash' IS DISTINCT FROM policy->>'admissionHash' THEN
+ OR q.policy_document->>'admission_hash' IS DISTINCT FROM policy->>'admissionHash'
+ OR (policy->>'version'='moderator-review-policy-v2' AND q.policy_document->>'opening_pose' IS DISTINCT FROM 'not_required') THEN
   RAISE EXCEPTION 'qualification admission is a separate prerequisite' USING ERRCODE='DRV07';
  END IF;
  SELECT * INTO existing FROM dance_review_policy_versions_v1 WHERE policy_id=p_input->>'policy_id';
@@ -30294,6 +30589,61 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='read_account_study_spoken_block_private_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_account text, p_session text, p_community text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION read_browser_session_access_v1(id text, account text, required_scope text) RETURNS jsonb
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+ SELECT browser_session_packet_v1(s) FROM browser_sessions s
+ JOIN users u ON u.user_id=s.account_id AND u.status='active'
+ JOIN identity_credentials c ON c.credential_id=s.credential_id AND c.status='active'
+  AND c.canonical_user_id=s.credential_user_id AND c.provider_app_id=s.provider_app_id
+  AND c.provider_subject=s.provider_subject AND c.provider='privy'
+ WHERE s.session_id=$1 AND s.account_id=$2 AND s.scope=$3
+  AND s.revoked_at IS NULL AND s.idle_expires_at>clock_timestamp()
+  AND s.absolute_expires_at>clock_timestamp()
+  AND browser_session_account_matches_v1(s.credential_user_id,s.account_id)
+$_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_browser_session_access_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, account text, required_scope text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION read_browser_session_renewal_v1(id text, secret_hash text, csrf text, origin text) RETURNS jsonb
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+ SELECT browser_session_packet_v1(s) FROM browser_sessions s
+ JOIN users u ON u.user_id=s.account_id AND u.status='active'
+ JOIN identity_credentials c ON c.credential_id=s.credential_id AND c.status='active'
+  AND c.canonical_user_id=s.credential_user_id AND c.provider_app_id=s.provider_app_id
+  AND c.provider_subject=s.provider_subject AND c.provider='privy'
+ WHERE s.session_id=$1 AND s.renewal_secret_hash=$2 AND s.csrf_hash=$3
+  AND s.browser_origin=$4 AND s.renewable AND s.scope<>'persona-wallet-setup-v1'
+  AND s.revoked_at IS NULL AND s.idle_expires_at>clock_timestamp()
+  AND s.absolute_expires_at>clock_timestamp()
+  AND browser_session_account_matches_v1(s.credential_user_id,s.account_id)
+$_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_browser_session_renewal_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, secret_hash text, csrf text, origin text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -31785,7 +32135,21 @@ BEGIN
       'canonical_song_id',slot.post_id,'audio_revision',fallback_audio,'slot_id',slot.slot_id,'slot_generation',slot.generation,'offer_id',NULL,'pool_leg_id',NULL));
     refusal:=CASE WHEN NOT EXISTS(SELECT 1 FROM persona_wallet_assignments a WHERE a.account_id=i->>'accountId' AND a.persona_id=persona AND a.status='active')
       THEN 'wallet_not_ready' WHEN slot.target IS NULL AND EXISTS(SELECT 1 FROM song_reward_offers o WHERE o.community_id=slot.community_id
-        AND o.post_id=slot.post_id AND o.status IN('draft','active','paused','operational_hold')) THEN 'legacy_pool_incompatible' ELSE 'policy_unavailable' END;
+        AND o.post_id=slot.post_id AND o.status IN('draft','active','paused','operational_hold')) THEN 'legacy_pool_incompatible'
+      -- An admitted community's song without room in the account, leg or global
+      -- funding envelope is unfundable, not merely awaiting its first quote.
+      WHEN EXISTS(SELECT 1 FROM reward_shared_song_template_admissions_v2 admission
+        JOIN reward_shared_song_templates_v2 template USING(community_id,template_id)
+        JOIN reward_funding_profiles_v2 admitted ON admitted.profile_id=template.profile_id
+        WHERE admission.community_id=slot.community_id AND admission.accepted
+          AND admission.effective_at<=statement_timestamp() AND admission.valid_until>statement_timestamp()
+          AND (SELECT count(*) FROM reward_funding_work_envelopes_v2 envelope
+            WHERE envelope.profile_id=admitted.profile_id AND envelope.valid_until>statement_timestamp()
+              AND envelope.allocated-envelope.used-envelope.reserved>=(admitted.policy->>'workPerInstruction')::BIGINT
+              AND (envelope.scope,envelope.scope_key) IN (('account',i->>'accountId'),
+                ('leg',coalesce(slot.target->>'pool_leg_id','empty-slot:'||slot.slot_id)),('global','funding')))<>3)
+        THEN 'work_budget_exhausted'
+      ELSE 'policy_unavailable' END;
     RETURN jsonb_build_object('object','song_megapot_funding_context','version',2,'readiness','unavailable',
       'target',fallback_target,'persona_id',persona,'reason',refusal,'retry_after_seconds',NULL,'own_recovery_href',NULL);
   END IF;
@@ -31814,6 +32178,14 @@ BEGIN
     WHEN reward_wallet_nonce_ownership_open_v2((snap.context->>'chain_id')::BIGINT,snap.context->'actor'->>'sender_address') THEN 'wallet_nonce_busy'
     WHEN NOT slot.reward_policy_ready THEN 'mixed_objective_unavailable'
     WHEN slot.status<>'open' THEN 'recovery_required'
+    -- The same envelopes create_song_contribution_v2 charges; a quote it would
+    -- refuse is never shown as ready.
+    WHEN (SELECT count(*) FROM reward_funding_work_envelopes_v2 envelope
+      WHERE envelope.profile_id=p.profile_id AND envelope.valid_until>statement_timestamp()
+        AND envelope.allocated-envelope.used-envelope.reserved>=(p.policy->>'workPerInstruction')::BIGINT
+        AND (envelope.scope,envelope.scope_key) IN (('account',i->>'accountId'),
+          ('leg',coalesce(slot.target->>'pool_leg_id','empty-slot:'||slot.slot_id)),('global','funding')))<>3
+      THEN 'work_budget_exhausted'
     WHEN w.valid_until<=statement_timestamp() OR (snap.context->>'context_expires_at')::TIMESTAMPTZ<=statement_timestamp() THEN 'observation_stale'
     WHEN snap.context->'context_ref'->>'profile_hash' IS DISTINCT FROM p.profile_hash
       OR snap.context->'context_ref'->>'schedule_witness_id' IS DISTINCT FROM w.witness_id
@@ -33611,6 +33983,46 @@ BEGIN
     WHERE chain_id=effect.chain_id AND signer_address=effect.signer_address;
 END
 $_$;
+
+CREATE FUNCTION renew_browser_session_v1(id text, secret_hash text, csrf text, origin text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE s browser_sessions; observed TIMESTAMPTZ;
+BEGIN
+  LOCK TABLE account_aliases IN SHARE MODE;
+  SELECT * INTO s FROM browser_sessions WHERE session_id=id FOR UPDATE;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  -- Time is sampled after the lock wait; expired or revoked authority never rolls.
+  observed:=clock_timestamp();
+  IF NOT s.renewable OR s.scope='persona-wallet-setup-v1' OR s.revoked_at IS NOT NULL
+    OR s.renewal_secret_hash IS DISTINCT FROM secret_hash OR s.csrf_hash IS DISTINCT FROM csrf
+    OR s.browser_origin IS DISTINCT FROM origin OR s.idle_expires_at<=observed
+    OR s.absolute_expires_at<=observed THEN RETURN NULL; END IF;
+  PERFORM 1 FROM identity_credentials c JOIN users u ON u.user_id=s.account_id AND u.status='active'
+    WHERE c.credential_id=s.credential_id AND c.status='active' AND c.provider='privy'
+      AND c.canonical_user_id=s.credential_user_id AND c.provider_app_id=s.provider_app_id
+      AND c.provider_subject=s.provider_subject FOR SHARE OF c,u;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  observed:=clock_timestamp();
+  IF s.idle_expires_at<=observed OR s.absolute_expires_at<=observed
+    OR NOT browser_session_account_matches_v1(s.credential_user_id,s.account_id) THEN RETURN NULL; END IF;
+  UPDATE browser_sessions SET idle_expires_at=greatest(idle_expires_at,
+    least(observed+interval '30 days',absolute_expires_at)) WHERE session_id=id RETURNING * INTO s;
+  RETURN browser_session_packet_v1(s);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='renew_browser_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, secret_hash text, csrf text, origin text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION renew_guest_authority_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
@@ -36201,6 +36613,35 @@ BEGIN
     WHERE n.nspname=target_schema AND p.proname='retire_moderated_dance_replay_epoch_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_epoch text, p_acceptance text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION revoke_browser_session_v1(id text, secret_hash text, account text, csrf text, origin text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE s browser_sessions;
+BEGIN
+  SELECT * INTO s FROM browser_sessions WHERE session_id=id FOR UPDATE;
+  IF NOT FOUND OR s.csrf_hash IS DISTINCT FROM csrf OR s.browser_origin IS DISTINCT FROM origin
+    OR (CASE WHEN secret_hash IS NOT NULL THEN s.renewal_secret_hash IS DISTINCT FROM secret_hash
+      ELSE account IS NULL OR s.account_id IS DISTINCT FROM account END)
+  THEN RETURN FALSE; END IF;
+  IF s.revoked_at IS NULL THEN
+    UPDATE browser_sessions SET revoked_at=clock_timestamp() WHERE session_id=id;
+  END IF;
+  RETURN TRUE;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='revoke_browser_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, secret_hash text, account text, csrf text, origin text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
 $baseline_function_path$;
@@ -48877,6 +49318,7 @@ CREATE TABLE dance_review_policy_versions_v1 (
     valid_from timestamp with time zone NOT NULL,
     valid_until timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT dance_review_policy_version_v2 CHECK ((((review_policy ->> 'version'::text) = ANY (ARRAY['moderator-review-policy-v1'::text, 'moderator-review-policy-v2'::text])) IS TRUE)),
     CONSTRAINT dance_review_policy_versions_v1_accepted_by_check CHECK ((btrim(accepted_by) <> ''::text)),
     CONSTRAINT dance_review_policy_versions_v1_check CHECK ((valid_until > valid_from)),
     CONSTRAINT dance_review_policy_versions_v1_check1 CHECK ((((review_policy ->> 'hash'::text) = policy_hash) IS TRUE)),
@@ -48886,7 +49328,6 @@ CREATE TABLE dance_review_policy_versions_v1 (
     CONSTRAINT dance_review_policy_versions_v1_policy_hash_check CHECK ((policy_hash ~ '^[a-f0-9]{64}$'::text)),
     CONSTRAINT dance_review_policy_versions_v1_policy_id_check CHECK (is_dance_identifier(policy_id)),
     CONSTRAINT dance_review_policy_versions_v1_review_policy_check CHECK ((jsonb_typeof(review_policy) = 'object'::text)),
-    CONSTRAINT dance_review_policy_versions_v1_review_policy_check1 CHECK ((((review_policy ->> 'version'::text) = 'moderator-review-policy-v1'::text) IS TRUE)),
     CONSTRAINT dance_review_policy_versions_v1_review_policy_check2 CHECK (((((review_policy ->> 'reviewWindowMs'::text))::numeric = (604800000)::numeric) IS TRUE))
 );
 
@@ -57324,6 +57765,9 @@ ALTER TABLE ONLY avatar_assets
 ALTER TABLE ONLY avatar_assets
     ADD CONSTRAINT avatar_assets_sealed_key_key UNIQUE (sealed_key);
 
+ALTER TABLE ONLY browser_sessions
+    ADD CONSTRAINT browser_sessions_pkey PRIMARY KEY (session_id);
+
 ALTER TABLE ONLY comment_moderation_actions
     ADD CONSTRAINT comment_moderation_actions_actor_key_unique UNIQUE (case_ref, actor_user_id, idempotency_key);
 
@@ -60732,6 +61176,10 @@ CREATE INDEX avatar_assets_owner_created ON avatar_assets USING btree (owner_acc
 
 CREATE INDEX avatar_assets_unscanned ON avatar_assets USING btree (created_at, asset_id) WHERE (moderation_status = 'unscanned'::text);
 
+CREATE INDEX browser_sessions_account_idx ON browser_sessions USING btree (account_id);
+
+CREATE INDEX browser_sessions_expiry_idx ON browser_sessions USING btree (absolute_expires_at);
+
 CREATE UNIQUE INDEX comment_moderation_cases_open_source_submission_unique ON comment_moderation_cases USING btree (source, submission_id) WHERE (status = 'open'::text);
 
 CREATE INDEX comment_moderation_cases_open_target_idx ON comment_moderation_cases USING btree (community_id, comment_id, created_at, case_ref) WHERE (status = 'open'::text);
@@ -61465,6 +61913,8 @@ CREATE TRIGGER assertion_revalidation_events_append_only BEFORE DELETE OR UPDATE
 CREATE TRIGGER assertions_append_only BEFORE DELETE OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER assertions_validate_binding BEFORE INSERT OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_assertion_binding();
+
+CREATE TRIGGER browser_session_binding BEFORE UPDATE ON browser_sessions FOR EACH ROW EXECUTE FUNCTION guard_browser_session_v1();
 
 CREATE TRIGGER capture_moderated_dance_attempt_provider_effects_v1 AFTER INSERT OR UPDATE ON dance_moderated_processing_v1 FOR EACH ROW EXECUTE FUNCTION capture_moderated_dance_attempt_provider_effects_v1();
 
@@ -63271,6 +63721,12 @@ ALTER TABLE ONLY avatar_assets
 
 ALTER TABLE ONLY avatar_assets
     ADD CONSTRAINT avatar_assets_owner_account_id_intent_id_fkey FOREIGN KEY (owner_account_id, intent_id) REFERENCES community_creation_intents(actor_id, intent_id);
+
+ALTER TABLE ONLY browser_sessions
+    ADD CONSTRAINT browser_sessions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY browser_sessions
+    ADD CONSTRAINT browser_sessions_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES identity_credentials(credential_id);
 
 ALTER TABLE ONLY comment_moderation_actions
     ADD CONSTRAINT comment_moderation_actions_case_fk FOREIGN KEY (community_id, case_ref) REFERENCES comment_moderation_cases(community_id, case_ref);

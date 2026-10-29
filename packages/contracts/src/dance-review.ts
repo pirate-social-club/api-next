@@ -54,7 +54,10 @@ export const WithdrawDanceReviewV1 = Schema.Struct({
   ...request,
 });
 export const RecordDanceOwnerVerdictV1 = Schema.Struct({
-  version: Schema.Literal("dance-owner-verdict-attestation-v1"),
+  version: Schema.Literals([
+    "dance-owner-verdict-attestation-v1",
+    "dance-owner-verdict-attestation-v2",
+  ]),
   operation: Schema.Literal("verdict"),
   ...request,
   verdict: Schema.Literals(["passed", "not_passed"]),
@@ -106,7 +109,7 @@ export const DanceReviewPrivateResultV1 = Schema.Struct({
   qualification_policy_version: Id,
   qualification_policy_hash: Hash,
   captured_policy: Schema.Struct({
-    version: Schema.Literal("moderator-review-policy-v1"),
+    version: Schema.Literals(["moderator-review-policy-v1", "moderator-review-policy-v2"]),
     hash: Hash,
     rubric_version: Id,
     rubric_hash: Hash,
@@ -137,7 +140,7 @@ export const DanceReviewPrivateResultV1 = Schema.Struct({
   verdict: Schema.NullOr(Schema.Literals(["passed", "not_passed"])),
   score_bps: Schema.Null,
   qualification_ref: Schema.NullOr(Id),
-  cue_attestation: Schema.NullOr(Schema.Literals(["affirmed", "not_attested"])),
+  cue_attestation: Schema.NullOr(Schema.Literals(["affirmed", "not_attested", "not_required"])),
   initial_submit_receipt: Schema.NullOr(
     Schema.Struct({
       receipt_id: Id,
@@ -205,8 +208,11 @@ export const DanceReviewPrivateResultV1 = Schema.Struct({
     if (r.qualification_ref !== null && r.verdict !== "passed")
       return "Only an admitted pass may qualify";
     if (
-      (r.cue_attestation === "affirmed") !== (r.verdict === "passed") ||
-      (r.cue_attestation === "not_attested") !== (r.verdict === "not_passed")
+      r.captured_policy.version === "moderator-review-policy-v2"
+        ? r.cue_attestation !== (r.verdict === null ? null : "not_required")
+        : (r.cue_attestation === "affirmed") !== (r.verdict === "passed") ||
+          (r.cue_attestation === "not_attested") !== (r.verdict === "not_passed") ||
+          r.cue_attestation === "not_required"
     )
       return "Invalid owner attestation";
     if (
@@ -390,12 +396,39 @@ export const DanceOwnerDetailV1 = Schema.Struct({
   review: DanceOwnerQueueItemV1,
   reference_post_id: Id,
   video_render_revision: Id,
-  cue: Schema.Struct({ id: Id, start_ms: Schema.Int, end_ms: Schema.Int, hold_ms: Revision }),
+  cue: Schema.Struct({
+    id: Id,
+    start_ms: Schema.Int,
+    end_ms: Schema.Int,
+    hold_ms: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+  }),
   body: Schema.Struct({ start_ms: Schema.Int, end_ms: Schema.Int }),
   rubric_version: Id,
   rubric_hash: Hash,
-  attestation_version: Schema.Literal("dance-owner-verdict-attestation-v1"),
-});
+  attestation_version: Schema.Literals([
+    "dance-owner-verdict-attestation-v1",
+    "dance-owner-verdict-attestation-v2",
+  ]),
+}).check(
+  Schema.makeFilter((r) =>
+    r.body.end_ms - r.body.start_ms >= 6000 &&
+    r.body.end_ms - r.body.start_ms <= 30000 &&
+    (r.attestation_version === "dance-owner-verdict-attestation-v2"
+      ? r.cue.id === "none" &&
+        r.cue.start_ms === 0 &&
+        r.cue.end_ms === 0 &&
+        r.cue.hold_ms === 0 &&
+        r.body.start_ms === 0
+      : r.cue.id !== "none" &&
+        r.cue.start_ms >= 0 &&
+        r.cue.start_ms < r.cue.end_ms &&
+        r.cue.end_ms <= r.body.start_ms &&
+        r.cue.hold_ms > 0 &&
+        r.cue.hold_ms <= r.cue.end_ms - r.cue.start_ms)
+      ? undefined
+      : "Owner attestation mode must match the captured cue and dance",
+  ),
+);
 export type DanceOwnerDetailV1 = typeof DanceOwnerDetailV1.Type;
 export const GetOwnerModeratedDanceReview = endpoint({
   method: "GET",

@@ -101,6 +101,8 @@ export const DANCE_SERVING_FUNCTION_DENIALS = [
   "guard_moderated_dance_safety_call_v1()",
   "lock_moderated_dance_processing_authority_v1(text)",
   "moderated_dance_account_runtime_v1()",
+  "moderated_dance_capture_mode_valid_v2(jsonb)",
+  "moderated_dance_policy_profile_matches_v2(jsonb,jsonb)",
   "moderated_dance_media_runtime_v1()",
   "moderated_dance_public_replay_ready_v1(text,text,text)",
   "moderated_dance_public_replay_requirements_v1()",

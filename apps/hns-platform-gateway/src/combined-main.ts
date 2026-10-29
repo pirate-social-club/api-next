@@ -1,8 +1,8 @@
 import { isAbsolute, join, resolve } from "node:path";
 import {
-  encodeHnsCommunityAppInteractiveGatewayProfileV3,
+  encodeHnsCommunityAppInteractiveGatewayProfileV4,
   HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_SHA256,
-  verifyHnsCommunityAppInteractiveGatewayProfileV3,
+  verifyHnsCommunityAppInteractiveGatewayProfileV4,
 } from "@pirate/application/hns-community-app-gateway";
 import {
   encodeHnsCommunityHandlePersonaGatewayProfileV2,
@@ -168,7 +168,7 @@ export function assembleHnsCommunityAppHandleGatewayRuntime(input: {
   } as const;
   const communityApp = makeHnsCommunityAppGatewayComposition(true, {
     ...common,
-    profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV3(),
+    profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV4(),
     authority_source: authority.community_authority_source,
     forwarder_limits: input.configuration.forwarder_limits,
   });
@@ -218,7 +218,7 @@ function credentialReader(directory: string) {
 async function runHnsCommunityAppHandleGateway(arguments_: readonly string[]): Promise<void> {
   const argumentsValue = parseHnsCommunityAppHandleGatewayArguments(arguments_);
   await Promise.all([
-    verifyHnsCommunityAppInteractiveGatewayProfileV3(),
+    verifyHnsCommunityAppInteractiveGatewayProfileV4(),
     verifyHnsCommunityHandlePersonaGatewayProfileV2(),
   ]);
   const credentialsDirectory = process.env.CREDENTIALS_DIRECTORY;
