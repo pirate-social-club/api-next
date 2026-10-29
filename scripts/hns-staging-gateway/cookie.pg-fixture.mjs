@@ -58,6 +58,9 @@ export async function seedCookieProfileFixture(client) {
       for (const [from, to] of mappings) text = text.replaceAll(from, to);
       Object.assign(raw, JSON.parse(text));
       const state = raw.state;
+      // These retained per-root inventories are independent registry histories.
+      // Sharing a version under one registry would collide on its global key.
+      state.inventory.registry_reference = `hns-authority-inventory-registry:cookie-fixture-${root}`;
       let inventoryText = Buffer.from(state.inventory.bytes_hex, "hex").toString();
       for (const [from, to] of mappings) inventoryText = inventoryText.replaceAll(from, to);
       const inventory = JSON.parse(inventoryText);
