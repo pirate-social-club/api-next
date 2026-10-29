@@ -17,6 +17,25 @@ export async function readHnsStagingOwnerTxtRecovery(
   },
 ): Promise<HnsStagingOwnerTxtRecovery> {
   const review = decodeHnsStagingOwnerTxtReview(input.review);
+  return readCurrentHnsStagingOwnerRecovery(client, {
+    ...review,
+    root_import_session_id: input.root_import_session_id,
+    lock: input.lock,
+  });
+}
+
+/** Same immutable creator/provider/expiry lineage as owner-TXT adoption, also
+ * available after adoption for a later reviewed staging profile successor. */
+export async function readCurrentHnsStagingOwnerRecovery(
+  client: Client,
+  input: {
+    readonly community_id: string;
+    readonly route_binding_id: string;
+    readonly root_import_session_id: string;
+    readonly lock: boolean;
+  },
+): Promise<HnsStagingOwnerTxtRecovery> {
+  const review = input;
   if (input.lock) {
     await client.query("SELECT 1 FROM communities WHERE community_id=$1 FOR UPDATE", [
       review.community_id,

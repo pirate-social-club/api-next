@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 
 /** Retain the observed generations while giving the database fixture current validity. */
-export async function seedContinuityFixture(client) {
+export async function seedContinuityFixture(client, transform) {
   const raw = JSON.parse(
     gunzipSync(
       await Bun.file(
@@ -10,6 +10,7 @@ export async function seedContinuityFixture(client) {
       ).arrayBuffer(),
     ).toString(),
   );
+  if (transform !== undefined) await transform(raw);
   const state = raw.state;
   // A retained zone revision can be a dated counter, independent of activation generation.
   state.dns.zone_revision = "2026100714";
@@ -102,8 +103,8 @@ export async function seedContinuityFixture(client) {
       environment: inventory.environment,
       runtime_capability_set_digest: inventory.runtime_capability_set_digest,
       inventory_bytes: Buffer.from(state.inventory.bytes_hex, "hex"),
-      published_at: new Date(Date.now() - 60000).toISOString(),
-      expires_at: until,
+      published_at: transform ? inventory.published_at : new Date(Date.now() - 60000).toISOString(),
+      expires_at: transform ? inventory.expires_at : until,
     });
     const { zone_hex, activation_document_bytes, ...dnsRow } = dns;
     await insert("hns_dns_zone_activation_revisions", {

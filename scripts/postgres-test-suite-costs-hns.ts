@@ -145,6 +145,11 @@ export const postgresHnsSuiteCostEstimates = {
   },
   "scripts/hns-continuity/promotion.pg.test.ts": { sourceCallCount: 1, milliseconds: 6730 },
   "scripts/hns-monitor/snapshot.pg.test.ts": { sourceCallCount: 1, milliseconds: 2187 },
+  // Initial bounded scheduling estimate; replace with the first native measurement.
+  "scripts/hns-staging-cookie-profile-successor.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 20000,
+  },
   "scripts/staging-hns-cutover-probe-reseed.pg.test.ts": { sourceCallCount: 1, milliseconds: 3407 },
   "scripts/staging-hns-gateway-role.pg.test.ts": { sourceCallCount: 1, milliseconds: 452 },
   "scripts/staging-hns-post-migration-entry.pg.test.ts": { sourceCallCount: 8, milliseconds: 6067 },
