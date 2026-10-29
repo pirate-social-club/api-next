@@ -67,7 +67,10 @@ const Work = Schema.Struct({
   communityId: Id,
   accountFence: Natural,
   terms: Schema.Struct({
-    version: Schema.Literal("dance-moderated-capture-terms-v1"),
+    version: Schema.Literals([
+      "dance-moderated-capture-terms-v1",
+      "dance-moderated-capture-terms-v2",
+    ]),
     session_id: Id,
     created_at_ms: Natural,
     policy_id: Id,
@@ -76,7 +79,14 @@ const Work = Schema.Struct({
     terms_hash: Hash,
     safety_policy: ModeratedDanceSafetyPolicySnapshot,
     disposition: ModeratedDanceDisposition,
-  }),
+  }).check(
+    Schema.makeFilter((t) =>
+      (t.version === "dance-moderated-capture-terms-v2") ===
+      (t.profile.version === "dance-moderated-intake-profile-v2")
+        ? undefined
+        : "Capture terms/profile mode mismatch",
+    ),
+  ),
   ingressKey: Id,
   contentType: Schema.Literals(["video/mp4", "video/quicktime"]),
   sizeBytes: Natural,
