@@ -11,7 +11,10 @@ import {
   SHARED_SONG_SUCCESSOR_RULE,
   SHARED_SONG_SUCCESSOR_RULE_ID,
 } from "../packages/platform-cf/src/shared-song-successor-schedule.ts";
-import { makeControlPlaneSongContributionPorts } from "../packages/platform-cf/src/song-megapot-contribution-repository.ts";
+import {
+  makeControlPlaneSongContributionPorts,
+  makeControlPlaneSongContributionReadPorts,
+} from "../packages/platform-cf/src/song-megapot-contribution-repository.ts";
 import {
   applySharedSongSuccessorTemplate,
   readSharedSongSuccessorTemplate,
@@ -207,12 +210,18 @@ suite("shared-song pot provisioning", () => {
       "karaoke",
       "dance",
     ]);
-    await applySharedSongProvisioning(admin, rows);
+    // As for a song published after provisioning, the slot's leg envelope arrives later.
+    const slotEnvelope = rows.envelopes.find((e) => e.scope === "leg");
+    if (slotEnvelope === undefined) throw new Error("slot envelope required");
+    await applySharedSongProvisioning(admin, {
+      ...rows,
+      envelopes: rows.envelopes.filter((e) => e !== slotEnvelope),
+    });
     await expect(applySharedSongProvisioning(admin, rows)).rejects.toThrow();
 
     const now = Date.now();
-    // Sixteen minutes out, funding could not reach the Safe purchase in time.
-    drawingTime = BigInt(Math.floor(now / 1000) + 16 * 60);
+    // Twenty minutes out, a slot with its envelope would be quoted.
+    drawingTime = BigInt(Math.floor(now / 1000) + 20 * 60);
     const headTimestamp = BigInt(Math.floor(now / 1000) - 2);
     const head = { blockNumber: 1_000n, blockHash: hex("e"), blockTimestamp: headTimestamp };
     const producer = makeControlPlaneSharedSongContextProducer({
@@ -239,6 +248,50 @@ suite("shared-song pot provisioning", () => {
       Effect.runPromise(
         producer.run({ enabled: true, ensure: () => Effect.void }) as Effect.Effect<void, unknown>,
       );
+    const reads = makeControlPlaneSongContributionReadPorts(
+      makeDirectPostgresControlPlaneLayer(runtime?.url as string),
+      { authorize: () => Effect.succeed({ accountId: funderAccountId }) },
+      { rewardsEnabled: true },
+    );
+    const read = () =>
+      Effect.runPromise(
+        reads.context(
+          { communityId, postId, contributionId: null },
+          funderAccountId,
+          personaId,
+        ) as Effect.Effect<{ readiness: string; reason?: string }, unknown>,
+      );
+    // Without it the claim skips the slot before charging any context work, and the
+    // reader reports the song unfundable instead of awaiting a quote.
+    await produce();
+    expect(
+      (
+        await admin.query(
+          `SELECT (SELECT count(*)::int FROM reward_song_context_work_v2) AS work,
+                  (SELECT count(*)::int FROM reward_context_work_counters_v2) AS counters`,
+        )
+      ).rows,
+    ).toEqual([{ work: 0, counters: 0 }]);
+    expect(await read()).toMatchObject({
+      readiness: "unavailable",
+      reason: "work_budget_exhausted",
+    });
+    await admin.query(
+      `INSERT INTO reward_funding_work_envelopes_v2(work_id,scope,scope_key,profile_id,
+         contribution_id,allocated,used,reserved,valid_until,payload)
+       VALUES($1,$2,$3,$4,NULL,$5,0,0,$6,NULL)`,
+      [
+        slotEnvelope.work_id,
+        slotEnvelope.scope,
+        slotEnvelope.scope_key,
+        slotEnvelope.profile_id,
+        slotEnvelope.allocated,
+        slotEnvelope.valid_until,
+      ],
+    );
+
+    // Sixteen minutes out, funding could not reach the Safe purchase in time.
+    drawingTime = BigInt(Math.floor(Date.now() / 1000) + 16 * 60);
     await produce();
     expect(
       (
@@ -278,6 +331,20 @@ suite("shared-song pot provisioning", () => {
     expect(snapshot.context.quote.prospective_terms.reward_policy_template_hash).toBe(
       rows.template.template_hash,
     );
+    // A ready quote that create would refuse for want of leg work is never shown as ready.
+    expect(await read()).toMatchObject({ readiness: "ready" });
+    await admin.query(
+      "UPDATE reward_funding_work_envelopes_v2 SET reserved=allocated-used WHERE work_id=$1",
+      [slotEnvelope.work_id],
+    );
+    expect(await read()).toMatchObject({
+      readiness: "unavailable",
+      reason: "work_budget_exhausted",
+    });
+    await admin.query("UPDATE reward_funding_work_envelopes_v2 SET reserved=0 WHERE work_id=$1", [
+      slotEnvelope.work_id,
+    ]);
+    expect(await read()).toMatchObject({ readiness: "ready" });
   }, 60_000);
 
   test("a funder's first contribution binds a pot whose one leg admits Study, singing and Dance", async () => {

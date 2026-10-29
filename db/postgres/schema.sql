@@ -5727,6 +5727,15 @@ BEGIN
        AND (counter.maximum_units IS DISTINCT FROM (CASE WHEN counter.account_id='' THEN template.operational_profile->>'maximumContextWorkGlobal'
              ELSE template.operational_profile->>'maximumContextWorkPerAccount' END)::BIGINT
          OR counter.used_units+(template.operational_profile->>'contextWorkPerAttempt')::BIGINT>counter.maximum_units))
+   -- Quote only what create_song_contribution_v2 could admit: the account, this
+   -- slot's leg and the global funding envelope each hold one more instruction.
+   -- A song published after provisioning has no leg envelope and is skipped
+   -- before any context work is charged.
+   AND (SELECT count(*) FROM reward_funding_work_envelopes_v2 envelope
+     WHERE envelope.profile_id=p.profile_id AND envelope.valid_until>clock_timestamp()
+       AND envelope.allocated-envelope.used-envelope.reserved>=(p.policy->>'workPerInstruction')::BIGINT
+       AND (envelope.scope,envelope.scope_key) IN (('account',account.user_id),
+         ('leg',coalesce(s.target->>'pool_leg_id','empty-slot:'||s.slot_id)),('global','funding')))=3
    AND (s.target IS NOT NULL OR NOT EXISTS(SELECT 1 FROM song_reward_offers existing WHERE existing.community_id=s.community_id AND existing.post_id=s.post_id
      AND existing.status IN('draft','active','paused','operational_hold')))
    AND ((template.operational_profile->>'maximumContextAttempts')::BIGINT>0
@@ -31804,7 +31813,21 @@ BEGIN
       'canonical_song_id',slot.post_id,'audio_revision',fallback_audio,'slot_id',slot.slot_id,'slot_generation',slot.generation,'offer_id',NULL,'pool_leg_id',NULL));
     refusal:=CASE WHEN NOT EXISTS(SELECT 1 FROM persona_wallet_assignments a WHERE a.account_id=i->>'accountId' AND a.persona_id=persona AND a.status='active')
       THEN 'wallet_not_ready' WHEN slot.target IS NULL AND EXISTS(SELECT 1 FROM song_reward_offers o WHERE o.community_id=slot.community_id
-        AND o.post_id=slot.post_id AND o.status IN('draft','active','paused','operational_hold')) THEN 'legacy_pool_incompatible' ELSE 'policy_unavailable' END;
+        AND o.post_id=slot.post_id AND o.status IN('draft','active','paused','operational_hold')) THEN 'legacy_pool_incompatible'
+      -- An admitted community's song without room in the account, leg or global
+      -- funding envelope is unfundable, not merely awaiting its first quote.
+      WHEN EXISTS(SELECT 1 FROM reward_shared_song_template_admissions_v2 admission
+        JOIN reward_shared_song_templates_v2 template USING(community_id,template_id)
+        JOIN reward_funding_profiles_v2 admitted ON admitted.profile_id=template.profile_id
+        WHERE admission.community_id=slot.community_id AND admission.accepted
+          AND admission.effective_at<=statement_timestamp() AND admission.valid_until>statement_timestamp()
+          AND (SELECT count(*) FROM reward_funding_work_envelopes_v2 envelope
+            WHERE envelope.profile_id=admitted.profile_id AND envelope.valid_until>statement_timestamp()
+              AND envelope.allocated-envelope.used-envelope.reserved>=(admitted.policy->>'workPerInstruction')::BIGINT
+              AND (envelope.scope,envelope.scope_key) IN (('account',i->>'accountId'),
+                ('leg',coalesce(slot.target->>'pool_leg_id','empty-slot:'||slot.slot_id)),('global','funding')))<>3)
+        THEN 'work_budget_exhausted'
+      ELSE 'policy_unavailable' END;
     RETURN jsonb_build_object('object','song_megapot_funding_context','version',2,'readiness','unavailable',
       'target',fallback_target,'persona_id',persona,'reason',refusal,'retry_after_seconds',NULL,'own_recovery_href',NULL);
   END IF;
@@ -31833,6 +31856,14 @@ BEGIN
     WHEN reward_wallet_nonce_ownership_open_v2((snap.context->>'chain_id')::BIGINT,snap.context->'actor'->>'sender_address') THEN 'wallet_nonce_busy'
     WHEN NOT slot.reward_policy_ready THEN 'mixed_objective_unavailable'
     WHEN slot.status<>'open' THEN 'recovery_required'
+    -- The same envelopes create_song_contribution_v2 charges; a quote it would
+    -- refuse is never shown as ready.
+    WHEN (SELECT count(*) FROM reward_funding_work_envelopes_v2 envelope
+      WHERE envelope.profile_id=p.profile_id AND envelope.valid_until>statement_timestamp()
+        AND envelope.allocated-envelope.used-envelope.reserved>=(p.policy->>'workPerInstruction')::BIGINT
+        AND (envelope.scope,envelope.scope_key) IN (('account',i->>'accountId'),
+          ('leg',coalesce(slot.target->>'pool_leg_id','empty-slot:'||slot.slot_id)),('global','funding')))<>3
+      THEN 'work_budget_exhausted'
     WHEN w.valid_until<=statement_timestamp() OR (snap.context->>'context_expires_at')::TIMESTAMPTZ<=statement_timestamp() THEN 'observation_stale'
     WHEN snap.context->'context_ref'->>'profile_hash' IS DISTINCT FROM p.profile_hash
       OR snap.context->'context_ref'->>'schedule_witness_id' IS DISTINCT FROM w.witness_id
