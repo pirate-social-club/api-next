@@ -222,6 +222,13 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_activation_v1(
 -- and `bun run db:preflight:serving-functions` reads it back through the
 -- serving connection.
 -- Ordinary account function grants begin
+-- Requires migration0330. Session rows and internal helpers remain private.
+REVOKE ALL ON browser_sessions FROM api_next_app;
+GRANT EXECUTE ON FUNCTION create_browser_session_v1(JSONB) TO api_next_app;
+GRANT EXECUTE ON FUNCTION read_browser_session_access_v1(TEXT,TEXT,TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION read_browser_session_renewal_v1(TEXT,TEXT,TEXT,TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION renew_browser_session_v1(TEXT,TEXT,TEXT,TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION revoke_browser_session_v1(TEXT,TEXT,TEXT,TEXT,TEXT) TO api_next_app;
 GRANT EXECUTE ON FUNCTION provision_account_participation_owner_v1(TEXT) TO api_next_app;
 GRANT EXECUTE ON FUNCTION lock_original_account_audio_source_private_v1(TEXT) TO api_next_app;
 GRANT EXECUTE ON FUNCTION capture_account_study_audio_private_v1(

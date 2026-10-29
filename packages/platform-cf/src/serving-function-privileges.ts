@@ -1,5 +1,6 @@
 /**
- * Function EXECUTE the ordinary serving role needs after migrations 0247-0268.
+ * Function EXECUTE the ordinary serving role needs after migrations 0247-0268
+ * and the separately classified browser-session migration0330.
  *
  * Those migrations make every function they define owner-only and infer no
  * role grant. Ordinary account code calls the functions below directly, so the
@@ -10,6 +11,17 @@
  * the matching grant block, and a test keeps the two equal.
  */
 export const SERVING_FUNCTION_EXECUTE_GRANTS = [
+  { signature: "create_browser_session_v1(jsonb)", purpose: "owned browser sign-in" },
+  { signature: "read_browser_session_access_v1(text,text,text)", purpose: "owned browser access" },
+  {
+    signature: "read_browser_session_renewal_v1(text,text,text,text)",
+    purpose: "owned browser renewal",
+  },
+  { signature: "renew_browser_session_v1(text,text,text,text)", purpose: "owned browser renewal" },
+  {
+    signature: "revoke_browser_session_v1(text,text,text,text,text)",
+    purpose: "owned browser logout",
+  },
   {
     signature: "settle_account_spoken_provider_refusal_private_v1(jsonb,integer)",
     purpose: "account spoken Study recovery",
@@ -111,6 +123,9 @@ export const SERVING_FUNCTION_EXECUTE_GRANTS = [
 
 /** Owner-only functions from migrations 0247-0268 the serving role must not execute. */
 export const SERVING_FUNCTION_EXECUTE_DENIALS = [
+  "guard_browser_session_v1()",
+  "browser_session_packet_v1(browser_sessions)",
+  "browser_session_account_matches_v1(text,text)",
   "initialize_song_owner_policy_v1()",
   // The attempt host exposes this deletion stop, but nothing calls it yet.
   "require_captured_audio_deletion_stop_private_v1(jsonb)",
@@ -263,7 +278,11 @@ export const SERVING_FUNCTION_EXECUTE_DENIALS = [
 ] as const;
 
 /** First and last migrations whose private functions these lists classify. */
-export const SERVING_FUNCTION_PRIVILEGE_MIGRATIONS = { first: 247, last: 268 } as const;
+export const SERVING_FUNCTION_PRIVILEGE_MIGRATIONS = {
+  first: 247,
+  last: 268,
+  additional: [330],
+} as const;
 
 /**
  * SELECT-only facts from the executing connection, including inherited access.

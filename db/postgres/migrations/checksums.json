@@ -330,6 +330,7 @@
     "0327_reward_safe_treasury_disposition.sql": "39cdcc53149be886ffdbb91aef2969be3a838f43cdde36c2d3607ad48bbb12b6",
     "0328_shared_song_context_claim_eligibility.sql": "f42e4bf833272dea288845c28d361f31a0f46b391f65d9f2aa94f5f61d78c73b",
     "0329_shared_song_context_funding_envelopes.sql": "2323b3e3ffcf2d399930597ac1c73e37d355e219b81b266065147f06a7db5f93",
+    "0330_browser_sessions.sql": "91b9d55aa720c2f9295316b1ff5a019a43192df0b9f8b5aebe5201effb10ed3a",
     "0331_moderated_dance_no_pose_policy.sql": "b804f9c0e525d8281b2f48542325fd9d1dc033007835401133d718090cd2f844"
   }
 }

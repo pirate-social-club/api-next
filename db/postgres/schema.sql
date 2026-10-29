@@ -3793,6 +3793,89 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION browser_session_account_matches_v1(source_id text, expected_id text) RETURNS boolean
+    LANGUAGE plpgsql STABLE
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE cursor_id TEXT:=source_id; next_id TEXT; visited TEXT[]:=ARRAY[]::TEXT[]; depth INTEGER;
+BEGIN
+  IF NOT EXISTS(SELECT 1 FROM users WHERE user_id=source_id AND status='active') THEN RETURN FALSE; END IF;
+  FOR depth IN 0..8 LOOP
+    IF cursor_id=ANY(visited) THEN RETURN FALSE; END IF;
+    visited:=array_append(visited,cursor_id);
+    SELECT canonical_user_id INTO next_id FROM account_aliases
+      WHERE source_user_id=cursor_id AND ((kind='alias' AND status='active') OR
+        (kind='merge' AND status IN ('finalizing','completed')));
+    IF NOT FOUND THEN
+      RETURN cursor_id=expected_id AND EXISTS(SELECT 1 FROM users WHERE user_id=cursor_id AND status='active');
+    END IF;
+    IF depth=8 OR next_id IS NULL OR btrim(next_id)='' OR next_id<>btrim(next_id) THEN RETURN FALSE; END IF;
+    cursor_id:=next_id;
+  END LOOP;
+  RETURN FALSE;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='browser_session_account_matches_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='source_id text, expected_id text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE TABLE browser_sessions (
+    session_id text NOT NULL,
+    account_id text NOT NULL,
+    credential_id text NOT NULL,
+    credential_user_id text NOT NULL,
+    provider_app_id text NOT NULL,
+    provider_subject text NOT NULL,
+    scope text NOT NULL,
+    browser_origin text NOT NULL,
+    renewable boolean NOT NULL,
+    renewal_secret_hash text,
+    csrf_hash text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    idle_expires_at timestamp with time zone NOT NULL,
+    absolute_expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    CONSTRAINT browser_sessions_browser_origin_check CHECK ((browser_origin ~ '^https://[^/[:space:]?#@]+$'::text)),
+    CONSTRAINT browser_sessions_check CHECK (((renewable AND (renewal_secret_hash IS NOT NULL) AND (renewal_secret_hash ~ '^[a-f0-9]{64}$'::text)) OR ((NOT renewable) AND (renewal_secret_hash IS NULL)))),
+    CONSTRAINT browser_sessions_check1 CHECK (((created_at < idle_expires_at) AND (idle_expires_at <= absolute_expires_at))),
+    CONSTRAINT browser_sessions_check2 CHECK ((absolute_expires_at <= (created_at + '90 days'::interval))),
+    CONSTRAINT browser_sessions_check3 CHECK ((renewable OR ((scope = 'persona-wallet-setup-v1'::text) AND (absolute_expires_at <= (created_at + '01:00:00'::interval))))),
+    CONSTRAINT browser_sessions_csrf_hash_check CHECK ((csrf_hash ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT browser_sessions_scope_check CHECK (((btrim(scope) <> ''::text) AND (scope = btrim(scope)))),
+    CONSTRAINT browser_sessions_session_id_check CHECK ((session_id ~ '^bs_[a-f0-9]{32}$'::text))
+);
+
+CREATE FUNCTION browser_session_packet_v1(s browser_sessions) RETURNS jsonb
+    LANGUAGE sql
+    SET search_path FROM CURRENT
+    AS $$
+ SELECT jsonb_build_object('sessionId',(s).session_id,'accountId',(s).account_id,
+  'credentialUserId',(s).credential_user_id,'scope',(s).scope,'origin',(s).browser_origin,
+  'renewable',(s).renewable,'idleExpiresAt',floor(extract(epoch FROM (s).idle_expires_at)),
+  'absoluteExpiresAt',floor(extract(epoch FROM (s).absolute_expires_at)),
+  'now',floor(extract(epoch FROM clock_timestamp())))
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='browser_session_packet_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='s browser_sessions';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION can_account_access_activity_song(expected_account_id text, expected_community_id text, expected_post_id text) RETURNS boolean
     LANGUAGE plpgsql
     AS $$
@@ -7294,6 +7377,76 @@ BEGIN
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname=target_schema AND p.proname='converge_proved_empty_guest_sources_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='expected_origin text, proved_ids text[]';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION create_browser_session_v1(p jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+DECLARE c identity_credentials; s browser_sessions; prior browser_sessions;
+  observed TIMESTAMPTZ; access_seconds INTEGER; replacement JSONB;
+BEGIN
+  IF jsonb_typeof(p->'renewable') IS DISTINCT FROM 'boolean' OR
+    jsonb_typeof(p->'accessSeconds') IS DISTINCT FROM 'number' OR
+    ((p->>'accessSeconds') ~ '^[0-9]{1,4}$') IS NOT TRUE
+  THEN RAISE EXCEPTION 'invalid browser session' USING ERRCODE='22023'; END IF;
+  access_seconds:=(p->>'accessSeconds')::INTEGER;
+  IF access_seconds<1 OR access_seconds>3600 OR
+    ((p->>'scope'='persona-wallet-setup-v1')=(NOT (p->>'renewable')::BOOLEAN)) IS NOT TRUE
+  THEN RAISE EXCEPTION 'invalid browser session authority' USING ERRCODE='22023'; END IF;
+  -- SHARE stabilizes absent aliases and status changes, matching the existing
+  -- identity-topology protocols. Order is alias table, session, credential/user.
+  LOCK TABLE account_aliases IN SHARE MODE;
+  replacement:=p->'replacement';
+  IF replacement IS NOT NULL AND replacement<>'null'::jsonb THEN
+    SELECT * INTO prior FROM browser_sessions WHERE session_id=replacement->>'sessionId' FOR UPDATE;
+    IF NOT FOUND OR prior.csrf_hash IS DISTINCT FROM replacement->>'csrfHash'
+      OR prior.browser_origin IS DISTINCT FROM replacement->>'origin'
+      OR prior.browser_origin IS DISTINCT FROM p->>'origin'
+      OR (CASE WHEN replacement->>'secretHash' IS NOT NULL
+        THEN prior.renewal_secret_hash IS DISTINCT FROM replacement->>'secretHash'
+        ELSE replacement->>'accountId' IS NULL OR prior.account_id IS DISTINCT FROM replacement->>'accountId' END)
+    THEN RAISE EXCEPTION 'browser replacement unavailable' USING ERRCODE='28000'; END IF;
+    IF prior.revoked_at IS NULL THEN
+      UPDATE browser_sessions SET revoked_at=clock_timestamp() WHERE session_id=prior.session_id;
+    END IF;
+  END IF;
+  SELECT * INTO c FROM identity_credentials
+    WHERE provider='privy' AND provider_app_id=p->>'providerAppId'
+      AND provider_subject=p->>'providerSubject' AND status='active' FOR SHARE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'browser credential unavailable' USING ERRCODE='28000'; END IF;
+  PERFORM 1 FROM users WHERE user_id IN(c.canonical_user_id,p->>'accountId') ORDER BY user_id FOR SHARE;
+  IF NOT browser_session_account_matches_v1(c.canonical_user_id,p->>'accountId')
+  THEN RAISE EXCEPTION 'browser account unavailable' USING ERRCODE='28000'; END IF;
+  observed:=clock_timestamp();
+  IF jsonb_typeof(p->'proofExpiresAt') IS DISTINCT FROM 'number'
+    OR (p->>'proofExpiresAt' ~ '^[0-9]{1,15}$') IS NOT TRUE
+    OR observed>=to_timestamp((p->>'proofExpiresAt')::DOUBLE PRECISION)
+  THEN RAISE EXCEPTION 'browser proof expired' USING ERRCODE='28000'; END IF;
+  INSERT INTO browser_sessions(session_id,account_id,credential_id,credential_user_id,
+    provider_app_id,provider_subject,scope,browser_origin,renewable,renewal_secret_hash,
+    csrf_hash,created_at,idle_expires_at,absolute_expires_at)
+  VALUES(p->>'sessionId',p->>'accountId',c.credential_id,c.canonical_user_id,
+    c.provider_app_id,c.provider_subject,p->>'scope',p->>'origin',(p->>'renewable')::BOOLEAN,
+    p->>'secretHash',p->>'csrfHash',observed,
+    observed+CASE WHEN (p->>'renewable')::BOOLEAN THEN interval '30 days'
+      ELSE least(access_seconds*interval '1 second',to_timestamp((p->>'proofExpiresAt')::DOUBLE PRECISION)-observed) END,
+    observed+CASE WHEN (p->>'renewable')::BOOLEAN THEN interval '90 days'
+      ELSE least(access_seconds*interval '1 second',to_timestamp((p->>'proofExpiresAt')::DOUBLE PRECISION)-observed) END)
+  RETURNING * INTO s;
+  RETURN browser_session_packet_v1(s);
+END $_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='create_browser_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='p jsonb';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
@@ -11371,6 +11524,36 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+CREATE FUNCTION guard_browser_session_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+BEGIN
+  IF ROW(NEW.session_id,NEW.account_id,NEW.credential_id,NEW.credential_user_id,
+      NEW.provider_app_id,NEW.provider_subject,NEW.scope,NEW.browser_origin,
+      NEW.renewable,NEW.renewal_secret_hash,NEW.csrf_hash,NEW.created_at,NEW.absolute_expires_at)
+    IS DISTINCT FROM ROW(OLD.session_id,OLD.account_id,OLD.credential_id,OLD.credential_user_id,
+      OLD.provider_app_id,OLD.provider_subject,OLD.scope,OLD.browser_origin,
+      OLD.renewable,OLD.renewal_secret_hash,OLD.csrf_hash,OLD.created_at,OLD.absolute_expires_at)
+    OR NEW.idle_expires_at<OLD.idle_expires_at
+    OR (OLD.revoked_at IS NOT NULL AND
+      ROW(NEW.idle_expires_at,NEW.revoked_at) IS DISTINCT FROM ROW(OLD.idle_expires_at,OLD.revoked_at))
+  THEN RAISE EXCEPTION 'browser session binding is immutable' USING ERRCODE='23514'; END IF;
+  RETURN NEW;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_browser_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_captured_audio_cleanup_private_v1() RETURNS trigger
     LANGUAGE plpgsql
@@ -30411,6 +30594,61 @@ BEGIN
 END
 $baseline_function_path$;
 
+CREATE FUNCTION read_browser_session_access_v1(id text, account text, required_scope text) RETURNS jsonb
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+ SELECT browser_session_packet_v1(s) FROM browser_sessions s
+ JOIN users u ON u.user_id=s.account_id AND u.status='active'
+ JOIN identity_credentials c ON c.credential_id=s.credential_id AND c.status='active'
+  AND c.canonical_user_id=s.credential_user_id AND c.provider_app_id=s.provider_app_id
+  AND c.provider_subject=s.provider_subject AND c.provider='privy'
+ WHERE s.session_id=$1 AND s.account_id=$2 AND s.scope=$3
+  AND s.revoked_at IS NULL AND s.idle_expires_at>clock_timestamp()
+  AND s.absolute_expires_at>clock_timestamp()
+  AND browser_session_account_matches_v1(s.credential_user_id,s.account_id)
+$_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_browser_session_access_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, account text, required_scope text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION read_browser_session_renewal_v1(id text, secret_hash text, csrf text, origin text) RETURNS jsonb
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $_$
+ SELECT browser_session_packet_v1(s) FROM browser_sessions s
+ JOIN users u ON u.user_id=s.account_id AND u.status='active'
+ JOIN identity_credentials c ON c.credential_id=s.credential_id AND c.status='active'
+  AND c.canonical_user_id=s.credential_user_id AND c.provider_app_id=s.provider_app_id
+  AND c.provider_subject=s.provider_subject AND c.provider='privy'
+ WHERE s.session_id=$1 AND s.renewal_secret_hash=$2 AND s.csrf_hash=$3
+  AND s.browser_origin=$4 AND s.renewable AND s.scope<>'persona-wallet-setup-v1'
+  AND s.revoked_at IS NULL AND s.idle_expires_at>clock_timestamp()
+  AND s.absolute_expires_at>clock_timestamp()
+  AND browser_session_account_matches_v1(s.credential_user_id,s.account_id)
+$_$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='read_browser_session_renewal_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, secret_hash text, csrf text, origin text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION read_captured_learner_audio_private_v1(p_upload text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -33746,6 +33984,46 @@ BEGIN
 END
 $_$;
 
+CREATE FUNCTION renew_browser_session_v1(id text, secret_hash text, csrf text, origin text) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE s browser_sessions; observed TIMESTAMPTZ;
+BEGIN
+  LOCK TABLE account_aliases IN SHARE MODE;
+  SELECT * INTO s FROM browser_sessions WHERE session_id=id FOR UPDATE;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  -- Time is sampled after the lock wait; expired or revoked authority never rolls.
+  observed:=clock_timestamp();
+  IF NOT s.renewable OR s.scope='persona-wallet-setup-v1' OR s.revoked_at IS NOT NULL
+    OR s.renewal_secret_hash IS DISTINCT FROM secret_hash OR s.csrf_hash IS DISTINCT FROM csrf
+    OR s.browser_origin IS DISTINCT FROM origin OR s.idle_expires_at<=observed
+    OR s.absolute_expires_at<=observed THEN RETURN NULL; END IF;
+  PERFORM 1 FROM identity_credentials c JOIN users u ON u.user_id=s.account_id AND u.status='active'
+    WHERE c.credential_id=s.credential_id AND c.status='active' AND c.provider='privy'
+      AND c.canonical_user_id=s.credential_user_id AND c.provider_app_id=s.provider_app_id
+      AND c.provider_subject=s.provider_subject FOR SHARE OF c,u;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  observed:=clock_timestamp();
+  IF s.idle_expires_at<=observed OR s.absolute_expires_at<=observed
+    OR NOT browser_session_account_matches_v1(s.credential_user_id,s.account_id) THEN RETURN NULL; END IF;
+  UPDATE browser_sessions SET idle_expires_at=greatest(idle_expires_at,
+    least(observed+interval '30 days',absolute_expires_at)) WHERE session_id=id RETURNING * INTO s;
+  RETURN browser_session_packet_v1(s);
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='renew_browser_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, secret_hash text, csrf text, origin text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION renew_guest_authority_v1(expected_origin text, proved_ids text[], selected_id text, expected_owner_id text) RETURNS jsonb
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path FROM CURRENT
@@ -36335,6 +36613,35 @@ BEGIN
     WHERE n.nspname=target_schema AND p.proname='retire_moderated_dance_replay_epoch_v1'
       AND pg_catalog.pg_get_function_arguments(p.oid)='p_epoch text, p_acceptance text';
   EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO %I, pg_catalog, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
+CREATE FUNCTION revoke_browser_session_v1(id text, secret_hash text, account text, csrf text, origin text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE s browser_sessions;
+BEGIN
+  SELECT * INTO s FROM browser_sessions WHERE session_id=id FOR UPDATE;
+  IF NOT FOUND OR s.csrf_hash IS DISTINCT FROM csrf OR s.browser_origin IS DISTINCT FROM origin
+    OR (CASE WHEN secret_hash IS NOT NULL THEN s.renewal_secret_hash IS DISTINCT FROM secret_hash
+      ELSE account IS NULL OR s.account_id IS DISTINCT FROM account END)
+  THEN RETURN FALSE; END IF;
+  IF s.revoked_at IS NULL THEN
+    UPDATE browser_sessions SET revoked_at=clock_timestamp() WHERE session_id=id;
+  END IF;
+  RETURN TRUE;
+END $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='revoke_browser_session_v1'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='id text, secret_hash text, account text, csrf text, origin text';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
     target_schema,target_function.proname,target_function.identity_arguments,target_schema);
 END
 $baseline_function_path$;
@@ -57458,6 +57765,9 @@ ALTER TABLE ONLY avatar_assets
 ALTER TABLE ONLY avatar_assets
     ADD CONSTRAINT avatar_assets_sealed_key_key UNIQUE (sealed_key);
 
+ALTER TABLE ONLY browser_sessions
+    ADD CONSTRAINT browser_sessions_pkey PRIMARY KEY (session_id);
+
 ALTER TABLE ONLY comment_moderation_actions
     ADD CONSTRAINT comment_moderation_actions_actor_key_unique UNIQUE (case_ref, actor_user_id, idempotency_key);
 
@@ -60866,6 +61176,10 @@ CREATE INDEX avatar_assets_owner_created ON avatar_assets USING btree (owner_acc
 
 CREATE INDEX avatar_assets_unscanned ON avatar_assets USING btree (created_at, asset_id) WHERE (moderation_status = 'unscanned'::text);
 
+CREATE INDEX browser_sessions_account_idx ON browser_sessions USING btree (account_id);
+
+CREATE INDEX browser_sessions_expiry_idx ON browser_sessions USING btree (absolute_expires_at);
+
 CREATE UNIQUE INDEX comment_moderation_cases_open_source_submission_unique ON comment_moderation_cases USING btree (source, submission_id) WHERE (status = 'open'::text);
 
 CREATE INDEX comment_moderation_cases_open_target_idx ON comment_moderation_cases USING btree (community_id, comment_id, created_at, case_ref) WHERE (status = 'open'::text);
@@ -61599,6 +61913,8 @@ CREATE TRIGGER assertion_revalidation_events_append_only BEFORE DELETE OR UPDATE
 CREATE TRIGGER assertions_append_only BEFORE DELETE OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER assertions_validate_binding BEFORE INSERT OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_assertion_binding();
+
+CREATE TRIGGER browser_session_binding BEFORE UPDATE ON browser_sessions FOR EACH ROW EXECUTE FUNCTION guard_browser_session_v1();
 
 CREATE TRIGGER capture_moderated_dance_attempt_provider_effects_v1 AFTER INSERT OR UPDATE ON dance_moderated_processing_v1 FOR EACH ROW EXECUTE FUNCTION capture_moderated_dance_attempt_provider_effects_v1();
 
@@ -63405,6 +63721,12 @@ ALTER TABLE ONLY avatar_assets
 
 ALTER TABLE ONLY avatar_assets
     ADD CONSTRAINT avatar_assets_owner_account_id_intent_id_fkey FOREIGN KEY (owner_account_id, intent_id) REFERENCES community_creation_intents(actor_id, intent_id);
+
+ALTER TABLE ONLY browser_sessions
+    ADD CONSTRAINT browser_sessions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY browser_sessions
+    ADD CONSTRAINT browser_sessions_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES identity_credentials(credential_id);
 
 ALTER TABLE ONLY comment_moderation_actions
     ADD CONSTRAINT comment_moderation_actions_case_fk FOREIGN KEY (community_id, case_ref) REFERENCES comment_moderation_cases(community_id, case_ref);

@@ -1,4 +1,5 @@
 import { IdentityResolutionError, type IdentityStore } from "@pirate/application";
+import type { BrowserSessionService } from "@pirate/application/use-cases/browser-sessions";
 import type { SessionTokenMinter } from "@pirate/application/use-cases/session-exchange";
 import { Data, Effect } from "effect";
 
@@ -44,6 +45,7 @@ export interface SessionTokenVerifier {
     readonly token: string;
     readonly requiredScope?: string;
     readonly requiredClassification?: SessionTokenClassification;
+    readonly browser?: boolean;
   }) => Effect.Effect<SessionPrincipal, SessionTokenVerificationError>;
 }
 
@@ -111,11 +113,14 @@ export function makeRs256SessionTokenMinter(crypto: SessionCrypto): SessionToken
 export function makeRs256SessionTokenVerifier(
   crypto: SessionCrypto,
   identityRepository: Pick<IdentityStore["Service"], "resolveCanonical">,
-  options: { readonly additionalUserScopes?: readonly string[] } = {},
+  options: {
+    readonly additionalUserScopes?: readonly string[];
+    readonly browserSessions?: Pick<BrowserSessionService, "verify">;
+  } = {},
 ): SessionTokenVerifier {
   const userScopes = new Set([crypto.defaultScope, ...(options.additionalUserScopes ?? [])]);
   return {
-    verify: ({ token, requiredScope, requiredClassification }) =>
+    verify: ({ token, requiredScope, requiredClassification, browser = false }) =>
       Effect.tryPromise({
         try: () => crypto.verify(token),
         catch: (error) =>
@@ -124,6 +129,10 @@ export function makeRs256SessionTokenVerifier(
           }),
       }).pipe(
         Effect.flatMap((claims) => {
+          if (!browser && (claims.sid !== undefined || claims.token_use !== undefined))
+            return Effect.fail(
+              new SessionTokenVerificationError({ code: "classification_mismatch" }),
+            );
           const scopeValue = claims.scope;
           const scopeTokens = scopeValue.split(/\s+/u).filter(Boolean);
           const classification = userScopes.has(scopeValue) ? "user" : ("device" as const);
@@ -139,10 +148,29 @@ export function makeRs256SessionTokenVerifier(
               new SessionTokenVerificationError({ code: "classification_mismatch" }),
             );
           }
-          return identityRepository.resolveCanonical({ sourceUserId: claims.sub }).pipe(
-            Effect.mapError(
-              (error) => new SessionTokenVerificationError({ code: identityFailureCode(error) }),
-            ),
+          const identity = browser
+            ? options.browserSessions === undefined
+              ? Effect.fail(new SessionTokenVerificationError({ code: "invalid_token" }))
+              : options.browserSessions.verify(claims).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new SessionTokenVerificationError({
+                        code:
+                          error.reason === "unavailable"
+                            ? "control_plane_unavailable"
+                            : "invalid_token",
+                      }),
+                  ),
+                )
+            : identityRepository
+                .resolveCanonical({ sourceUserId: claims.sub })
+                .pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new SessionTokenVerificationError({ code: identityFailureCode(error) }),
+                  ),
+                );
+          return identity.pipe(
             Effect.map((canonical) => ({
               userId: canonical.canonicalUserId,
               classification,

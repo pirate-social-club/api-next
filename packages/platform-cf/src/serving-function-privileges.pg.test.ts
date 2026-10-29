@@ -215,13 +215,16 @@ suite("Ordinary serving-role function grants", () => {
           ])
         ).rows;
 
-      // Every private function 0247-0268 define is classified exactly once.
+      // Classify the original private range and explicit later additions once.
       const defined = new Set<string>();
       for (const migration of migrations
         .slice(first)
         .filter(
           (entry) =>
-            Number(entry.version.slice(0, 4)) <= SERVING_FUNCTION_PRIVILEGE_MIGRATIONS.last,
+            Number(entry.version.slice(0, 4)) <= SERVING_FUNCTION_PRIVILEGE_MIGRATIONS.last ||
+            SERVING_FUNCTION_PRIVILEGE_MIGRATIONS.additional.some(
+              (version) => version === Number(entry.version.slice(0, 4)),
+            ),
         ))
         for (const match of migration.sql.matchAll(
           /CREATE (?:OR REPLACE )?FUNCTION ([a-z0-9_]+)\(/gu,

@@ -1692,6 +1692,20 @@ export const SessionLogout = endpoint({
   errors: [AuthError, BadRequest],
 });
 
+/** The HTTP adapter accepts only the owned renewal cookie and its CSRF proof. */
+export const SessionRenew = endpoint({
+  method: "POST",
+  path: "/auth/session/renew",
+  auth: Auth.public(),
+  response: Schema.Struct({
+    status: Schema.Literal("renewed"),
+    user_id: Schema.String,
+    expires_at: Schema.String,
+  }),
+  successStatus: 200,
+  errors: [AuthError, BadRequest, InternalError],
+});
+
 export const GetCurrentUser = endpoint({
   method: "GET",
   path: "/users/me",
@@ -2523,6 +2537,7 @@ export const v1Registry = {
   SessionExchange,
   RegisterIdentity,
   SessionLogout,
+  SessionRenew,
   GetMyAgeVerification,
   GetMyAgeCapability,
   PutMyMinimumAgeAttestation,
