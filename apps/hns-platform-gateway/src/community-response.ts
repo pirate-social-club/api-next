@@ -122,7 +122,7 @@ function validCookieLine(line: string): string | null {
     return null;
   }
   const httpOnly = attributes.has("httponly") && attributes.get("httponly") === null;
-  if ((name === "__Host-pirate_session") !== httpOnly) return null;
+  if ((name !== "__Host-pirate_csrf") !== httpOnly) return null;
 
   const maximumAge = attributes.get("max-age");
   if (

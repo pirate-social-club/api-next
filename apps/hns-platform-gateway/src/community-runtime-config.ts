@@ -93,7 +93,7 @@ const NonNegativeInteger = Schema.Int.check(
 
 const commonDeploymentManifestFields = {
   profile_version: Schema.Literal(HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_VERSION),
-  profile_utf8_bytes: Schema.Literal(622),
+  profile_utf8_bytes: Schema.Literal(646),
   profile_sha256: Schema.Literal(HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_SHA256),
   solid_origin: Schema.String,
   solid_ingress_composition_reference: Identity,
