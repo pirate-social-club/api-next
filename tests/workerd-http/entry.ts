@@ -70,6 +70,7 @@ import {
   VERY_WEB_PROVIDER_ID,
   VERY_WEB_RP_SCOPE,
 } from "../../packages/platform-cf/src/verification/providers/very-web.ts";
+import { workerdBrowserSessions } from "./browser-session.fixture.ts";
 import { videoAccessFixtureHandlers } from "./video-access.fixture.ts";
 
 export { HnsForwarderReplayStoreDO } from "../../packages/platform-cf/src/hns-forwarder-replay-store-do.ts";
@@ -320,9 +321,11 @@ const identityStore: IdentityStore["Service"] = {
 };
 
 const sessionCryptoInstances = await sessionCryptos();
+const browserSessions = workerdBrowserSessions(sessionCryptoInstances.browser, identityStore);
 const browserTokenVerifier = makeRs256SessionTokenVerifier(
   sessionCryptoInstances.browser,
   identityStore,
+  { browserSessions },
 );
 const tokenVerifier = browserTokenVerifier;
 const browserTokenMinter = makeRs256SessionTokenMinter(sessionCryptoInstances.browser);
@@ -736,6 +739,7 @@ const verificationHandlers = makeVerificationHandlers({
 const app = createHttpWorker({
   config: { corsOrigin: "https://solid.test" },
   sessionExchange,
+  browserSessions,
   handlers: {
     ...videoAccessFixtureHandlers(),
     ...verificationHandlers,

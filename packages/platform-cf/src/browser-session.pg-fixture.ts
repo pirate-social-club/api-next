@@ -11,7 +11,7 @@ function assertOwnedSchema(
   if (actual !== undefined && (actual.oid !== oid || actual.owner !== owner))
     throw Error("Owned browser-session fixture identity changed");
 }
-export const browserSessionFunctions = [
+const browserSessionFunctions = [
   "create_browser_session_v1(jsonb)",
   "read_browser_session_access_v1(text,text,text)",
   "read_browser_session_renewal_v1(text,text,text,text)",

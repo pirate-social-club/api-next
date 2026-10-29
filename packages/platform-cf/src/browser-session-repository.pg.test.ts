@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { Effect } from "effect";
-import { Client } from "pg";
+import { Client, type QueryResult } from "pg";
 import { withBrowserSessionFixture } from "./browser-session.pg-fixture.ts";
 import { makeControlPlaneBrowserSessionStore } from "./browser-session-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -49,7 +49,7 @@ suite("persisted browser-session authority", () => {
       expect(row.absoluteExpiresAt - row.now).toBe(90 * 86400);
       const authority = { sessionId: input.sessionId, secretHash: secret, csrfHash: csrf, origin };
       const [first, second] = await Promise.all(
-        [store.renew(authority), store.renew(authority)].map(Effect.runPromise),
+        [store.renew(authority), store.renew(authority)].map((effect) => Effect.runPromise(effect)),
       );
       expect(first?.sessionId).toBe(input.sessionId);
       expect(second?.sessionId).toBe(input.sessionId);
@@ -325,7 +325,7 @@ suite("browser-session expiry and account fences", () => {
           ).rows[0].deadline;
           const pid = (await f.runtime.query("SELECT pg_backend_pid() pid")).rows[0].pid;
           await f.owner.query("BEGIN");
-          let pending: ReturnType<Client["query"]> | undefined;
+          let pending: Promise<QueryResult> | undefined;
           try {
             if (lock === "session")
               await f.owner.query("SELECT 1 FROM browser_sessions WHERE session_id=$1 FOR UPDATE", [
@@ -444,7 +444,7 @@ suite("browser-session expiry and account fences", () => {
       expect(
         funcs.every((row) =>
           row.proconfig?.some(
-            (config: string) => config === `search_path=${f.schema}, pg_catalog, pg_temp`,
+            (config: string) => config === `search_path=pg_catalog, ${f.schema}, pg_temp`,
           ),
         ),
       ).toBe(true);

@@ -151,19 +151,17 @@ export function makeRs256SessionTokenVerifier(
           const identity = browser
             ? options.browserSessions === undefined
               ? Effect.fail(new SessionTokenVerificationError({ code: "invalid_token" }))
-              : options.browserSessions
-                  .verify(claims)
-                  .pipe(
-                    Effect.mapError(
-                      (error) =>
-                        new SessionTokenVerificationError({
-                          code:
-                            error.reason === "unavailable"
-                              ? "control_plane_unavailable"
-                              : "invalid_token",
-                        }),
-                    ),
-                  )
+              : options.browserSessions.verify(claims).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new SessionTokenVerificationError({
+                        code:
+                          error.reason === "unavailable"
+                            ? "control_plane_unavailable"
+                            : "invalid_token",
+                      }),
+                  ),
+                )
             : identityRepository
                 .resolveCanonical({ sourceUserId: claims.sub })
                 .pipe(

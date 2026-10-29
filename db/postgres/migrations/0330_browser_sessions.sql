@@ -213,7 +213,7 @@ BEGIN
       'read_browser_session_access_v1','read_browser_session_renewal_v1',
       'renew_browser_session_v1','revoke_browser_session_v1')
   LOOP
-    EXECUTE format('ALTER FUNCTION %s SET search_path=%I,pg_catalog,pg_temp',f.name,trusted);
+    EXECUTE format('ALTER FUNCTION %s SET search_path=pg_catalog,%I,pg_temp',f.name,trusted);
     EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f.name);
     FOR grant_row IN SELECT DISTINCT a.grantee FROM pg_proc p,
       LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a

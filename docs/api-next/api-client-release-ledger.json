@@ -817,6 +817,12 @@
       "artifact": "artifacts/api-client/pirate-api-client-0.137.0.tgz",
       "artifactSha256": "43bdd8edf192031ead414c05f8764471c129242750b3b7435b45ed54e3419d7f",
       "handoff": "docs/api-next/api-client-v0-137-0-handoff.json"
+    },
+    {
+      "version": "0.138.0",
+      "artifact": "artifacts/api-client/pirate-api-client-0.138.0.tgz",
+      "artifactSha256": "c9583989ccac27a0c9c17238e77ee464c48bf15545ace493abcd1a64b9ba6740",
+      "handoff": "docs/api-next/api-client-v0-138-0-handoff.json"
     }
   ]
 }

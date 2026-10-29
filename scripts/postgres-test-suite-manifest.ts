@@ -174,6 +174,8 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  "apps/http-worker/src/browser-session-authentication.pg.test.ts",
+  "packages/platform-cf/src/browser-session-repository.pg.test.ts",
   "packages/platform-cf/src/dance-serving-permissions.pg.test.ts",
   "packages/platform-cf/src/study-provider-refusal.pg.test.ts",
   "apps/http-worker/src/guest-study-default-worker.pg.test.ts",
