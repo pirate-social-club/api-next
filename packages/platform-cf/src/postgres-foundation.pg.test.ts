@@ -1281,6 +1281,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "assertion_revalidation_events",
         "assertions",
         "avatar_assets",
+        "browser_sessions",
         "comment_moderation_actions",
         "comment_moderation_cases",
         "comment_publication_projection",

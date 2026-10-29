@@ -29,6 +29,7 @@ TRUNCATE TABLE
   "assertion_revalidation_events",
   "assertions",
   "avatar_assets",
+  "browser_sessions",
   "comment_moderation_actions",
   "comment_moderation_cases",
   "comment_publication_projection",

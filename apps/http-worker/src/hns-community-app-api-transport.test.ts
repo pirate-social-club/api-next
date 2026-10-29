@@ -6,6 +6,7 @@ import {
   makeStaticHnsForwarderKeyRegistryV1,
 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
+import { browserSessionTransportFixture } from "./browser-session.test-fixtures.ts";
 import { makeHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 import { stripHnsCommunityAppPrivateHeaders } from "./hns-community-app-api-transport.ts";
 import { makeHnsNamespaceDiscoveryHandlers } from "./hns-namespace-discovery-handlers.ts";
@@ -163,6 +164,7 @@ function harness(handlers: Readonly<Record<string, EndpointHandler>> = {}) {
     config: { corsOrigin: "https://pirate.sc" },
     handlers,
     sessionExchange: sessionServices,
+    browserSessions: browserSessionTransportFixture(),
     hnsCommunityAppApi: composition,
   });
 

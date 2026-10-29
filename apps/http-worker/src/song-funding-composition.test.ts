@@ -11,8 +11,13 @@ test("serving HTTP composition isolates Funding reads from Dance and propagates 
   const base = await makeHttpWorkerTestBindings();
   const danceFixture = await moderatedDanceContextFixture(true);
   const account = danceFixture.actor.accountId;
+  const sessionId = `bs_${"1".repeat(32)}`;
   const crypto = await makeSessionCryptoFromEnv(base);
-  const token = await crypto.sign({ sub: account, scope: String(base.PIRATE_APP_JWT_SCOPE) });
+  const token = await crypto.sign({
+    sub: account,
+    scope: String(base.PIRATE_APP_JWT_SCOPE),
+    browserSessionId: sessionId,
+  });
   const context = await readySongFundingContextFixture(account);
   for (const lane of ["safe", "eoa", "off"] as const) {
     const calls: { url: string; text: string }[] = [];
@@ -44,13 +49,29 @@ test("serving HTTP composition isolates Funding reads from Dance and propagates 
                     terminal_active: true,
                   },
                 ]
-              : text.includes("read_song_contribution_context_v2")
-                ? [{ packet: context }]
-                : text.includes("read_shared_song_megapot_participation_v2")
-                  ? [{ packet: null }]
-                  : text.includes("read_owned_moderated_dance_capture_context_v1")
-                    ? [{ packet: danceFixture.packet }]
-                    : [];
+              : text.includes("read_browser_session_access_v1")
+                ? [
+                    {
+                      packet: {
+                        sessionId,
+                        accountId: account,
+                        credentialUserId: account,
+                        scope: String(base.PIRATE_APP_JWT_SCOPE),
+                        origin: "https://app.example.test",
+                        renewable: true,
+                        idleExpiresAt: Math.floor(Date.now() / 1000) + 3600,
+                        absoluteExpiresAt: Math.floor(Date.now() / 1000) + 7200,
+                        now: Math.floor(Date.now() / 1000),
+                      },
+                    },
+                  ]
+                : text.includes("read_song_contribution_context_v2")
+                  ? [{ packet: context }]
+                  : text.includes("read_shared_song_megapot_participation_v2")
+                    ? [{ packet: null }]
+                    : text.includes("read_owned_moderated_dance_capture_context_v1")
+                      ? [{ packet: danceFixture.packet }]
+                      : [];
             return { rows, rowCount: rows.length };
           },
         }),
