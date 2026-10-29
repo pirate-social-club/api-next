@@ -105,3 +105,22 @@ three-attempt-per-binding-generation bound remains. Check the eligible-root inve
 pin before activation, then verify a real renewal and its alert/readback path.
 Do not deploy this enabled Jobs configuration while manual recovery or adoption
 is incomplete. Production configuration remains unchanged.
+
+## Recovery deployment package
+
+The intermediate staging deploy pin deliberately retains the accepted c8cd1fb6
+gateway and 614a197b ingress composition from a191aa7c. This permits the paired
+expiry HTTP recovery source to deploy through the unchanged guard while the
+retained authority still binds that gateway. The future v4 cookie gateway
+manifest remains preserved separately; it is not the recovery deployment pin.
+Production references and runtime source remain unchanged by this pin selection.
+
+The integration coordinator must bind fresh gateway readback and exclusive
+canonical Solid source custody to the accepted be40 source and its retained
+matching build before the normal guard runs. This document grants no checkout,
+deployment or host operation. After genuine owner recovery and unchanged-gateway
+TXT adoption, prepare and review the separate paired cookie package and restore
+its new staging pin through the normal source path. Never claim that an old
+gateway readiness observation proves the future native cookie package is live.
+Every staging Jobs release carrying enabled active-lease renewal remains held
+until manual recovery and adoption are complete.
