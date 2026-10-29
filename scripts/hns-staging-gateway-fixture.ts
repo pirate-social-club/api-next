@@ -4,7 +4,7 @@ import { createServer, request, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
 import type { TLSSocket } from "node:tls";
 import {
-  encodeHnsCommunityAppInteractiveGatewayProfileV3,
+  encodeHnsCommunityAppInteractiveGatewayProfileV4,
   HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE,
 } from "@pirate/application/hns-community-app-gateway";
 import type { HnsCommunityAppHostAuthorityStateV1 } from "@pirate/application/hns-host-serving";
@@ -158,7 +158,7 @@ export async function startFixtureGateway(root: string) {
       },
     };
     const composition = makeHnsCommunityAppGatewayComposition(true, {
-      profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV3(),
+      profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV4(),
       gateway_deployment_reference: deployment,
       solid_origin: `https://127.0.0.1:${originPort}`,
       solid_access_client_id: "fixture-only",

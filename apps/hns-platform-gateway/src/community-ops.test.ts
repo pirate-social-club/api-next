@@ -39,8 +39,8 @@ describe("community gateway staging operations profile", () => {
       staging_shadow_health_listener: "127.0.0.1:4271",
       ingress_contract: "pirate-hns-community-app-loopback-preflight-v1",
       public_tls_termination: false,
-      profile_utf8_bytes: 622,
-      profile_sha256: "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
+      profile_utf8_bytes: 646,
+      profile_sha256: "705350bde58be27bf06a05efcf7dcc811e74f0a99ad7580e9be2de790e9c6561",
     });
     expect(manifest).not.toHaveProperty("production_gateway_listener");
     expect(manifest).not.toHaveProperty("production_health_listener");

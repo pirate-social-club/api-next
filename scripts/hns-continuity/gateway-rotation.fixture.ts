@@ -9,7 +9,7 @@ export function rotationFixture(
 ) {
   const manifest_json = JSON.stringify({
     schema: "pirate-hns-community-app-handle-gateway-deployment-v1",
-    profile_sha256: "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
+    profile_sha256: "705350bde58be27bf06a05efcf7dcc811e74f0a99ad7580e9be2de790e9c6561",
     handle_profile_sha256: "b4440ab21ae73a73d3ab3549bcaaa66c1e27891e22cdd308d4377b0b6eb549dc",
     gateway_certificate_spki_sha256: state.dns.gateway_certificate_spki_sha256,
     fixture: suffix,

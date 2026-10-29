@@ -1,5 +1,5 @@
 import {
-  decodeHnsCommunityAppInteractiveGatewayProfileV3,
+  decodeHnsCommunityAppInteractiveGatewayProfileV4,
   HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE,
 } from "@pirate/application/hns-community-app-gateway";
 import type { HnsForwarderGatewayAuthoritySourceV1 } from "@pirate/application/hns-host-serving";
@@ -118,7 +118,7 @@ export function makeHnsCommunityAppGatewayComposition(
     throw new Error("HNS community app gateway composition is incomplete or invalid");
   }
   try {
-    decodeHnsCommunityAppInteractiveGatewayProfileV3(profileBytes);
+    decodeHnsCommunityAppInteractiveGatewayProfileV4(profileBytes);
   } catch {
     throw new Error("HNS community app gateway composition is incomplete or invalid");
   }
