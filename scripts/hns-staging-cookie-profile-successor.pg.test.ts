@@ -209,16 +209,28 @@ suite("staging cookie profile PostgreSQL authority boundary", () => {
         "DROP TRIGGER reject_cookie_sale ON community_handle_sale_namespace_activation_revisions",
       );
 
-      // An unselected field changes without making that expired tenant live.
-      // The old reviewed census must still refuse before any selected write.
-      await rival.query("UPDATE personas SET status='suspended' WHERE persona_id='persona-a18n'");
+      // A real terminal sales-grant revocation changes the unselected census
+      // while that expired tenant remains unavailable. Keep normal triggers.
+      expect(
+        (
+          await rival.query(`UPDATE community_handle_sales_authority_grants
+            SET status='revoked',revoked_at=clock_timestamp(),revoked_by_account_id='actor-a18n'
+            WHERE grant_id='sales-authority-a18n' AND status='active'`)
+        ).rowCount,
+      ).toBe(1);
+      expect(resolveActiveHnsHostAuthority(await sources.app("app.a18n"))).toBeNull();
+      expect(resolveActiveHnsHostAuthority(await sources.handle("participant.a18n"))).toBeNull();
+      const changedCoTenantCensus = await readCookieCensus(admin);
       await expect(applyCookieProfileSuccessor({ ...args(), mode: "rehearse" })).rejects.toThrow(
         "census changed",
+      );
+      expect(cookieCensusIdentity(await readCookieCensus(admin))).toBe(
+        cookieCensusIdentity(changedCoTenantCensus),
       );
       expect((await readContinuityState(admin, "8s28")).dns.gateway_deployment_reference).toBe(
         PREVIOUS_GATEWAY,
       );
-      await rival.query("UPDATE personas SET status='active' WHERE persona_id='persona-a18n'");
+      // Revocation is terminal; later plans retain it instead of rewinding it.
       plan = await prepare();
 
       // Real concurrent selector writer holds its table/row lock. The rotation
