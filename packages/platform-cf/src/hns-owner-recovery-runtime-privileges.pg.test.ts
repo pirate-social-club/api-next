@@ -94,8 +94,8 @@ suite("HNS owner recovery runtime-role reservation", () => {
       runtimeUrl.username = role;
       runtimeUrl.password = runtimePassword;
       const identity = new Client({ connectionString: runtimeUrl.toString() });
-      await identity.connect();
       try {
+        await identity.connect();
         expect((await identity.query("SELECT current_user AS role")).rows[0]?.role).toBe(role);
       } finally {
         await identity.end();
