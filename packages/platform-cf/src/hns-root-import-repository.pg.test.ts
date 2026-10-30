@@ -22,6 +22,7 @@ import {
   HNS_ROOT_IMPORT_POLICY_V1,
   type HnsRootImportLifecycleEventV1,
 } from "@pirate/domain";
+import { applyPostgresTestBaseline } from "@pirate/testing/postgres";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
@@ -31,9 +32,13 @@ import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts"
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
 import { seedOwnership, seedSatisfiedOwnership } from "./hns-root-ownership.pg-fixture.ts";
 import { verifyHnsStagingOwnerTxt } from "./hns-staging-owner-txt.pg-cases.ts";
+import { applyOwnerTxtClockFixtureBaseline } from "./hns-staging-owner-txt-expiry.pg-fixture.ts";
 import { verifyHnsStagingRelocation } from "./hns-staging-relocation.pg-cases.ts";
 import { verifyHnsZoneAdoption } from "./hns-zone-adoption.pg-cases.ts";
-import { hnsZoneAdoptionFixtureZone } from "./hns-zone-adoption-fixture.ts";
+import {
+  hnsZoneAdoptionFixtureZone,
+  redateHnsZoneAdoptionFixture,
+} from "./hns-zone-adoption-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -55,9 +60,9 @@ function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
-function connectionForSchema(raw: string, schema: string): string {
+function connectionForSchema(raw: string, schema: string, fixtureClock = false): string {
   const separator = raw.includes("?") ? "&" : "?";
-  return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
+  return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}${fixtureClock ? ",pg_catalog" : ""}`)}`;
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -67,6 +72,7 @@ function sha256(bytes: Uint8Array): string {
 async function withSchema<A>(
   use: (connection: string, admin: Client) => Promise<A>,
   ownerTxt = false,
+  fixtureClock = false,
 ): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
@@ -75,8 +81,13 @@ async function withSchema<A>(
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   try {
-    const scoped = connectionForSchema(connectionString, schema);
-    await applyPostgresTestBaselineConnection({ connectionString: scoped });
+    const scoped = connectionForSchema(connectionString, schema, fixtureClock);
+    if (fixtureClock) {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)},pg_catalog`);
+      await applyOwnerTxtClockFixtureBaseline(admin, applyPostgresTestBaseline);
+    } else {
+      await applyPostgresTestBaselineConnection({ connectionString: scoped });
+    }
     await seedOwnership(admin, ownerTxt);
     return await use(scoped, admin);
   } finally {
@@ -821,17 +832,28 @@ suite("Postgres 17 HNS root-import repository", () => {
     "staging-owner-txt",
     "staging-owner-txt-expired-dns",
     "staging-owner-txt-expired-observation",
+    "staging-owner-txt-expired-session",
+    "staging-owner-txt-two-expired-sessions",
   ] as const)(
     "observes readiness and atomically activates serving plus handle issuance (inventory renewal %s)",
     async (scenario) => {
       const inventoryRenewal = scenario === true;
       const relocation = scenario === "staging-relocation";
+      const expiredSessions =
+        scenario === "staging-owner-txt-expired-session"
+          ? 1
+          : scenario === "staging-owner-txt-two-expired-sessions"
+            ? 2
+            : 0;
       const ownerTxt =
         scenario === "staging-owner-txt" ||
         scenario === "staging-owner-txt-expired-dns" ||
-        scenario === "staging-owner-txt-expired-observation";
+        scenario === "staging-owner-txt-expired-observation" ||
+        expiredSessions > 0;
       const dnsExpired = scenario === "staging-owner-txt-expired-dns";
-      await withSchema(async (connection, admin) => {
+      const scenarioSchema: typeof withSchema = (use, txt) =>
+        withSchema(use, txt, expiredSessions > 0);
+      await scenarioSchema(async (connection, admin) => {
         const store = makeControlPlaneHnsRootImportStore(
           makeDirectPostgresControlPlaneLayer(connection),
         );
@@ -1027,8 +1049,8 @@ suite("Postgres 17 HNS root-import repository", () => {
             admin,
             connection,
             previous,
-            (chainHash) =>
-              makeReadinessArtifact({
+            async (chainHash) => {
+              const observed = await makeReadinessArtifact({
                 ownershipResultHash,
                 publishPlanSha256: sha256(provisioned.planBytes),
                 provisionResultSha256: sha256(provisioned.resultBytes),
@@ -1036,9 +1058,14 @@ suite("Postgres 17 HNS root-import repository", () => {
                 environment: "staging",
                 chainResourceSha256: chainHash,
                 validForSeconds: 172800,
-              }),
+              });
+              if (expiredSessions === 0) return observed;
+              const clock = (await admin.query("SELECT clock_timestamp() AS at")).rows[0]?.at;
+              return redateHnsZoneAdoptionFixture(observed.result_bytes, clock.toISOString());
+            },
             dnsExpired,
             scenario === "staging-owner-txt-expired-observation",
+            expiredSessions,
           );
           return;
         }
@@ -1094,7 +1121,10 @@ suite("Postgres 17 HNS root-import repository", () => {
         // The retired client observation request is recorded in the removal
         // migration's named disposition from the start (0204), never queued;
         // renewal must succeed without it ever reaching completed.
-        const clientObservation = await admin.query<{ observation_job_id: string; state: string }>(
+        const clientObservation = await admin.query<{
+          observation_job_id: string;
+          state: string;
+        }>(
           `SELECT observation_job_id, state FROM hns_root_import_observation_jobs
             WHERE root_import_session_id='root-import-session'`,
         );
