@@ -98,6 +98,7 @@ export const freshSchemaPostgresTestSuites = [
   "apps/http-worker/src/video-song-reference-required.pg.test.ts",
   "scripts/hns-monitor/snapshot.pg.test.ts",
   "scripts/hns-continuity/promotion.pg.test.ts",
+  "scripts/hns-staging-cookie-profile-successor.pg.test.ts",
   "packages/platform-cf/src/community-purchase-funding-repository.pg.test.ts",
   "packages/platform-cf/src/content-repository.pg.test.ts",
   "packages/platform-cf/src/dance-attempt-persistence.pg.test.ts",

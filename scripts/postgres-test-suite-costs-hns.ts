@@ -145,6 +145,12 @@ export const postgresHnsSuiteCostEstimates = {
   },
   "scripts/hns-continuity/promotion.pg.test.ts": { sourceCallCount: 1, milliseconds: 6730 },
   "scripts/hns-monitor/snapshot.pg.test.ts": { sourceCallCount: 1, milliseconds: 2187 },
+  // PostgreSQL 17.11 at 84799d1d (2026-10-30T00:04Z): two passes in 21.59s.
+  // Scheduling measurement only; qualification receipts remain separate.
+  "scripts/hns-staging-cookie-profile-successor.pg.test.ts": {
+    sourceCallCount: 2,
+    milliseconds: 21590,
+  },
   "scripts/staging-hns-cutover-probe-reseed.pg.test.ts": { sourceCallCount: 1, milliseconds: 3407 },
   "scripts/staging-hns-gateway-role.pg.test.ts": { sourceCallCount: 1, milliseconds: 452 },
   "scripts/staging-hns-post-migration-entry.pg.test.ts": { sourceCallCount: 8, milliseconds: 6067 },

@@ -1,5 +1,8 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true
+  },
   "include": [
     "scripts/recover-song-funding-cancellation.ts",
     "scripts/recover-song-funding-cancellation.test.ts",
@@ -17,6 +20,10 @@
     "scripts/reward-operations-control.ts",
     "scripts/reward-operations-control.test.ts",
     "scripts/hns-staging-gateway-fixture.ts",
+    "scripts/hns-staging-gateway/*.ts",
+    "scripts/hns-staging-gateway-successor.test.ts",
+    "scripts/hns-staging-cookie-profile-successor.test.ts",
+    "scripts/hns-staging-cookie-profile-successor.pg.test.ts",
     "scripts/hns-monitor.ts",
     "scripts/hns-previous-verifier-bundle.ts",
     "packages",
