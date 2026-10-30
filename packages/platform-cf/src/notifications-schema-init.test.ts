@@ -144,10 +144,10 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0331 set", () => {
-  expect(migrations).toHaveLength(331);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0332 set", () => {
+  expect(migrations).toHaveLength(332);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 331 }, (_, i) => i + 1),
+    Array.from({ length: 332 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",
@@ -299,6 +299,10 @@ test("the actual checksum loader supplies the complete contiguous repository 000
   expect(migrations[330]).toMatchObject({
     version: "0331_moderated_dance_no_pose_policy.sql",
     checksum: "04c541b0ed8068f6d404ca2a6c6a4e1dcf34a101b2f01b6b55ade9e2bd3af38b",
+  });
+  expect(migrations[331]).toMatchObject({
+    version: "0332_hns_owner_recovery_immutable_transition.sql",
+    checksum: "04bbc270f35f3db2d7e8075a486a0e6f49d84000007fe853727f7d4c4be1ad58",
   });
 });
 
