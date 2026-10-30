@@ -13,6 +13,7 @@ export async function verifyHnsOwnerTxtServingGenerationFences(input: {
   readonly dns_generation: number;
   readonly app_generation: number;
   readonly sale_generation: number;
+  readonly binding_generation: number;
   readonly refuse_stale: () => Promise<unknown>;
 }) {
   await input.admin.query(
@@ -44,7 +45,7 @@ export async function verifyHnsOwnerTxtServingGenerationFences(input: {
           expectedActivationHash: expectedHash,
           requestedStatus,
           namespaceAuthorityReference: "owner-txt-evidence",
-          expectedNamespaceAuthorityGeneration: 3,
+          expectedNamespaceAuthorityGeneration: input.binding_generation,
           dnsZoneActivationId: input.dns_id,
           expectedDnsZoneActivationGeneration: input.dns_generation,
           dedicatedRootReplacementConfirmed: true,

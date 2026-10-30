@@ -22,6 +22,7 @@ import {
   makeControlPlaneHnsOwnerRecoveryAuthorityResolver,
   makeControlPlaneHnsOwnerRecoveryStartStore,
 } from "./hns-owner-recovery-start-repository.ts";
+import { expireOwnerTxtFixtureSessions } from "./hns-staging-owner-txt-expiry.pg-fixture.ts";
 import { verifyHnsOwnerTxtServingGenerationFences } from "./hns-staging-owner-txt-generation.pg-cases.ts";
 import { verifyHnsOwnerTxtLockOrder } from "./hns-staging-owner-txt-locks.pg-cases.ts";
 import { readHnsStagingOwnerTxtRecovery } from "./hns-staging-owner-txt-recovery.ts";
@@ -45,6 +46,7 @@ export async function verifyHnsStagingOwnerTxt(
   artifact: (chainHash: string) => Promise<Artifact>,
   dnsExpired: boolean,
   expireDuringObservation: boolean,
+  expiredSessions = 0,
 ) {
   const layer = makeDirectPostgresControlPlaneLayer(connection);
   const pointers = async () =>
@@ -77,6 +79,9 @@ export async function verifyHnsStagingOwnerTxt(
       }),
     ),
   ).toEqual({ selected: 1, transitioned: 1, stale: 0 });
+  await expireOwnerTxtFixtureSessions(admin, connection, expiredSessions);
+  const recoveryGeneration = 2 + expiredSessions;
+  const verifiedGeneration = recoveryGeneration + 1;
   const upstream = "nvs_owner_txt_fixture";
   const challenge = `pirate-verification=${upstream}`;
   const started = await Effect.runPromise(
@@ -85,7 +90,7 @@ export async function verifyHnsStagingOwnerTxt(
         {
           actor_id: "actor-root-import",
           community_id: "community-root-import",
-          expected_generation: 2,
+          expected_generation: recoveryGeneration,
           idempotency_key: "owner-txt-start",
         },
         {
@@ -119,10 +124,13 @@ export async function verifyHnsStagingOwnerTxt(
       ),
     ),
   );
-  expect(started).toMatchObject({ status: "pending", generation: 2 });
+  expect(started).toMatchObject({ status: "pending", generation: recoveryGeneration });
   const chainAuthority = Schema.decodeUnknownSync(Sha256Hex)("c".repeat(64));
   const chain = {
-    chain_anchor_median_time: Math.floor(Date.now() / 1000) - 1,
+    chain_anchor_median_time:
+      Math.floor(
+        (await admin.query("SELECT clock_timestamp() AS at")).rows[0].at.getTime() / 1000,
+      ) - 1,
     chain_anchor_height: 123550,
     expiry_height: 200000,
   };
@@ -171,7 +179,7 @@ export async function verifyHnsStagingOwnerTxt(
             community_id: "community-root-import",
             route_recovery_id: started.route_recovery_id,
             session_id: started.session_id,
-            expected_generation: 2,
+            expected_generation: recoveryGeneration,
             idempotency_key: "owner-txt-poll",
             channel: "poll_result",
           },
@@ -189,7 +197,7 @@ export async function verifyHnsStagingOwnerTxt(
       ),
     );
   const afterExpiry = await pointers();
-  expect(await poll()).toMatchObject({ status: "verified", generation: 3 });
+  expect(await poll()).toMatchObject({ status: "verified", generation: verifiedGeneration });
   if (dnsExpired) {
     // Ownership is real, but no host, DNS, inventory or health pointer may
     // advance before the separately observed and reviewed authority adoption.
@@ -201,9 +209,12 @@ export async function verifyHnsStagingOwnerTxt(
         )
       ).rows[0]?.count,
     ).toBe(1);
-    const unavailable = await admin.query(`SELECT dns_delegation_current
+    const unavailable = await admin.query(
+      `SELECT dns_delegation_current
       FROM current_hns_sale_namespace_dependency_v1(
-        'community-root-import','owner-txt-evidence',3,'dns-root-import',1,clock_timestamp())`);
+        'community-root-import','owner-txt-evidence',$1,'dns-root-import',1,clock_timestamp())`,
+      [verifiedGeneration],
+    );
     expect(unavailable.rows[0]?.dns_delegation_current).toBe(false);
   }
   const operator = new Client({ connectionString: connection });
@@ -223,7 +234,7 @@ export async function verifyHnsStagingOwnerTxt(
       root_label: "newroot",
       community_id: "community-root-import",
       route_binding_id: "route-binding-root-import",
-      binding_generation: 3,
+      binding_generation: verifiedGeneration,
       evidence_ref: "owner-txt-evidence",
       recovery_attempt_id: "owner-txt-attempt",
       dns_zone_activation_id: state.dns_zone_activation_id,
@@ -237,6 +248,30 @@ export async function verifyHnsStagingOwnerTxt(
       chain_records: next,
     };
     const observed = await artifact(hash(next));
+    if (expiredSessions > 1) {
+      // This repair deliberately accepts one expired predecessor, not a
+      // recursive authority chain. Both prior terminals were real polls.
+      await expect(
+        readHnsStagingOwnerTxtRecovery(operator, {
+          review,
+          root_import_session_id: state.root_import_session_id,
+          lock: false,
+        }),
+      ).rejects.toThrow("recovery lineage is unavailable");
+      expect(await pointers()).toEqual(recoveryPointers);
+      return;
+    }
+    expect(
+      await readHnsStagingOwnerTxtRecovery(operator, {
+        review,
+        root_import_session_id: state.root_import_session_id,
+        lock: false,
+      }),
+    ).toMatchObject({
+      binding_generation: String(verifiedGeneration),
+      evidence_ref: "owner-txt-evidence",
+      recovery_attempt_id: "owner-txt-attempt",
+    });
     const request = (mode: "dry-run" | "rehearse" | "commit", proof: unknown = review) => ({
       ...observed,
       expected_result_sha256: observed.result_sha256,
@@ -263,7 +298,7 @@ export async function verifyHnsStagingOwnerTxt(
                 deferExpiredHnsRecoveryHosts(transaction, {
                   community_id: "community-root-import",
                   route_binding_id: "route-binding-root-import",
-                  expected_binding_generation: 2,
+                  expected_binding_generation: recoveryGeneration,
                   evidence_ref: "owner-txt-evidence",
                   recovery_id: "owner-txt-recovery",
                   ...mismatch,
@@ -307,6 +342,7 @@ export async function verifyHnsStagingOwnerTxt(
         dns_generation: state.current_generation,
         app_generation: review.app_generation,
         sale_generation: review.sale_generation,
+        binding_generation: verifiedGeneration,
         refuse_stale: () => adoptHnsRootZone(operator, request("commit")),
       });
       review.app_generation = generations.app_generation;
@@ -395,8 +431,8 @@ export async function verifyHnsStagingOwnerTxt(
         await admin.query(
           `SELECT dns_delegation_current
         FROM current_hns_sale_namespace_dependency_v1(
-          'community-root-import','owner-txt-evidence',3,'dns-root-import',$1,clock_timestamp())`,
-          [adopted.current_generation],
+          'community-root-import','owner-txt-evidence',$2,'dns-root-import',$1,clock_timestamp())`,
+          [adopted.current_generation, verifiedGeneration],
         )
       ).rows[0]?.dns_delegation_current,
     ).toBe(true);
