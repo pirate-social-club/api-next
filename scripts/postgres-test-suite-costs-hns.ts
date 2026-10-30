@@ -82,6 +82,11 @@ export const postgresHnsSuiteCostEstimates = {
     sourceCallCount: 9,
     milliseconds: 32447,
   },
+  // Baseline constrained-role red took18.49s; a planning estimate, not green acceptance.
+  "packages/platform-cf/src/hns-owner-recovery-runtime-privileges.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 20000,
+  },
   "packages/platform-cf/src/hns-production-import-privileges.pg.test.ts": {
     sourceCallCount: 2,
     milliseconds: 3889,

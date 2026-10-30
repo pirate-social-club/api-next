@@ -15351,8 +15351,7 @@ BEGIN
 
     IF NEW.recovery_authority_kind = 'database_time_expiry_transition' THEN
       SELECT * INTO transition_record FROM community_route_lifecycle_transitions
-       WHERE route_lifecycle_transition_id = NEW.recovery_authority_reference
-       FOR SHARE;
+       WHERE route_lifecycle_transition_id = NEW.recovery_authority_reference;
       IF transition_record.route_lifecycle_transition_id IS NULL
         OR transition_record.transition_kind <> 'database_time_expired'
         OR transition_record.community_id IS DISTINCT FROM NEW.community_id
