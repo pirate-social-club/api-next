@@ -30,7 +30,7 @@ function observedClients(failures: QueryFailure[]): PostgresClientFactory {
     const client = new Client(options) as unknown as PostgresClientLike;
     return {
       get connection() {
-        return client.connection;
+        return client.connection as NonNullable<PostgresClientLike["connection"]>;
       },
       connect: () => client.connect(),
       query: async (statement) => {
