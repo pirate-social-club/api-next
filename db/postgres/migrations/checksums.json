@@ -332,6 +332,7 @@
     "0329_shared_song_context_funding_envelopes.sql": "2323b3e3ffcf2d399930597ac1c73e37d355e219b81b266065147f06a7db5f93",
     "0330_browser_sessions.sql": "91b9d55aa720c2f9295316b1ff5a019a43192df0b9f8b5aebe5201effb10ed3a",
     "0331_moderated_dance_no_pose_policy.sql": "04c541b0ed8068f6d404ca2a6c6a4e1dcf34a101b2f01b6b55ade9e2bd3af38b",
-    "0332_hns_owner_recovery_immutable_transition.sql": "04bbc270f35f3db2d7e8075a486a0e6f49d84000007fe853727f7d4c4be1ad58"
+    "0332_hns_owner_recovery_immutable_transition.sql": "04bbc270f35f3db2d7e8075a486a0e6f49d84000007fe853727f7d4c4be1ad58",
+    "0333_media_moderation_immutable_action.sql": "45d887ca27bfc372a4f75cb0d4afd702d5a7857a2eeb226564602b9ede08753a"
   }
 }
