@@ -53,6 +53,7 @@ suite("HNS owner recovery runtime-role reservation", () => {
     const suffix = randomUUID().replaceAll("-", "");
     const schema = `hns_owner_lock_${suffix}`,
       role = `hns_owner_runtime_${suffix}`;
+    const runtimePassword = `fixture-${suffix}`;
     const admin = new Client({ connectionString: connection });
     await admin.connect();
     let roleCreated = false;
@@ -79,7 +80,8 @@ suite("HNS owner recovery runtime-role reservation", () => {
         'verified','active',1,'evidence-root-import')`);
       await admin.query("COMMIT");
       await admin.query(
-        `CREATE ROLE "${role}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`,
+        `CREATE ROLE "${role}" LOGIN PASSWORD '${runtimePassword}'
+          NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`,
       );
       roleCreated = true;
       await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${role}"`);
@@ -90,7 +92,7 @@ suite("HNS owner recovery runtime-role reservation", () => {
       await admin.query(`GRANT INSERT ON community_route_lifecycle_transitions TO "${role}"`);
       const runtimeUrl = new URL(scoped);
       runtimeUrl.username = role;
-      runtimeUrl.password = "";
+      runtimeUrl.password = runtimePassword;
       const identity = new Client({ connectionString: runtimeUrl.toString() });
       await identity.connect();
       try {
