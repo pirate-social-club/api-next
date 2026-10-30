@@ -235,9 +235,23 @@ suite("staging cookie profile PostgreSQL authority boundary", () => {
 
       // Real concurrent selector writer holds its table/row lock. The rotation
       // waits, then sees the committed changed selector and refuses stale bytes.
+      const unselectedDns = (await readContinuityState(rival, "a18n")).dns;
       await rival.query("BEGIN");
-      await rival.query(
-        "UPDATE hns_dns_zone_activation_current SET updated_at=clock_timestamp() WHERE canonical_root='a18n'",
+      const suspended = await rival.query(
+        "SELECT * FROM change_hns_dns_zone_activation_status_v1($1,$2,$3,$4,$5::bigint,$6,$7)",
+        [
+          "cookie-concurrent-dns-suspend",
+          "cookie-concurrent-dns-suspend",
+          "c".repeat(64),
+          unselectedDns.dns_zone_activation_id,
+          Number(unselectedDns.dns_zone_activation_generation),
+          "suspended",
+          "cookie-concurrent-census-change",
+        ],
+      );
+      expect(suspended.rows[0]?.outcome).toBe("changed");
+      expect(Number(suspended.rows[0]?.activation_generation)).toBe(
+        Number(unselectedDns.dns_zone_activation_generation) + 1,
       );
       const pid = (await admin.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid;
       const pending = applyCookieProfileSuccessor({ ...args(), mode: "rehearse" }).then(
@@ -261,6 +275,8 @@ suite("staging cookie profile PostgreSQL authority boundary", () => {
       const refused = await pending;
       expect(refused.rejected).toBe(true);
       expect(String(refused.error)).toContain("census changed");
+      expect(resolveActiveHnsHostAuthority(await sources.app("app.a18n"))).toBeNull();
+      expect(resolveActiveHnsHostAuthority(await sources.handle("participant.a18n"))).toBeNull();
       expect((await readContinuityState(admin, "8s28")).dns.gateway_deployment_reference).toBe(
         PREVIOUS_GATEWAY,
       );
