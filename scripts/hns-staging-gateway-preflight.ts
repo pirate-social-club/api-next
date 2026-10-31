@@ -42,7 +42,8 @@ function pinnedPairMatches(pair: unknown, reference: string, fingerprint: unknow
 /**
  * `pending_cutover_from` names the exact live pair that may stand in while the
  * pin already holds a reviewed rotation that needs a recovered namespace. The
- * cutover removes the field in the same reviewed release as the rotation.
+ * field is removed after the rotation is verified; until then a rollback to the
+ * old gateway stays admitted.
  */
 export function verifyHnsStagingGatewayManifest(
   manifestBytes: string,

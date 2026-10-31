@@ -600,6 +600,7 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       { exitCode: 0, stdout: "/workspace/api-next/.git" },
       { exitCode: 0, stdout: manifest },
       { exitCode: 0, stdout: `${target}\n` },
+      { exitCode: 0, stdout: "{}" },
       { exitCode: 0, stdout: before },
       { exitCode: 0, stdout: "deployed" },
       { exitCode: 0, stdout: after },
@@ -618,31 +619,56 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       ),
     ).resolves.toMatchObject({ worker_version_id: "version-2" });
     expect(pending.commands[7]).toEqual(["node", "scripts/hns-ingress-composition-identity.mjs"]);
-    expect(pending.commands[11]).toEqual(HNS_STAGING_DIRECT_CHECK_COMMAND);
+    expect(pending.commands[8]).toEqual(HNS_STAGING_DIRECT_CHECK_COMMAND);
+    expect(pending.commands[12]).toEqual(HNS_STAGING_DIRECT_CHECK_COMMAND);
     expect(pending.commands.flat()).not.toContain("check:staging:release");
 
-    const failedPendingDirect = queueRunner([
+    const failedPendingPrecheck = queueRunner([
       ...sourceChecks(httpInput.configPath),
       { exitCode: 0, stdout: "/workspace/api-next/.git" },
       { exitCode: 0, stdout: manifest },
       { exitCode: 0, stdout: `${target}\n` },
-      { exitCode: 0, stdout: before },
-      { exitCode: 0, stdout: "deployed" },
-      { exitCode: 0, stdout: after },
       { exitCode: 1 },
     ]);
     await expect(
       deployWorkerWithProvenance(
         "/repo",
         httpInput,
-        failedPendingDirect.runner,
+        failedPendingPrecheck.runner,
         () => undefined,
+        async () => pendingPin,
+      ),
+    ).rejects.toThrow("staging direct-host check failed before HTTP deploy");
+    expect(failedPendingPrecheck.commands.some((command) => command.includes("deploy"))).toBe(
+      false,
+    );
+
+    const failedPendingDirect = queueRunner([
+      ...sourceChecks(httpInput.configPath),
+      { exitCode: 0, stdout: "/workspace/api-next/.git" },
+      { exitCode: 0, stdout: manifest },
+      { exitCode: 0, stdout: `${target}\n` },
+      { exitCode: 0, stdout: "{}" },
+      { exitCode: 0, stdout: before },
+      { exitCode: 0, stdout: "deployed" },
+      { exitCode: 0, stdout: after },
+      { exitCode: 1, stdout: "direct-out\n", stderr: "TypeError: fetch failed\n" },
+    ]);
+    const failureDiagnostics: string[] = [];
+    await expect(
+      deployWorkerWithProvenance(
+        "/repo",
+        httpInput,
+        failedPendingDirect.runner,
+        (text) => failureDiagnostics.push(text),
         async () => pendingPin,
         allowRewardDeployment,
         allowStagingBindings,
         allowTelegram,
       ),
     ).rejects.toThrow("staging direct-host release check failed after HTTP deploy");
+    expect(failureDiagnostics).toContain("direct-out\n");
+    expect(failureDiagnostics).toContain("TypeError: fetch failed\n");
 
     for (const solidIdentity of [
       { exitCode: 0, stdout: `${pin.solid_ingress_composition_reference}\n` },

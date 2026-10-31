@@ -123,8 +123,10 @@ gateway rotation updates the pin and Solid deployment as one reviewed release.
 While a pinned rotation waits on a recovered namespace, `pending_cutover_from`
 names the exact live pair that may stand in. The tool then requires the sibling
 Solid to compute the pin's target identity instead of pairing with the gateway,
-and runs only the direct-host checks after upload, because
-`check:staging:release` pairs with the live gateway first. Remove that field and
+and runs only the direct-host checks, before and after upload, because
+`check:staging:release` pairs with the live gateway first. A failed check after
+upload leaves the Worker serving with no receipt: read the serving version and
+rerun the check rather than redeploying. Remove that field and
 its committed-pin test after the rotation is verified; until then a rollback to
 the old gateway stays admitted.
 

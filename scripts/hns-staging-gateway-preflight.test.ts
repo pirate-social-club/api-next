@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { NEXT_GATEWAY, PREVIOUS_GATEWAY } from "./hns-staging-gateway/cookie-plan.ts";
 import {
+  HNS_STAGING_DIRECT_CHECK_COMMAND,
   readHnsStagingGatewayPin,
   verifyHnsStagingGatewayManifest,
 } from "./hns-staging-gateway-preflight.ts";
@@ -146,5 +150,29 @@ describe("staging HNS gateway deploy pin", () => {
           "solid-hns-ingress-sha256:614a197b91112007fe26dda867b23452a2beeefa47acfdba147a5c7bfee38076",
       });
     });
+  });
+
+  test("the direct check command runs the real export and propagates its failure", async () => {
+    const solid = await mkdtemp(join(tmpdir(), "hns-direct-check-"));
+    try {
+      await mkdir(join(solid, "scripts"));
+      const module = join(solid, "scripts/staging-release-check.mjs");
+      const [command, ...args] = HNS_STAGING_DIRECT_CHECK_COMMAND;
+
+      await writeFile(module, 'export const checkDirectStaging = async () => ({ origin: "x" });\n');
+      const passed = spawnSync(command, args, { cwd: solid, encoding: "utf8" });
+      expect(passed.status).toBe(0);
+      expect(JSON.parse(passed.stdout)).toEqual({ origin: "x" });
+
+      await writeFile(
+        module,
+        'export const checkDirectStaging = async () => { throw new Error("unreachable"); };\n',
+      );
+      const failed = spawnSync(command, args, { cwd: solid, encoding: "utf8" });
+      expect(failed.status).not.toBe(0);
+      expect(failed.stderr).toContain("unreachable");
+    } finally {
+      await rm(solid, { recursive: true, force: true });
+    }
   });
 });

@@ -411,6 +411,13 @@ export async function deployWorkerWithProvenance(
       (pendingCutoverTo !== null && solidCheck.stdout.trim() !== pendingCutoverTo)
     )
       throw new Error("staging Solid ingress preflight failed before HTTP deploy");
+    // The direct check must work before upload: a failure after it would leave
+    // a serving Worker reported as failed.
+    if (
+      pendingCutoverTo !== null &&
+      (await runner(HNS_STAGING_DIRECT_CHECK_COMMAND, solidRoot)).exitCode !== 0
+    )
+      throw new Error("staging direct-host check failed before HTTP deploy");
   }
   const message = `git:${sourceSha}`;
   const listCommand = versionsCommand(input, configPath);
@@ -524,12 +531,13 @@ export async function deployWorkerWithProvenance(
         : HNS_STAGING_DIRECT_CHECK_COMMAND,
       solidRoot,
     );
+    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
+    if (serving.stderr.length > 0) writeDiagnostic(serving.stderr);
     if (serving.exitCode !== 0) {
       throw new Error(
         `staging direct-host release check failed after HTTP deploy (exit ${serving.exitCode})`,
       );
     }
-    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
   }
   return {
     schema_version: 1,
