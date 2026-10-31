@@ -88,6 +88,22 @@ describe("staging HNS gateway deploy pin", () => {
       ).toEqual({ gatewayReference: reference, fingerprint: target, pendingCutoverTo: null });
     });
 
+    test("treats a stand-in equal to the pin as already rotated", () => {
+      expect(
+        verifyHnsStagingGatewayManifest(manifest, {
+          ...pin,
+          pending_cutover_from: pendingPin.pending_cutover_from,
+        }).pendingCutoverTo,
+      ).toBeNull();
+    });
+
+    test("refuses a stand-in without a target identity", () => {
+      const { solid_ingress_composition_reference: _, ...noTarget } = pendingPin;
+      expect(() => verifyHnsStagingGatewayManifest(manifest, noTarget)).toThrow(
+        "differs from the reviewed deploy pin",
+      );
+    });
+
     test("refuses a stand-in that differs in either half", () => {
       for (const pending_cutover_from of [
         { ...pendingPin.pending_cutover_from, gateway_reference: "old" },
@@ -121,7 +137,14 @@ describe("staging HNS gateway deploy pin", () => {
         dirname(import.meta.dir),
       )) as typeof pendingPin;
       expect(committed.gateway_reference).toBe(NEXT_GATEWAY);
-      expect(committed.pending_cutover_from.gateway_reference).toBe(PREVIOUS_GATEWAY);
+      expect(committed.solid_ingress_composition_reference).toBe(
+        "solid-hns-ingress-sha256:ca8947f90135419945ed697af91e429bc07b45e04d8ace973f655fe6f37758f5",
+      );
+      expect(committed.pending_cutover_from).toEqual({
+        gateway_reference: PREVIOUS_GATEWAY,
+        solid_ingress_composition_reference:
+          "solid-hns-ingress-sha256:614a197b91112007fe26dda867b23452a2beeefa47acfdba147a5c7bfee38076",
+      });
     });
   });
 });

@@ -18,6 +18,7 @@ import {
   type WorkerDeploymentInput,
 } from "./deploy-worker-with-provenance";
 
+import { HNS_STAGING_DIRECT_CHECK_COMMAND } from "./hns-staging-gateway-preflight.ts";
 import type { PrepareStagingBindingGuard } from "./staging-serving-bindings-preflight.ts";
 
 import type { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
@@ -617,6 +618,31 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       ),
     ).resolves.toMatchObject({ worker_version_id: "version-2" });
     expect(pending.commands[7]).toEqual(["node", "scripts/hns-ingress-composition-identity.mjs"]);
+    expect(pending.commands[11]).toEqual(HNS_STAGING_DIRECT_CHECK_COMMAND);
+    expect(pending.commands.flat()).not.toContain("check:staging:release");
+
+    const failedPendingDirect = queueRunner([
+      ...sourceChecks(httpInput.configPath),
+      { exitCode: 0, stdout: "/workspace/api-next/.git" },
+      { exitCode: 0, stdout: manifest },
+      { exitCode: 0, stdout: `${target}\n` },
+      { exitCode: 0, stdout: before },
+      { exitCode: 0, stdout: "deployed" },
+      { exitCode: 0, stdout: after },
+      { exitCode: 1 },
+    ]);
+    await expect(
+      deployWorkerWithProvenance(
+        "/repo",
+        httpInput,
+        failedPendingDirect.runner,
+        () => undefined,
+        async () => pendingPin,
+        allowRewardDeployment,
+        allowStagingBindings,
+        allowTelegram,
+      ),
+    ).rejects.toThrow("staging direct-host release check failed after HTTP deploy");
 
     for (const solidIdentity of [
       { exitCode: 0, stdout: `${pin.solid_ingress_composition_reference}\n` },

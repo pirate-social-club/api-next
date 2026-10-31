@@ -21,6 +21,15 @@ export const HNS_STAGING_MANIFEST_COMMAND = [
   manifestPath,
 ] as const;
 
+/** The post-deploy check while a cutover is pending: Solid's release check
+ * pairs with the live gateway first, which a pending cutover cannot pass. */
+export const HNS_STAGING_DIRECT_CHECK_COMMAND = [
+  "node",
+  "--input-type=module",
+  "-e",
+  "const check = await import('./scripts/staging-release-check.mjs'); console.log(JSON.stringify(await check.checkDirectStaging()));",
+] as const;
+
 function pinnedPairMatches(pair: unknown, reference: string, fingerprint: unknown): boolean {
   if (typeof pair !== "object" || pair === null || Array.isArray(pair)) return false;
   const expected = pair as Record<string, unknown>;
