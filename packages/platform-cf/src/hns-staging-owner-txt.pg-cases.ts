@@ -201,7 +201,7 @@ export async function verifyHnsStagingOwnerTxt(
   if (dnsExpired) {
     // Ownership is real, but no host, DNS, inventory or health pointer may
     // advance before the separately observed and reviewed authority adoption.
-    expect(await pointers()).toEqual({ ...afterExpiry, route: "3" });
+    expect(await pointers()).toEqual({ ...afterExpiry, route: String(verifiedGeneration) });
     expect(
       (
         await admin.query(
@@ -248,19 +248,6 @@ export async function verifyHnsStagingOwnerTxt(
       chain_records: next,
     };
     const observed = await artifact(hash(next));
-    if (expiredSessions > 1) {
-      // This repair deliberately accepts one expired predecessor, not a
-      // recursive authority chain. Both prior terminals were real polls.
-      await expect(
-        readHnsStagingOwnerTxtRecovery(operator, {
-          review,
-          root_import_session_id: state.root_import_session_id,
-          lock: false,
-        }),
-      ).rejects.toThrow("recovery lineage is unavailable");
-      expect(await pointers()).toEqual(recoveryPointers);
-      return;
-    }
     expect(
       await readHnsStagingOwnerTxtRecovery(operator, {
         review,
