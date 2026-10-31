@@ -2,7 +2,7 @@
 
 This runbook is proposed source. No command here was executed by its author. Root retains runtime custody and must qualify committed tooling, obtain independent whole-operation acceptance and notify workspace_owner before the first production write under the existing standing authority. A source review does not supply live admission.
 
-This source rebind is intermediate and must not be executed. The application source pin has moved to the accepted security commit, but worker-observations still pins historical backend artifacts. Root must generate a genuine four-backend package at that application commit, bind its immutable path and actual manifest digests, regenerate the release closure, commit and independently review the final candidate before operational preparation. Source-only grant-envelope rebinding supplies no production plan acceptance, live permission/data fact, backup or release admission. Earlier producing receipts retain their real source identity.
+Accepted application6862 and its genuine four-backend package are now explicitly bound by actualmanifestf3caabbb and candidatewrapperdb47b0ea, with independent actual packaging reviewa245ec54. The exact final committed tooling must pass qualification, publication and independent operational review before any live use. Source-only grant-envelope rebinding supplies no production plan acceptance, live permission/data fact, backup or release admission. Earlier producing receipts retain their original source identity; new HTTP bytes and measured nonHTTP equality carry are separately recorded.
 
 ## Managed environment boundary
 

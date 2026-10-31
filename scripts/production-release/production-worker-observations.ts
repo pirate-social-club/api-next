@@ -3,13 +3,6 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { runDeploymentCommand } from "../deploy-worker-with-provenance.ts";
 import {
-  gitEnvironment,
-  managedProviderApi,
-  managedProviderToken,
-  providerReadEnvironment,
-  wranglerEnvironment,
-} from "./production-managed-environment.ts";
-import {
   bindings,
   digest,
   isSecret,
@@ -18,10 +11,17 @@ import {
 } from "../worker-binding-drift.ts";
 import { readCandidateBindings } from "../worker-deployment-bindings.ts";
 import { hash, QUALIFICATION, REPO, SOURCE, TREE } from "./production-database-cutover.ts";
+import {
+  gitEnvironment,
+  managedProviderApi,
+  managedProviderToken,
+  providerReadEnvironment,
+  wranglerEnvironment,
+} from "./production-managed-environment.ts";
 
-export const ACTUAL_MANIFEST = "9660e32ac1b7186414a5cca7fb0e702fe8ea7f8050791f688b2ab52d53853ec5";
+export const ACTUAL_MANIFEST = "f3caabbb007fdfe670b34ca04cb53fa66cac2694927a56d87a19b47d6d5a5ef5";
 export const CANDIDATE_MANIFEST =
-  "3dd9c564eab5e8a9b68dc1ee84bdd1ace4adfbb3843913009b9d47aeee622203";
+  "db47b0ea77169bc2687a5ee36858dce8d92f13d9c6cd951e56f750c8331b9fc1";
 export const ORDER = ["gateway", "media", "http", "jobs"] as const;
 export const targets = {
   gateway: {
@@ -53,7 +53,8 @@ export function sourceAndBundle(component: Component) {
   assert.equal(git(["rev-parse", "HEAD^{tree}"]).trim(), TREE);
   assert.equal(git(["status", "--porcelain"]), "");
   const manifestBytes = readFileSync(
-    QUALIFICATION + "mixed-runtime333-source-v1/candidate-manifest.json",
+    QUALIFICATION +
+      "backend-candidate-security-6862fa97-production-20261031/candidate-manifest.json",
   );
   assert.equal(hash(manifestBytes), CANDIDATE_MANIFEST);
   const manifest = JSON.parse(manifestBytes.toString("utf8"));
