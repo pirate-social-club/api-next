@@ -170,7 +170,7 @@ function assertBasicConstraints(forge: ForgeModule): void {
   };
   const leaf = issue("leaf", "intermediate", []);
   const verify = (extensions: object[]) =>
-    forge.pki.verifyCertificateChain(forge.pki.createCaStore([root]), [
+    forge.pki.verifyCertificateChain(forge.pki.createCaStore([forge.pki.certificateToPem(root)]), [
       leaf,
       issue("intermediate", "synthetic-root", extensions),
     ]);
