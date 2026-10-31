@@ -4,6 +4,8 @@
     "allowJs": true
   },
   "include": [
+    "scripts/production-release/**/*.ts",
+    "scripts/production-compatibility/**/*.ts",
     "scripts/recover-song-funding-cancellation.ts",
     "scripts/recover-song-funding-cancellation.test.ts",
     "scripts/song-funding-permission-contract.ts",
