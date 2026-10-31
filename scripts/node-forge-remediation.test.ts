@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { isRemediatedForgeAdvisory, verifyNodeForgeRemediation } from "./node-forge-remediation.ts";
 
 test("both installed Forge copies pass exact security bytes and all real regressions", async () => {
-  await expect(verifyNodeForgeRemediation()).resolves.toBeUndefined();
+  await verifyNodeForgeRemediation();
 });
 
 test("remediation recognizes only the exact fixed Forge advisory set", () => {
