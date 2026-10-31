@@ -29,6 +29,10 @@ export const postgresHnsSuiteCostEstimates = {
     sourceCallCount: 1,
     milliseconds: 2717,
   },
+  "apps/http-worker/src/hns-owner-recovery-observer-retry.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 11000,
+  },
   "apps/http-worker/src/hns-owner-recovery-production.pg.test.ts": {
     sourceCallCount: 1,
     milliseconds: 9790,
