@@ -9,9 +9,12 @@ INSERT INTO communities(community_id,display_name,created_by_user_id,created_at,
 VALUES ('fixture_community','Synthetic compatibility fixture','fixture_account','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','archived');
 INSERT INTO persona_wallet_assignments(assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,address,status,reservation_idempotency_key,assigned_at,created_at,updated_at)
 VALUES ('fixture_wallet','fixture_persona','fixture_account','evm',0,'0x1111111111111111111111111111111111111111','active','fixture_wallet_reservation','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+-- A closed synthetic first send preserves the one-open-send-per-sender index.
+-- These partial states attest no chain outcome.
 INSERT INTO reward_winner_sends(send_id,credit_id,account_id,persona_id,wallet_assignment_id,chain_id,token_address,sender_address,attempt,status,created_at,updated_at)
 SELECT id,'fixture_unmodelled_credit_'||id,'fixture_account','fixture_persona','fixture_wallet',84532,
- '0x2222222222222222222222222222222222222222','0x1111111111111111111111111111111111111111',1,'pending','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'
+ '0x2222222222222222222222222222222222222222','0x1111111111111111111111111111111111111111',1,
+ CASE WHEN id='fixture_send_a' THEN 'cancelled' ELSE 'pending' END,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'
 FROM (VALUES ('fixture_send_a'),('fixture_send_b')) AS sends(id);
 INSERT INTO reward_winner_send_attempts(send_id,attempt,account_id,idempotency_key,recipient_address,amount_atomic,nonce,created_at)
 VALUES ('fixture_send_a',1,'fixture_account','fixture_attempt_a','0x3333333333333333333333333333333333333333',1,11,'2026-01-01T00:00:00Z'),
