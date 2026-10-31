@@ -120,6 +120,10 @@ explicit `check:staging:hns-route` acceptance still requires the full HNS gate.
 Production release checks are unchanged. Do not bypass this with a direct
 Wrangler staging HTTP deploy. A
 gateway rotation updates the pin and Solid deployment as one reviewed release.
+While a pinned rotation waits on a recovered namespace, `pending_cutover_from`
+names the exact live pair that may stand in; the tool then requires the sibling
+Solid to compute the pin's target identity instead of pairing with the gateway.
+The cutover removes that field in the same reviewed release.
 
 Effect is pinned to an exact version (`4.0.0-rc.109` at bootstrap), and
 `bun run check` fails if `effect` or any `@effect/*` package declares or

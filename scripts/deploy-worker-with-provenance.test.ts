@@ -583,6 +583,64 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       ),
     ).rejects.toThrow("differs from the reviewed deploy pin");
     expect(refused.commands.some((command) => command.includes("deploy"))).toBe(false);
+
+    const target = `solid-hns-ingress-sha256:${"b".repeat(64)}`;
+    const pendingPin = {
+      ...pin,
+      gateway_reference: `hns-community-app-handle-gateway-sha256:${"c".repeat(64)}`,
+      solid_ingress_composition_reference: target,
+      pending_cutover_from: {
+        gateway_reference: pin.gateway_reference,
+        solid_ingress_composition_reference: pin.solid_ingress_composition_reference,
+      },
+    };
+    const pending = queueRunner([
+      ...sourceChecks(httpInput.configPath),
+      { exitCode: 0, stdout: "/workspace/api-next/.git" },
+      { exitCode: 0, stdout: manifest },
+      { exitCode: 0, stdout: `${target}\n` },
+      { exitCode: 0, stdout: before },
+      { exitCode: 0, stdout: "deployed" },
+      { exitCode: 0, stdout: after },
+      { exitCode: 0, stdout: '{"direct":"passed","hns":"failed"}' },
+    ]);
+    await expect(
+      deployWorkerWithProvenance(
+        "/repo",
+        httpInput,
+        pending.runner,
+        () => undefined,
+        async () => pendingPin,
+        allowRewardDeployment,
+        allowStagingBindings,
+        allowTelegram,
+      ),
+    ).resolves.toMatchObject({ worker_version_id: "version-2" });
+    expect(pending.commands[7]).toEqual(["node", "scripts/hns-ingress-composition-identity.mjs"]);
+
+    for (const solidIdentity of [
+      { exitCode: 0, stdout: `${pin.solid_ingress_composition_reference}\n` },
+      { exitCode: 0, stdout: "" },
+      { exitCode: 1, stdout: `${target}\n` },
+    ]) {
+      const wrongSolid = queueRunner([
+        ...sourceChecks(httpInput.configPath),
+        { exitCode: 0, stdout: "/workspace/api-next/.git" },
+        { exitCode: 0, stdout: manifest },
+        solidIdentity,
+      ]);
+      await expect(
+        deployWorkerWithProvenance(
+          "/repo",
+          httpInput,
+          wrongSolid.runner,
+          () => undefined,
+          async () => pendingPin,
+        ),
+      ).rejects.toThrow("staging Solid ingress preflight failed before HTTP deploy");
+      expect(wrongSolid.commands.some((command) => command.includes("deploy"))).toBe(false);
+    }
+
     const relativeGit = queueRunner([
       ...sourceChecks(httpInput.configPath),
       { exitCode: 0, stdout: ".git" },

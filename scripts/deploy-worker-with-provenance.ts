@@ -389,15 +389,25 @@ export async function deployWorkerWithProvenance(
     const manifestRead = await runner(HNS_STAGING_MANIFEST_COMMAND, repositoryRoot);
     if (manifestRead.exitCode !== 0)
       throw new Error("staging HNS gateway read failed before HTTP deploy");
-    verifyHnsStagingGatewayManifest(
+    const { pendingCutoverTo } = verifyHnsStagingGatewayManifest(
       manifestRead.stdout,
       await readStagingGatewayPin(repositoryRoot),
     );
+    // Before a pinned cutover, Solid already sits at the rotation's identity
+    // and cannot pair with the live gateway, so its identity is compared instead.
     const solidCheck = await runner(
-      ["node", "scripts/hns-staging-gateway-preflight.mjs"],
+      [
+        "node",
+        pendingCutoverTo === null
+          ? "scripts/hns-staging-gateway-preflight.mjs"
+          : "scripts/hns-ingress-composition-identity.mjs",
+      ],
       solidRoot,
     );
-    if (solidCheck.exitCode !== 0)
+    if (
+      solidCheck.exitCode !== 0 ||
+      (pendingCutoverTo !== null && solidCheck.stdout.trim() !== pendingCutoverTo)
+    )
       throw new Error("staging Solid ingress preflight failed before HTTP deploy");
   }
   const message = `git:${sourceSha}`;
