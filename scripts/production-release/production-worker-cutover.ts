@@ -6,7 +6,6 @@ import {
 } from "../deploy-worker-with-provenance.ts";
 import { digest } from "../worker-binding-drift.ts";
 import { readCandidateBindings } from "../worker-deployment-bindings.ts";
-import { deploymentChildEnvironment } from "./production-managed-environment.ts";
 import {
   assertDatabasePlansCommitted,
   BROWSER_PLAN_FILE,
@@ -26,6 +25,7 @@ import {
   SOURCE,
   save,
 } from "./production-database-cutover.ts";
+import { deploymentChildEnvironment } from "./production-managed-environment.ts";
 
 import {
   acceptedExecutor,

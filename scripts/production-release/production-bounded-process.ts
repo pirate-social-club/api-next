@@ -5,8 +5,8 @@ import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { linuxProcess } from "./production-linux-process-bound.ts";
-import { exclusiveRecord, fileHash } from "./production-operation-evidence.ts";
 import { releaseExecutorEnvironment } from "./production-managed-environment.ts";
+import { exclusiveRecord, fileHash } from "./production-operation-evidence.ts";
 
 export interface ProductionBoundedCommand {
   readonly journalDirectory: string;
