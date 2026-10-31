@@ -316,7 +316,7 @@ function pollServices(
             recovery_attempt_id: durableAttemptId,
             evidence_ref: durableEvidenceRef,
             observation_id: durableObservationId,
-            fence_token: 1,
+            fence_token: attemptIds.length,
             database_now: databaseNow,
             lease_expires_at: options.leaseExpiresAt ?? "2026-02-02T04:41:00.000Z",
           },
@@ -571,7 +571,10 @@ describe("HNS owner-recovery application orchestration", () => {
       "hns_observation_proposed_2",
     ]);
     expect(fixture.attemptObservationIds).toEqual(["hns_observation_01", "hns_observation_01"]);
-    expect(fixture.providerObservationIds).toEqual(["hns_observation_01", "hns_observation_01"]);
+    expect(fixture.providerObservationIds).toEqual([
+      "hns_observation_01:1",
+      "hns_observation_01:2",
+    ]);
     expect(fixture.sequence).toEqual([
       "load",
       "reserve",
