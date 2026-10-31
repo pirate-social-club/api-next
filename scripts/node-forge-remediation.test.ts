@@ -29,14 +29,24 @@ test("an unpatched installed package cannot clear the advisory", async () => {
   ).rejects.toThrow("installed RSA remediation mismatch");
 });
 
-for (const file of ["cipherModes.js", "http.js", "pbe.js", "pem.js", "pkcs12.js", "tls.js", "x509.js"]) {
+for (const file of [
+  "cipherModes.js",
+  "http.js",
+  "pbe.js",
+  "pem.js",
+  "pkcs12.js",
+  "tls.js",
+  "x509.js",
+]) {
   for (const occurrence of [1, 2]) {
     test(`modified ${file} in installed copy ${occurrence} cannot clear any security advisory`, async () => {
       let seen = 0;
-      await expect(verifyNodeForgeRemediation(async (path) => {
-        if (path.endsWith(`/lib/${file}`) && ++seen === occurrence) return "unpatched";
-        return readFile(path, "utf8");
-      })).rejects.toThrow("installed security remediation mismatch");
+      await expect(
+        verifyNodeForgeRemediation(async (path) => {
+          if (path.endsWith(`/lib/${file}`) && ++seen === occurrence) return "unpatched";
+          return readFile(path, "utf8");
+        }),
+      ).rejects.toThrow("installed security remediation mismatch");
       expect(seen).toBe(occurrence);
     });
   }

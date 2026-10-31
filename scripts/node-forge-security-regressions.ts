@@ -14,7 +14,11 @@ function assertGcm(forge: ForgeModule): void {
       const cipher = decrypt
         ? forge.cipher.createDecipher("AES-GCM", key)
         : forge.cipher.createCipher("AES-GCM", key);
-      assert.throws(() => cipher.start({ iv, tag: forge.util.createBuffer(), tagLength: bad as unknown as number }), /Invalid tag length/);
+      assert.throws(
+        () =>
+          cipher.start({ iv, tag: forge.util.createBuffer(), tagLength: bad as unknown as number }),
+        /Invalid tag length/,
+      );
     }
   }
   for (const tagLength of [undefined, null, 32, 64, 96, 104, 112, 120, 128, "128"]) {
@@ -27,7 +31,11 @@ function assertGcm(forge: ForgeModule): void {
     for (const tamper of [false, true]) {
       const decipher = forge.cipher.createDecipher("AES-GCM", key);
       const actualTag = tamper ? String.fromCharCode(tag.charCodeAt(0) ^ 1) + tag.slice(1) : tag;
-      decipher.start({ iv, tagLength: tagLength as unknown as number, tag: forge.util.createBuffer(actualTag) });
+      decipher.start({
+        iv,
+        tagLength: tagLength as unknown as number,
+        tag: forge.util.createBuffer(actualTag),
+      });
       decipher.update(forge.util.createBuffer(ciphertext));
       assert.equal(decipher.finish(), !tamper);
       if (!tamper) assert.equal(decipher.output.getBytes(), "authenticated");
@@ -35,7 +43,15 @@ function assertGcm(forge: ForgeModule): void {
   }
   for (const tagLength of [undefined, null]) {
     const decipher = forge.cipher.createDecipher("AES-GCM", key);
-    assert.throws(() => decipher.start({ iv, tagLength: tagLength as unknown as number, tag: forge.util.createBuffer() }), /tag length/);
+    assert.throws(
+      () =>
+        decipher.start({
+          iv,
+          tagLength: tagLength as unknown as number,
+          tag: forge.util.createBuffer(),
+        }),
+      /tag length/,
+    );
   }
 }
 
@@ -45,7 +61,9 @@ function assertPem(forge: ForgeModule): void {
   assert.equal(messages[0]?.body, "ABC");
   assert.throws(() => forge.pem.decode(" -----BEGIN I-----G-----END B".repeat(2000) + "\0"));
   assert.throws(() => forge.pem.decode("-----BEGIN A-----\n" + "\n".repeat(256 * 1024)));
-  const header = forge.pem.decode("-----BEGIN A-----\nX: " + "a".repeat(32000) + "\n\nQUJD\n-----END A-----");
+  const header = forge.pem.decode(
+    "-----BEGIN A-----\nX: " + "a".repeat(32000) + "\n\nQUJD\n-----END A-----",
+  );
   assert.equal(header[0]?.body, "ABC");
 }
 
@@ -73,9 +91,11 @@ function children(node: Forge.asn1.Asn1): Forge.asn1.Asn1[] {
 
 function assertPkcs12(forge: ForgeModule): void {
   const { certificate } = regressionCertificate(forge);
-  const make = () => forge.pkcs12.toPkcs12Asn1(null, certificate, "synthetic-password", {
-    count: 1, generateLocalKeyId: false,
-  });
+  const make = () =>
+    forge.pkcs12.toPkcs12Asn1(null, certificate, "synthetic-password", {
+      count: 1,
+      generateLocalKeyId: false,
+    });
   forge.pkcs12.pkcs12FromAsn1(make(), true, "synthetic-password");
   for (const zero of ["\x00", ""]) {
     const pfx = make();
@@ -97,13 +117,21 @@ function assertPkcs12(forge: ForgeModule): void {
     mac.start("sha1", "\x03".repeat(20));
     mac.update(safeOctets.value);
     digest.value = mac.digest().getBytes();
-    assert.throws(() => forge.pkcs12.pkcs12FromAsn1(pfx, true, "another-password"), /MAC iteration count must be >= 1/);
+    assert.throws(
+      () => forge.pkcs12.pkcs12FromAsn1(pfx, true, "another-password"),
+      /MAC iteration count must be >= 1/,
+    );
   }
   for (const count of [0, -1, Number.NaN]) {
-    assert.throws(() => forge.pkcs12.generateKey("a", forge.util.createBuffer("salt"), 3, count, 20), /iteration count must be >= 1/);
+    assert.throws(
+      () => forge.pkcs12.generateKey("a", forge.util.createBuffer("salt"), 3, count, 20),
+      /iteration count must be >= 1/,
+    );
   }
   const first = forge.pkcs12.generateKey("a", forge.util.createBuffer("salt"), 3, 1, 20).getBytes();
-  const second = forge.pkcs12.generateKey("b", forge.util.createBuffer("salt"), 3, 1, 20).getBytes();
+  const second = forge.pkcs12
+    .generateKey("b", forge.util.createBuffer("salt"), 3, 1, 20)
+    .getBytes();
   assert.notEqual(first, second);
 }
 
@@ -122,15 +150,27 @@ function assertBasicConstraints(forge: ForgeModule): void {
     return forge.pki.certificateFromPem(forge.pki.certificateToPem(cert));
   };
   const leaf = issue("leaf", "intermediate", []);
-  const verify = (extensions: object[]) => forge.pki.verifyCertificateChain(
-    forge.pki.createCaStore([root]), [leaf, issue("intermediate", "synthetic-root", extensions)],
-  );
+  const verify = (extensions: object[]) =>
+    forge.pki.verifyCertificateChain(forge.pki.createCaStore([root]), [
+      leaf,
+      issue("intermediate", "synthetic-root", extensions),
+    ]);
   assert.equal(verify([{ name: "basicConstraints", cA: true }]), true);
   const errorMatches = (pattern: RegExp) => (error: unknown) =>
-    typeof error === "object" && error !== null && "message" in error &&
-    typeof error.message === "string" && pattern.test(error.message);
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string" &&
+    pattern.test(error.message);
   for (const id of ["2.5.29.10", "2.5.29.13"]) {
-    assert.throws(() => verify([{ id, cA: true }, { id: "2.5.29.19", cA: false }]), errorMatches(/not a CA/));
+    assert.throws(
+      () =>
+        verify([
+          { id, cA: true },
+          { id: "2.5.29.19", cA: false },
+        ]),
+      errorMatches(/not a CA/),
+    );
     assert.throws(() => verify([{ id, cA: true }]), errorMatches(/missing basicConstraints/));
   }
 }
@@ -147,18 +187,25 @@ function assertCookies(loader: PackageLoader): void {
   };
   // This inert pool opens no network socket. Cookie methods are the real library.
   const client = http.createClient({
-    url: "http://synthetic.invalid", persistCookies: false,
+    url: "http://synthetic.invalid",
+    persistCookies: false,
     socketPool: { createSocket: () => ({}) },
   });
   const before = Object.getOwnPropertyDescriptors(Object.prototype);
   try {
     assert.equal(client.getCookie("toString", "/"), null);
     assert.equal(client.removeCookie("toString", "/"), false);
-    for (const [name, path] of [["__proto__", "/"], ["ordinary", "__proto__"]]) {
+    for (const [name, path] of [
+      ["__proto__", "/"],
+      ["ordinary", "__proto__"],
+    ]) {
       assert.ok(name && path);
       assert.equal(client.setCookie({ name, path, value: "synthetic", secure: false }), false);
     }
-    assert.equal(client.setCookie({ name: "constructor", path: "/", value: "synthetic", secure: false }), true);
+    assert.equal(
+      client.setCookie({ name: "constructor", path: "/", value: "synthetic", secure: false }),
+      true,
+    );
     assert.ok(client.getCookie("constructor", "/"));
     assert.equal(client.removeCookie("constructor", "/"), true);
     assert.deepEqual(Object.getOwnPropertyDescriptors(Object.prototype), before);

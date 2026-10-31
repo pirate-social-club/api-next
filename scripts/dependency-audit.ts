@@ -336,8 +336,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     },
   );
   await verifyNodeForgeRemediation();
-  const remediated = findings.filter(
-    (finding) => isRemediatedForgeAdvisory(finding.package, finding.advisory),
+  const remediated = findings.filter((finding) =>
+    isRemediatedForgeAdvisory(finding.package, finding.advisory),
   );
   const evaluation = evaluateAudit(
     findings.filter((finding) => !remediated.includes(finding)),

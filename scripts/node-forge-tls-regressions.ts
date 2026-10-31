@@ -4,18 +4,30 @@ import type * as Forge from "node-forge";
 /** No sockets or provider calls: ordinary TLS connections exchange synthetic
  * plaintext records directly, including a real certificate-stripping path. */
 export function assertForgeTlsRegressions(forge: typeof Forge): void {
-  const record = (type: number, fragment: string) => String.fromCharCode(type, 3, 1) +
-    forge.util.int32ToBytes(fragment.length).slice(2) + fragment;
+  const record = (type: number, fragment: string) =>
+    String.fromCharCode(type, 3, 1) + forge.util.int32ToBytes(fragment.length).slice(2) + fragment;
   const alert = record(21, "\x02\x28");
   const heartbeat = record(24, "\x02\x00\x00");
   const connection = (server: boolean, errors: string[], sent: { bytes: string }) => {
     const c = forge.tls.createConnection({
-      server, verify: () => true, connected: () => {},
-      tlsDataReady: (current) => { sent.bytes += current.tlsData.getBytes(); },
-      dataReady: (current) => { current.data.getBytes(); },
-      closed: () => {}, error: (_current, error) => { errors.push(error.message); },
+      server,
+      verify: () => true,
+      connected: () => {},
+      tlsDataReady: (current) => {
+        sent.bytes += current.tlsData.getBytes();
+      },
+      dataReady: (current) => {
+        current.data.getBytes();
+      },
+      closed: () => {},
+      error: (_current, error) => {
+        errors.push(error.message);
+      },
     });
-    if (!server) { c.handshake(); sent.bytes = ""; }
+    if (!server) {
+      c.handshake();
+      sent.bytes = "";
+    }
     return c;
   };
   for (const server of [false, true]) {
@@ -66,11 +78,16 @@ export function assertForgeTlsRegressions(forge: typeof Forge): void {
           const messageType = messages.getByte();
           const length = messages.getInt24();
           const body = messages.getBytes(length);
-          if (messageType !== 11) fragment += String.fromCharCode(messageType) +
-            forge.util.int32ToBytes(length).slice(1) + body;
+          if (messageType !== 11)
+            fragment +=
+              String.fromCharCode(messageType) + forge.util.int32ToBytes(length).slice(1) + body;
         }
       }
-      output += String.fromCharCode(type) + version + forge.util.int32ToBytes(fragment.length).slice(2) + fragment;
+      output +=
+        String.fromCharCode(type) +
+        version +
+        forge.util.int32ToBytes(fragment.length).slice(2) +
+        fragment;
     }
     return output;
   };
@@ -80,18 +97,33 @@ export function assertForgeTlsRegressions(forge: typeof Forge): void {
     let client: Forge.tls.Connection;
     let server: Forge.tls.Connection;
     client = forge.tls.createConnection({
-      server: false, caStore: [certificate], connected: () => {},
+      server: false,
+      caStore: [certificate],
+      connected: () => {},
       verify: (_c, status, depth, certificates) => {
         verified.push([status, depth, certificates.length]);
         return accept ? true : status;
       },
-      tlsDataReady: (c) => { server.process(c.tlsData.getBytes()); },
-      dataReady: () => {}, closed: () => {}, error: (_c, error) => { errors.push(error.message); },
+      tlsDataReady: (c) => {
+        server.process(c.tlsData.getBytes());
+      },
+      dataReady: () => {},
+      closed: () => {},
+      error: (_c, error) => {
+        errors.push(error.message);
+      },
     });
     server = forge.tls.createConnection({
-      server: true, getCertificate: () => pem, getPrivateKey: () => privateKey,
-      connected: () => {}, tlsDataReady: (c) => { client.process(dropCertificate(c.tlsData.getBytes())); },
-      dataReady: () => {}, closed: () => {}, error: () => {},
+      server: true,
+      getCertificate: () => pem,
+      getPrivateKey: () => privateKey,
+      connected: () => {},
+      tlsDataReady: (c) => {
+        client.process(dropCertificate(c.tlsData.getBytes()));
+      },
+      dataReady: () => {},
+      closed: () => {},
+      error: () => {},
     });
     assert.doesNotThrow(() => client.handshake());
     assert.deepEqual(verified, [[forge.tls.Alert.Description.insufficient_security, 0, 0]]);

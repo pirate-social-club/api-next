@@ -22,7 +22,9 @@ interface FileListInstance {
 }
 
 test("filelist's installed CommonJS match handles braces, recursion, exclusions, extglobs and dotfiles", async () => {
-  const minimatch = filelist("minimatch") as { match: (files: string[], pattern: string) => string[] };
+  const minimatch = filelist("minimatch") as {
+    match: (files: string[], pattern: string) => string[];
+  };
   expect(filelist("minimatch/package.json").version).toBe("11.0.1");
   const minimatchLoader = createRequire(filelist.resolve("minimatch"));
   expect(minimatchLoader("brace-expansion/package.json").version).toBe("5.0.12");
@@ -34,12 +36,22 @@ test("filelist's installed CommonJS match handles braces, recursion, exclusions,
     for (const path of ["a.txt", "b.ts", "c.js", ".hidden.txt", "UPPER.TXT", "nested/d.txt"]) {
       await writeFile(join(fixture, path), "synthetic\n");
     }
-    const relative = (files: string[]) => files.map((path) => path.slice(fixture.length + 1)).sort();
-    expect(relative(new FileList().include(`${fixture}/**/*.{txt,ts}`).exclude(`${fixture}/b.ts`).toArray()))
-      .toEqual(["a.txt", "nested/d.txt"]);
-    expect(relative(new FileList().include(`${fixture}/**/*.txt`, { dot: true, nocase: true }).toArray()))
-      .toEqual([".hidden.txt", "UPPER.TXT", "a.txt", "nested/d.txt"]);
-    expect(relative(new FileList().include(`${fixture}/+(a|b).*`).toArray())).toEqual(["a.txt", "b.ts"]);
+    const relative = (files: string[]) =>
+      files.map((path) => path.slice(fixture.length + 1)).sort();
+    expect(
+      relative(
+        new FileList().include(`${fixture}/**/*.{txt,ts}`).exclude(`${fixture}/b.ts`).toArray(),
+      ),
+    ).toEqual(["a.txt", "nested/d.txt"]);
+    expect(
+      relative(
+        new FileList().include(`${fixture}/**/*.txt`, { dot: true, nocase: true }).toArray(),
+      ),
+    ).toEqual([".hidden.txt", "UPPER.TXT", "a.txt", "nested/d.txt"]);
+    expect(relative(new FileList().include(`${fixture}/+(a|b).*`).toArray())).toEqual([
+      "a.txt",
+      "b.ts",
+    ]);
     expect(new FileList().include(`${fixture}/missing/**/*.txt`).toArray()).toEqual([]);
   } finally {
     // Exact directory created by this test; no application data is involved.
@@ -50,14 +62,20 @@ test("filelist's installed CommonJS match handles braces, recursion, exclusions,
 const listen = async (server: Server) => {
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve();
+    });
   });
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   return address.port;
 };
 const close = async (server: Server) => {
-  if (server.listening) await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  if (server.listening)
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
 };
 
 test("follow-redirects drops a cross-realm custom credential on a real cross-origin redirect", async () => {
@@ -84,8 +102,12 @@ test("follow-redirects drops a cross-realm custom credential on a real cross-ori
     const sourcePort = await listen(source);
     await new Promise<void>((resolve, reject) => {
       const options = {
-        hostname: "127.0.0.1", port: sourcePort, path: "/", agent: false as const,
-        sensitiveHeaders, headers: { "X-Synthetic-Secret": "synthetic-only" },
+        hostname: "127.0.0.1",
+        port: sourcePort,
+        path: "/",
+        agent: false as const,
+        sensitiveHeaders,
+        headers: { "X-Synthetic-Secret": "synthetic-only" },
       };
       const request = follow.http.get(options, (response) => {
         response.resume();
