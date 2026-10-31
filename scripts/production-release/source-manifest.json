@@ -1,0 +1,26 @@
+{
+  "kind": "website-production-release-source-manifest-v1",
+  "files": {
+    "README.md": "915dacd5fe4a74ef4dc2f9e7d9dc16923ff33e5e8feb89b26c48c45de8abff3b",
+    "RUNBOOK.md": "80af20c818871c572cd25a4bb10c33725b756824f103e2f75b1dd6d442d58b6a",
+    "browser-grant-plan-333.json": "deb332e0543461e0b5b90b4196de30a7f5779a32a7629ea7382ac892bed6af9e",
+    "fixtures/process-qualification-child.ts": "23200e89546a506906c0eee60eb62fe59aeab2dda11e28efad746b74618a1964",
+    "fixtures/process-qualification-wrapper.ts": "5eefa1ad454bedc2994df311a93eac9645a8386f08b4f5de8258b22ced51c620",
+    "production-backup-readiness.test.ts": "61b2eaf68b51e827291b507fbc7dccddfe02ca9cecbddc68ad3859ea9d5f30d4",
+    "production-bounded-command.ts": "049e3c477d65e0a4a95fb73da052eb07f4a79711d09ebe6e2a54b2335e699737",
+    "production-bounded-process.ts": "6bd02ae2d853ce2859c803c191d82fda86e9acd4ca3bff91f5f6a16996672212",
+    "production-dance-grant-plan-333.json": "9b3f5406c5ea6782f14a5c1bd9ced045759b49f919ff6f2eb089d97fecbea0c9",
+    "production-database-contract.test.ts": "79acf4c0e4d158942932b56d27115e149064529dfd4cfd339b309e2d9b16feb1",
+    "production-database-cutover.ts": "b37de348a57de6cbd3bb8e87178e442e597b3091a382dc2110ee83543c18dc7d",
+    "production-linux-process-bound.test.ts": "316873f747ac5ae45b48c58f60bb0010869a04e4d28f9eb4e97cac4610c662b5",
+    "production-linux-process-bound.ts": "21b4df427a0e662a2a87302a473328edc635a3abb970a2ac65877a1f555fb0e4",
+    "production-operation-evidence.test.ts": "2030a8391f21e8bf397352fc03798a58b0582aea16f84484d22a570922ae20cc",
+    "production-operation-evidence.ts": "5c7e4c9290185cd77947a7ba882bfc57a80a8bce5ce54eca77485360d687059e",
+    "production-release-admission.test.ts": "1da8bf2410a2bc1e5ea93d5589465cdf7900ad04d99acb43b2a31999f2bf7c65",
+    "production-release-admission.ts": "60f587a96c7c07c2a33a829759bc369102b92249daef38f4846cd3277648b2b2",
+    "production-release-paths.ts": "1040d8bff0d2556f8ac597fd053250d270f3d92bc189b6a1d23064db5cb1b3cc",
+    "production-source-binding.ts": "22c6f1c22e9f72eda82c741cc007b00712b2e4a9900dd596cd98124f359dabbe",
+    "production-worker-cutover.ts": "b5f79b817db5ccd676990d95762e2e8c0d717e34f83d5e97dbf19f6b21b0a42e",
+    "unfilled-live-facts.template.json": "cdc739dffcb4602b1a4f1d9491943ef7ca3d5ce1fc0fe8c738dc8b56b99fd809"
+  }
+}

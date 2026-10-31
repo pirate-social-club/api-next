@@ -1,0 +1,26 @@
+{
+  "kind": "production-compatibility-source-v1",
+  "api_source": "a6bb14b7669ec5900d20b20d1fb077a5bead38bc",
+  "files": {
+    "compatibility-contract.ts": "34ef531950aa525a041727ccf203926f43d1fbdb6a85f4ce997ce84faecfa568",
+    "compatibility-contract.test.ts": "b7af1bc0637655e0fe312a266ee25f990ea2b05502dfa89b2906753fce702de1",
+    "inventory.ts": "f12eada090b0c99f1e73291315d6fa59703e1345a363c9262b902ec1fdf52c01",
+    "source-inputs.ts": "87d1e09f4c6fe7c22988cc2cdfba7b8a0be68789a92418fa3a2162eb6938f0c0",
+    "read-production-compatibility.ts": "01a382bd17bc50a0ba48f3a701a1ee4e618d64d557915bbf158ed2e8b767682d",
+    "source-bindings.json": "8a58ca8cecf61d6b55a3dc7f1e823adeff36ccf8f95fc93755d5e3fcbb859109",
+    "sql/predecessor-check-catalogue.sql": "4e50eb3e7da6006917c68af1077f114e9631f296fc247224716e573b5030f65a",
+    "sql/new-table-absence.sql": "3b6e51f2f8a7e0d79ac5528eb3a2e5ed98feca5c5341247e9beaa9ba2018605f",
+    "sql/nonce-backfill-0277.sql": "63078325fcfbae470431831e89830793f3d8d57a332927b1734e4529585cae25",
+    "sql/song-slots-0284.sql": "d6890eb7e87dac611cf33ffbf0aa0430c4ab0e3ec476d6098fec0cb65db0a871",
+    "sql/check-qualification-policy-versions.sql": "b129871a0e98281a5ccbe403c62fd4f34c12ca1dfb9a1670371f7417d37fe976",
+    "sql/check-activity-qualifications.sql": "0da7fdae1c4aaaf6d2c986fcf5a71752655226397910d94092bdf2975204b679",
+    "sql/check-notification-inbox.sql": "282112f008d3839edf76b262de70d75917c3e96edaa109eb572307551d2e7431",
+    "sql/check-song-reward-offer-legs.sql": "f7d0caa85497a110a001723221ba7066b67c7526edf926e360b98bb36ff43912",
+    "sql/check-media-upload-reservations.sql": "1789e95d363f26bd5eac6001395619d5fa0166303dd955ad341a1c2d3fac2c38",
+    "sql/check-reward-chain-effects.sql": "5a179007148e1046db48879809ef01ecb334291e8fb00d08843dd9d1bda320c1",
+    "sql/check-megapot-pool-drawings.sql": "e56653bf5b634f4a255dc3754c8b674fa01cb11f41e60c88911e684823497192",
+    "sql/check-megapot-ticket-purchase-effects.sql": "067a63e1ac01c8ba33ed8ad521113d2cc9e68663fcfb5bd3728706cab38aa8ad",
+    "sql/check-megapot-pool-commitment-effects.sql": "ecacfe09f752adac758b9cdfd7d807a73c76656545f54adb11483019caba30e4",
+    "sql/check-megapot-ticket-inventory.sql": "7fef1ec078a21559fa109a647caf0e8e0f8193f9976c41921904b2081f07585c"
+  }
+}
