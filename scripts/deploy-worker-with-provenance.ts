@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  HNS_STAGING_DIRECT_CHECK_COMMAND,
   HNS_STAGING_MANIFEST_COMMAND,
   readHnsStagingGatewayPin,
   verifyHnsStagingGatewayManifest,
@@ -375,6 +376,7 @@ export async function deployWorkerWithProvenance(
   const guardedHnsStagingHttp =
     configPath === "apps/http-worker/wrangler.jsonc" && input.environment === "staging";
   let solidRoot = resolve(repositoryRoot, "../pirate-web-solid");
+  let pendingCutoverTo: string | null = null;
   if (guardedHnsStagingHttp) {
     // Linked API checkouts have a different parent. The shared Git directory
     // identifies the canonical API repository and its standalone Solid sibling.
@@ -389,16 +391,33 @@ export async function deployWorkerWithProvenance(
     const manifestRead = await runner(HNS_STAGING_MANIFEST_COMMAND, repositoryRoot);
     if (manifestRead.exitCode !== 0)
       throw new Error("staging HNS gateway read failed before HTTP deploy");
-    verifyHnsStagingGatewayManifest(
+    ({ pendingCutoverTo } = verifyHnsStagingGatewayManifest(
       manifestRead.stdout,
       await readStagingGatewayPin(repositoryRoot),
-    );
+    ));
+    // Before a pinned cutover, Solid already sits at the rotation's identity
+    // and cannot pair with the live gateway, so its identity is compared instead.
     const solidCheck = await runner(
-      ["node", "scripts/hns-staging-gateway-preflight.mjs"],
+      [
+        "node",
+        pendingCutoverTo === null
+          ? "scripts/hns-staging-gateway-preflight.mjs"
+          : "scripts/hns-ingress-composition-identity.mjs",
+      ],
       solidRoot,
     );
-    if (solidCheck.exitCode !== 0)
+    if (
+      solidCheck.exitCode !== 0 ||
+      (pendingCutoverTo !== null && solidCheck.stdout.trim() !== pendingCutoverTo)
+    )
       throw new Error("staging Solid ingress preflight failed before HTTP deploy");
+    // The direct check must work before upload: a failure after it would leave
+    // a serving Worker reported as failed.
+    if (
+      pendingCutoverTo !== null &&
+      (await runner(HNS_STAGING_DIRECT_CHECK_COMMAND, solidRoot)).exitCode !== 0
+    )
+      throw new Error("staging direct-host check failed before HTTP deploy");
   }
   const message = `git:${sourceSha}`;
   const listCommand = versionsCommand(input, configPath);
@@ -506,13 +525,19 @@ export async function deployWorkerWithProvenance(
     writeDiagnostic(`${JSON.stringify({ song_funding_binding_readback: readback })}\n`);
   }
   if (guardedHnsStagingHttp) {
-    const serving = await runner(["bun", "run", "check:staging:release"], solidRoot);
+    const serving = await runner(
+      pendingCutoverTo === null
+        ? ["bun", "run", "check:staging:release"]
+        : HNS_STAGING_DIRECT_CHECK_COMMAND,
+      solidRoot,
+    );
+    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
+    if (serving.stderr.length > 0) writeDiagnostic(serving.stderr);
     if (serving.exitCode !== 0) {
       throw new Error(
         `staging direct-host release check failed after HTTP deploy (exit ${serving.exitCode})`,
       );
     }
-    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
   }
   return {
     schema_version: 1,

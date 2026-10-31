@@ -1,9 +1,11 @@
 import type { ControlPlaneTransaction } from "@pirate/application";
 import { Effect } from "effect";
+import { hnsExpiredRecoveryOriginSql } from "./hns-owner-recovery-expired-lineage.ts";
 
 /** Fresh staging ownership can be retained while its expired hosts remain
- * unavailable. Only the exact expired predecessor may wait for the separately
- * reviewed full DNS/health successor; this never restores serving itself. */
+ * unavailable. Only the exact expired predecessor, reached directly or through
+ * unused expired recoveries of the same principal and root, may wait for the
+ * separately reviewed full DNS/health successor; this never restores serving. */
 export const deferExpiredHnsRecoveryHosts = Effect.fn("deferExpiredHnsRecoveryHosts")(function* (
   transaction: ControlPlaneTransaction,
   input: Readonly<{
@@ -18,12 +20,15 @@ export const deferExpiredHnsRecoveryHosts = Effect.fn("deferExpiredHnsRecoveryHo
     label: "hns-owner-recovery.expired-dns-predecessor",
     text: `SELECT TRUE AS defer
         FROM community_route_revalidation_sessions session
+        JOIN LATERAL (
+          ${hnsExpiredRecoveryOriginSql("session")}
+        ) expiry_origin ON TRUE
         JOIN community_route_lifecycle_transitions transition
-          ON transition.route_lifecycle_transition_id=session.recovery_authority_reference
+          ON transition.route_lifecycle_transition_id=expiry_origin.transition_id
           AND transition.transition_kind='database_time_expired'
           AND transition.community_id=session.community_id
           AND transition.route_binding_id=session.route_binding_id
-          AND transition.resulting_binding_generation=session.expected_binding_generation
+          AND transition.resulting_binding_generation=expiry_origin.expiry_generation
         JOIN community_route_ownership_evidence previous
           ON previous.evidence_ref=transition.expected_verified_evidence_ref
           AND previous.binding_generation=transition.expected_binding_generation
@@ -76,7 +81,6 @@ export const deferExpiredHnsRecoveryHosts = Effect.fn("deferExpiredHnsRecoveryHo
           AND session.expected_binding_generation=$3
           AND session.route_revalidation_id=$5 AND session.status='completed'
           AND session.operation_mode='same_root_recovery' AND session.environment='staging'
-          AND session.recovery_authority_kind='database_time_expiry_transition'
           AND LEAST(health.valid_until,inventory.expires_at)<=clock_timestamp()`,
     values: [
       input.community_id,

@@ -24,6 +24,7 @@ import {
 } from "./hns-owner-recovery-start-repository.ts";
 import { expireOwnerTxtFixtureSessions } from "./hns-staging-owner-txt-expiry.pg-fixture.ts";
 import { verifyHnsOwnerTxtServingGenerationFences } from "./hns-staging-owner-txt-generation.pg-cases.ts";
+import { verifyHnsOwnerTxtExpiredLineage } from "./hns-staging-owner-txt-lineage.pg-cases.ts";
 import { verifyHnsOwnerTxtLockOrder } from "./hns-staging-owner-txt-locks.pg-cases.ts";
 import { readHnsStagingOwnerTxtRecovery } from "./hns-staging-owner-txt-recovery.ts";
 import {
@@ -201,7 +202,7 @@ export async function verifyHnsStagingOwnerTxt(
   if (dnsExpired) {
     // Ownership is real, but no host, DNS, inventory or health pointer may
     // advance before the separately observed and reviewed authority adoption.
-    expect(await pointers()).toEqual({ ...afterExpiry, route: "3" });
+    expect(await pointers()).toEqual({ ...afterExpiry, route: String(verifiedGeneration) });
     expect(
       (
         await admin.query(
@@ -248,19 +249,22 @@ export async function verifyHnsStagingOwnerTxt(
       chain_records: next,
     };
     const observed = await artifact(hash(next));
-    if (expiredSessions > 1) {
-      // This repair deliberately accepts one expired predecessor, not a
-      // recursive authority chain. Both prior terminals were real polls.
-      await expect(
-        readHnsStagingOwnerTxtRecovery(operator, {
-          review,
-          root_import_session_id: state.root_import_session_id,
-          lock: false,
-        }),
-      ).rejects.toThrow("recovery lineage is unavailable");
-      expect(await pointers()).toEqual(recoveryPointers);
-      return;
-    }
+    if (expiredSessions > 1)
+      await verifyHnsOwnerTxtExpiredLineage({
+        admin,
+        connection,
+        review,
+        root_import_session_id: state.root_import_session_id,
+        deferral: dnsExpired
+          ? {
+              community_id: "community-root-import",
+              route_binding_id: "route-binding-root-import",
+              expected_binding_generation: recoveryGeneration,
+              evidence_ref: "owner-txt-evidence",
+              recovery_id: "owner-txt-recovery",
+            }
+          : null,
+      });
     expect(
       await readHnsStagingOwnerTxtRecovery(operator, {
         review,

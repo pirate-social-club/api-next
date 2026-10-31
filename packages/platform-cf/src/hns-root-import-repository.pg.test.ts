@@ -834,15 +834,19 @@ suite("Postgres 17 HNS root-import repository", () => {
     "staging-owner-txt-expired-observation",
     "staging-owner-txt-expired-session",
     "staging-owner-txt-two-expired-sessions",
+    "staging-owner-txt-expired-dns-expired-session",
+    "staging-owner-txt-expired-dns-two-expired-sessions",
   ] as const)(
     "observes readiness and atomically activates serving plus handle issuance (inventory renewal %s)",
     async (scenario) => {
       const inventoryRenewal = scenario === true;
       const relocation = scenario === "staging-relocation";
       const expiredSessions =
-        scenario === "staging-owner-txt-expired-session"
+        scenario === "staging-owner-txt-expired-session" ||
+        scenario === "staging-owner-txt-expired-dns-expired-session"
           ? 1
-          : scenario === "staging-owner-txt-two-expired-sessions"
+          : scenario === "staging-owner-txt-two-expired-sessions" ||
+              scenario === "staging-owner-txt-expired-dns-two-expired-sessions"
             ? 2
             : 0;
       const ownerTxt =
@@ -850,7 +854,10 @@ suite("Postgres 17 HNS root-import repository", () => {
         scenario === "staging-owner-txt-expired-dns" ||
         scenario === "staging-owner-txt-expired-observation" ||
         expiredSessions > 0;
-      const dnsExpired = scenario === "staging-owner-txt-expired-dns";
+      const dnsExpired =
+        scenario === "staging-owner-txt-expired-dns" ||
+        scenario === "staging-owner-txt-expired-dns-expired-session" ||
+        scenario === "staging-owner-txt-expired-dns-two-expired-sessions";
       const scenarioSchema: typeof withSchema = (use, txt) =>
         withSchema(use, txt, expiredSessions > 0);
       await scenarioSchema(async (connection, admin) => {

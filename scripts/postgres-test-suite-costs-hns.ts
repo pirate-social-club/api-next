@@ -29,6 +29,10 @@ export const postgresHnsSuiteCostEstimates = {
     sourceCallCount: 1,
     milliseconds: 2717,
   },
+  "apps/http-worker/src/hns-owner-recovery-observer-retry.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 11000,
+  },
   "apps/http-worker/src/hns-owner-recovery-production.pg.test.ts": {
     sourceCallCount: 1,
     milliseconds: 9790,
@@ -137,8 +141,8 @@ export const postgresHnsSuiteCostEstimates = {
   },
   "packages/platform-cf/src/hns-root-import-repository.pg.test.ts": {
     sourceCallCount: 12,
-    // Retain the 130s baseline plus 50s for the two bounded expiry-clock cases.
-    milliseconds: 180000,
+    // Retain the 130s baseline plus 100s for the four bounded expiry-clock cases.
+    milliseconds: 230000,
   },
   "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts": {
     sourceCallCount: 4,
