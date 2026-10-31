@@ -166,6 +166,15 @@ const refusedAtWrite: readonly (readonly [string, string])[] = [
      WHERE revalidation_session_id=$1`,
   ],
   [
+    "reservation bound to evidence",
+    `UPDATE ${RESERVATIONS} SET expected_verified_evidence_ref='evidence-root-import'
+     WHERE revalidation_session_id=$1`,
+  ],
+  [
+    "session is a system revalidation",
+    `UPDATE ${SESSIONS} SET operation_mode='system_revalidation' WHERE revalidation_session_id=$1`,
+  ],
+  [
     "session bound to evidence",
     `UPDATE ${SESSIONS} SET expected_verified_evidence_ref='evidence-root-import'
      WHERE revalidation_session_id=$1`,
@@ -245,9 +254,9 @@ export async function verifyHnsOwnerTxtExpiredLineage(input: {
        WHERE revalidation_session_id=$1`,
     ]);
     for (const [label, statement] of refusedAtWrite)
-      await inTamper(() =>
-        expect(admin.query(statement, [session]), label).rejects.toThrow("check constraint"),
-      );
+      await inTamper(async () => {
+        await expect(admin.query(statement, [session]), label).rejects.toThrow("check constraint");
+      });
   }
   for (const [label, session, statements] of refusedOnce)
     await tampered(label, session, statements);
