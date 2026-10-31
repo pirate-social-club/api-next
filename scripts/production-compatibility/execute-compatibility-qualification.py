@@ -283,7 +283,13 @@ def main():
         caps = docker('exec', cid, 'cat', '/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory.swap.max', '/sys/fs/cgroup/cpu.max', '/sys/fs/cgroup/pids.max', '/sys/fs/cgroup/cpuset.cpus.effective').stdout.decode().splitlines()
         require(len(caps) == 5 and caps[0:2] == [str(MEMORY), '0'] and caps[3:] == ['128', '2'], 'Actual container caps differ')
         quota, period = map(int, caps[2].split()); require(quota == period, 'Actual container CPU quota differs')
-        require(stat.S_IMODE(run_root.stat().st_mode) == 0o700 and stat.S_IMODE(socket.stat().st_mode) == 0o3775, 'Owned directory access modes differ')
+        root_stat, socket_stat = run_root.lstat(), socket.lstat()
+        result['directory_access'] = {'run_root': {'mode': oct(stat.S_IMODE(root_stat.st_mode)), 'uid': root_stat.st_uid, 'gid': root_stat.st_gid},
+                                      'socket': {'mode': oct(stat.S_IMODE(socket_stat.st_mode)), 'uid': socket_stat.st_uid, 'gid': socket_stat.st_gid}}
+        require(stat.S_ISDIR(root_stat.st_mode) and root_stat.st_uid == os.getuid() and stat.S_IMODE(root_stat.st_mode) == 0o700,
+                'Owned parent directory access differs')
+        require(stat.S_ISDIR(socket_stat.st_mode) and stat.S_IMODE(socket_stat.st_mode) in [0o1775, 0o3775],
+                'Owned socket directory access differs')
         known = known_processes(docker, cid)
         require(any(value['pid'] == actual['pid'] for value in known), 'Owned init PID was not observed')
         write(run_root / 'effective-container.json', {**actual, 'cgroup_values': caps, 'known_processes': known})
