@@ -62,7 +62,7 @@ function fixture(now: number) {
     source: API_APP_SOURCE,
     branch,
     production_accepted_file_sha256:
-      "deb332e0543461e0b5b90b4196de30a7f5779a32a7629ea7382ac892bed6af9e",
+      "2d06ca9a9322cc4a6b886d72617082d6b49e51ab0c3d4e9a59216092ba4f6d3d",
     fixture_only_flags_superseded_for_exact_bytes: true,
     pre_migration_baseline_accepted_for_exact_plan: true,
   };
