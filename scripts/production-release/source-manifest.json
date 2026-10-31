@@ -21,7 +21,7 @@
     "production-release-paths.ts": "cd665f6c12574823142523ad0138dbb92780f76106f017e713d984b331785f00",
     "production-source-binding.ts": "37427c1422f8d549c48fb29656e6e4f65add3907e3a7321e308f7e4f026fc852",
     "production-worker-cutover.ts": "ce6b7674a2a2116b4e676e3fe061a5e589632b2f8f3ad31358af04efbd221a9e",
-    "production-worker-observations.ts": "82a5d602eb43d5ac53ad9b5d59f05818fde046997b9aab2fce2def0137e9da49",
+    "production-worker-observations.ts": "0ddc1a13cf72e521c5875e1013a02b5f5414d4828058bae92d0d6699dad0467a",
     "unfilled-live-facts.template.json": "cdc739dffcb4602b1a4f1d9491943ef7ca3d5ce1fc0fe8c738dc8b56b99fd809"
   }
 }

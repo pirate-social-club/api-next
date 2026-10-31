@@ -159,6 +159,7 @@ export async function collect(component: Component) {
       "MEGAPOT_REWARDS_ENABLED",
       "MEGAPOT_V2_SAFE_PILOT_ENABLED",
       "SAFE_POOL_PILOT_ENABLED",
+      "DATA_REGISTRATION_ENABLED",
     ])
       assert.ok(
         !list.some((row) => row.name === name) ||
