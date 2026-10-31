@@ -40,10 +40,14 @@ export function assertForgeTlsRegressions(forge: typeof Forge): void {
       const sent = { bytes: "" };
       const fragmented = connection(server, fragmentErrors, sent);
       const first = record(22, forge.util.hexToBytes((server ? "01" : "02") + "0000100301"));
+      const outboundVersion = { ...fragmented.version };
       assert.doesNotThrow(() => fragmented.process(first + interleaved));
       assert.deepEqual(fragmentErrors, ["Invalid fragmented record."]);
       assert.equal(fragmented.fail, true);
-      assert.equal(sent.bytes, record(21, "\x02\x0a"));
+      assert.equal(
+        sent.bytes,
+        String.fromCharCode(21, outboundVersion.major, outboundVersion.minor, 0, 2, 2, 10),
+      );
       assert.equal(fragmented.process(interleaved), 0);
       assert.deepEqual(fragmentErrors, ["Invalid fragmented record."]);
       const continuedErrors: string[] = [];

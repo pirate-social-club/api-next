@@ -76,9 +76,14 @@ function assertPem(forge: ForgeModule): void {
   assert.throws(() => forge.pem.decode(" -----BEGIN I-----G-----END B".repeat(2000) + "\0"));
   assert.throws(() => forge.pem.decode("-----BEGIN A-----\n" + "\n".repeat(256 * 1024)));
   const header = forge.pem.decode(
-    "-----BEGIN A-----\nX: " + "a".repeat(32000) + "\n\nQUJD\n-----END A-----",
+    "-----BEGIN A-----\nProc-Type: 4,ENCRYPTED\n" +
+      "DEK-Info: DES-CBC,F8143EDE5960C597\nX-Header: " +
+      " ".repeat(32000) +
+      "x\n\nQUJD\n-----END A-----",
   );
+  assert.equal(header.length, 1);
   assert.equal(header[0]?.body, "ABC");
+  assert.deepEqual(header[0]?.headers, [{ name: "X-Header", values: ["x"] }]);
 }
 
 function regressionCertificate(forge: ForgeModule): {
