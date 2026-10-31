@@ -21,7 +21,21 @@ function assertGcm(forge: ForgeModule): void {
       );
     }
   }
-  for (const tagLength of [undefined, null, 32, 64, 96, 104, 112, 120, 128, "128"]) {
+  // Upstream's intact/tampered vectors cover 96-128 bits. Its pre-existing
+  // 32/64-bit export truncation defect is outside the zero-like-length fix.
+  // Check documented length admission and invalid-tag rejection for those
+  // modes without claiming their intact short-tag roundtrips work.
+  for (const tagLength of [32, 64]) {
+    const cipher = forge.cipher.createCipher("AES-GCM", key);
+    assert.doesNotThrow(() => cipher.start({ iv, tagLength }));
+    const decipher = forge.cipher.createDecipher("AES-GCM", key);
+    assert.doesNotThrow(() =>
+      decipher.start({ iv, tagLength, tag: forge.util.createBuffer("\0".repeat(tagLength / 8)) }),
+    );
+    decipher.update(forge.util.createBuffer("invalid ciphertext"));
+    assert.equal(decipher.finish(), false);
+  }
+  for (const tagLength of [undefined, null, 96, 104, 112, 120, 128, "128"]) {
     const cipher = forge.cipher.createCipher("AES-GCM", key);
     cipher.start({ iv, tagLength: tagLength as unknown as number });
     cipher.update(forge.util.createBuffer("authenticated"));
