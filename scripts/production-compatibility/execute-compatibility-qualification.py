@@ -138,6 +138,14 @@ def unit_limits(request, env):
     return {**values, 'process_affinity': mask, 'unit': unit}
 
 
+def host_memory():
+    entries = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
+    available = int(entries['MemAvailable'].split()[0]) * 1024
+    require(available >= 4 * 1024 ** 3, 'Insufficient current host memory headroom')
+    return {'available_bytes': available, 'minimum_bytes': 4 * 1024 ** 3,
+            'observation_is_point_in_time': True, 'foreign_resources_mutated': False}
+
+
 def inspect(docker, cid):
     value = json.loads(docker('inspect', cid).stdout)[0]
     return value
@@ -231,7 +239,10 @@ def main():
     result = {'kind': 'local-pg18-compatibility-controller-result-v1', 'request_sha256': request_sha, 'review_sha256': review_sha,
               'started_at': utc().isoformat(), 'success': False, 'parent': parent, 'source_before': source_before, 'production_accessed': False}
     try:
-        require(not docker('ps', '-q').stdout.strip(), 'Another container is running')
+        foreign_ids = docker('ps', '-q', '--no-trunc').stdout.decode().split()
+        require(all(re.fullmatch('[a-f0-9]{64}', value) for value in foreign_ids), 'Foreign inventory is malformed')
+        result['foreign_container_ids_before'] = foreign_ids
+        result['host_memory_before_create'] = host_memory()
         require(docker('image', 'inspect', IMAGE, '--format', '{{.Id}}').stdout.decode().strip() == IMAGE, 'Cached image missing/different')
         require(find_owned_name(docker, name) is None, 'Container name already exists')
         command = ['create', '--pull=never', '--name', name, '--label', 'pirate.task=' + TASK, '--label', 'pirate.request=' + request_sha,
@@ -243,11 +254,13 @@ def main():
                    '--signal=TERM', '--kill-after=10s', '300s', '/usr/local/bin/docker-entrypoint.sh', 'postgres', '-c', 'listen_addresses=',
                    '-c', 'max_locks_per_transaction=64', '-c', 'shared_buffers=64MB', '-c', 'unix_socket_directories=/var/run/postgresql',
                    '-c', 'cluster_name=pirate_compatibility_' + run_root.name[-32:]]
+        result['host_memory_before_create'] = host_memory()
         require((expires - utc()).total_seconds() >= 330, 'Insufficient reviewed time before container creation')
         attempted = True; acknowledgement = docker(*command, timeout=30, extra={'POSTGRES_PASSWORD': password}).stdout.decode().strip()
         require(re.fullmatch('[a-f0-9]{64}', acknowledgement), 'Create acknowledgement is malformed'); cid = acknowledgement
         result['container'] = owned(inspect(docker, cid), cid, name, request_sha, review_sha, socket)
         write(run_root / 'owned-container.json', result['container'])
+        result['host_memory_before_start'] = host_memory()
         require((expires - utc()).total_seconds() >= 330, 'Insufficient reviewed time before container start')
         docker('start', cid)
         ready_until = time.monotonic() + 50
