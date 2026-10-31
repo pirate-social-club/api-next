@@ -1,0 +1,11 @@
+{
+  "kind": "local-pg18-compatibility-qualification-source-v1",
+  "files": {
+    "fixture-target.ts": "fe3a6bd226347b6bc2fb70eab59409a48b590b15436a1095904b47cc21a5c654",
+    "fixture-bootstrap.ts": "53dcc4cb7951e97a84c2f7e48fc036f4e033dd788aad4ea08c9afc2dd09ad860",
+    "fixture-cases.ts": "5e55faa8044c96ebc816785b613c9e55ebfd0f7b7a321733b323c44099857945",
+    "fixture-seed.sql": "92429e6367327687244ce527f4c329a97159b957ace6ecd00fa79265f195ced7",
+    "qualify-compatibility-pg18.ts": "18f8d6094ea2c2548afdc631af36a5c27fb734341b7ef30c50fc296261ffbd4b",
+    "README.md": "ba36d7fb1fd4596c37e2758ed851b593b030f63b4901b3e54480711f60aeea1c"
+  }
+}
