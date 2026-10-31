@@ -11,7 +11,7 @@ const copies = [
   {
     name: "registry",
     patch: "patches/node-forge@1.4.0.patch",
-    patchHash: "a53302b2d8ff555b7e08c3d47625bf98030bf9e6a8d3a47afe9b6c828ad1fa83",
+    patchHash: "a38f3deb24d99d1d9db5105beef65e58f1b695907eb040d9645202f532dccf09",
     rsaHash: "c9b1e3799e230528b6d6815c1f6cd3c6058b9d45975264b55d995abb976589af",
     files: {
       "cipherModes.js": "bcc6aec4127be32ede61899410f9f4813e8bb24ec03f0f0e8d88744bde889fd0",
@@ -26,7 +26,7 @@ const copies = [
   {
     name: "sdk-fork",
     patch: "patches/node-forge-sdk-rsa-validation.patch",
-    patchHash: "f5213c4830215bc25d3ce89bed2406101692f94778ca498a74dde8632ce89730",
+    patchHash: "28e9271870038d59526fa9a674e0fde116ff2c972655dc78ac76f9ef482d2bd9",
     rsaHash: "dd383dc51d9ac90d85e4b3dbf78a106d4a2ba5a12ec2149ca45bb52533f2a3f2",
     files: {
       "cipherModes.js": "bcc6aec4127be32ede61899410f9f4813e8bb24ec03f0f0e8d88744bde889fd0",

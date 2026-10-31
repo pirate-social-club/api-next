@@ -1,21 +1,7 @@
---- a/lib/rsa.js
-+++ b/lib/rsa.js
-@@ -1164,7 +1164,10 @@
-           // validate DigestInfo
-           var capture = {};
-           var errors = [];
--          if (!asn1.validate(obj, digestInfoValidator, capture, errors)) {
-+          if (!asn1.validate(obj, digestInfoValidator, capture, errors) ||
-+            obj.value.length !== 2 ||
-+            obj.value[0].value.length !==
-+              (('parameters' in capture) ? 2 : 1)) {
-             var error = new Error(
-               'ASN.1 object does not contain a valid RSASSA-PKCS1-v1_5 ' +
-               'DigestInfo value.');
 diff --git a/lib/cipherModes.js b/lib/cipherModes.js
 --- a/lib/cipherModes.js
 +++ b/lib/cipherModes.js
-@@ -544,11 +568,15 @@ modes.gcm.prototype.start = function(options) {
+@@ -544,11 +544,15 @@
    }
  
    // default tag length is 128 bits
@@ -36,11 +22,10 @@ diff --git a/lib/cipherModes.js b/lib/cipherModes.js
 diff --git a/lib/http.js b/lib/http.js
 --- a/lib/http.js
 +++ b/lib/http.js
-@@ -21,6 +21,19 @@ var _normalize = function(name) {
-     function(a) {return a.toUpperCase();});
+@@ -22,6 +22,19 @@
  };
  
-+/**
+ /**
 + * Checks for an own property, so cookie names and paths from a server can't
 + * reach properties inherited from Object.prototype.
 + *
@@ -53,10 +38,11 @@ diff --git a/lib/http.js b/lib/http.js
 +  return Object.prototype.hasOwnProperty.call(obj, key);
 +};
 +
- /**
++/**
   * Gets the local storage ID for the given client.
   *
-@@ -689,8 +702,13 @@ http.createClient = function(options) {
+  * @param client the client to get the local storage ID for.
+@@ -689,8 +702,13 @@
            throw error;
          }
  
@@ -71,7 +57,7 @@ diff --git a/lib/http.js b/lib/http.js
            client.cookies[cookie.name] = {};
          }
          client.cookies[cookie.name][cookie.path] = cookie;
-@@ -715,12 +733,12 @@ http.createClient = function(options) {
+@@ -715,12 +733,12 @@
     */
    client.getCookie = function(name, path) {
      var rval = null;
@@ -86,7 +72,7 @@ diff --git a/lib/http.js b/lib/http.js
            rval = paths[path];
          }
        } else {
-@@ -745,11 +763,11 @@ http.createClient = function(options) {
+@@ -745,11 +763,11 @@
     */
    client.removeCookie = function(name, path) {
      var rval = false;
@@ -103,7 +89,7 @@ diff --git a/lib/http.js b/lib/http.js
 diff --git a/lib/pbe.js b/lib/pbe.js
 --- a/lib/pbe.js
 +++ b/lib/pbe.js
-@@ -642,6 +642,12 @@ pki.decryptRsaPrivateKey = function(pem, password) {
+@@ -642,6 +642,12 @@
  pki.pbe.generatePkcs12Key = function(password, salt, id, iter, n, md) {
    var j, l;
  
@@ -119,7 +105,7 @@ diff --git a/lib/pbe.js b/lib/pbe.js
 diff --git a/lib/pem.js b/lib/pem.js
 --- a/lib/pem.js
 +++ b/lib/pem.js
-@@ -96,12 +96,14 @@ pem.decode = function(str) {
+@@ -96,12 +96,14 @@
    var rval = [];
  
    // split string into PEM messages (be lenient w/EOF on BEGIN line)
@@ -137,7 +123,7 @@ diff --git a/lib/pem.js b/lib/pem.js
      if(!match) {
        break;
      }
-@@ -133,7 +135,7 @@ pem.decode = function(str) {
+@@ -133,7 +135,7 @@
      var li = 0;
      while(match && li < lines.length) {
        // get line, trim any rhs whitespace
@@ -146,7 +132,7 @@ diff --git a/lib/pem.js b/lib/pem.js
  
        // RFC2822 unfold any following folded lines
        for(var nl = li + 1; nl < lines.length; ++nl) {
-@@ -235,3 +237,174 @@ function foldHeader(header) {
+@@ -235,3 +237,174 @@
  function ltrim(str) {
    return str.replace(/^\s+/, '');
  }
@@ -324,7 +310,7 @@ diff --git a/lib/pem.js b/lib/pem.js
 diff --git a/lib/pkcs12.js b/lib/pkcs12.js
 --- a/lib/pkcs12.js
 +++ b/lib/pkcs12.js
-@@ -466,6 +466,9 @@ p12.pkcs12FromAsn1 = function(obj, strict, password) {
+@@ -465,6 +465,9 @@
      var macSalt = new forge.util.ByteBuffer(capture.macSalt);
      var macIterations = (('macIterations' in capture) ?
        parseInt(forge.util.bytesToHex(capture.macIterations), 16) : 1);
@@ -334,10 +320,25 @@ diff --git a/lib/pkcs12.js b/lib/pkcs12.js
      var macKey = p12.generateKey(
        password, macSalt, 3, macIterations, macKeyBytes, md);
      var mac = forge.hmac.create();
+diff --git a/lib/rsa.js b/lib/rsa.js
+--- a/lib/rsa.js
++++ b/lib/rsa.js
+@@ -1164,7 +1164,10 @@
+           // validate DigestInfo
+           var capture = {};
+           var errors = [];
+-          if (!asn1.validate(obj, digestInfoValidator, capture, errors)) {
++          if (!asn1.validate(obj, digestInfoValidator, capture, errors) ||
++            obj.value.length !== 2 ||
++            obj.value[0].value.length !==
++              (('parameters' in capture) ? 2 : 1)) {
+             var error = new Error(
+               'ASN.1 object does not contain a valid RSASSA-PKCS1-v1_5 ' +
+               'DigestInfo value.');
 diff --git a/lib/tls.js b/lib/tls.js
 --- a/lib/tls.js
 +++ b/lib/tls.js
-@@ -1612,7 +1612,7 @@ tls.handleServerHelloDone = function(c, record, length) {
+@@ -1612,7 +1612,7 @@
      });
    }
  
@@ -346,7 +347,7 @@ diff --git a/lib/tls.js b/lib/tls.js
      // no server certificate was provided
      var error = {
        message: 'No server certificate provided. Not enough security.',
-@@ -1642,10 +1642,11 @@ tls.handleServerHelloDone = function(c, record, length) {
+@@ -1642,10 +1642,11 @@
            error.alert.description = ret;
          }
        }
@@ -361,7 +362,7 @@ diff --git a/lib/tls.js b/lib/tls.js
    }
  
    // create client certificate message if requested
-@@ -2097,8 +2098,9 @@ tls.handleHeartbeat = function(c, record) {
+@@ -2097,8 +2098,9 @@
    var payload = b.getBytes(length);
  
    if(type === tls.HeartbeatMessageType.heartbeat_request) {
@@ -373,7 +374,7 @@ diff --git a/lib/tls.js b/lib/tls.js
        // continue
        return c.process();
      }
-@@ -3917,6 +3919,8 @@ tls.createConnection = function(options) {
+@@ -3917,6 +3919,8 @@
                    tls.Alert.Description.unexpected_message
                }
              });
@@ -382,7 +383,7 @@ diff --git a/lib/tls.js b/lib/tls.js
            }
          }
  
-@@ -4018,23 +4022,23 @@ tls.createConnection = function(options) {
+@@ -4018,23 +4022,23 @@
      }
    };
  
@@ -417,10 +418,12 @@ diff --git a/lib/tls.js b/lib/tls.js
      // process next record if no failure, process will be called after
      // each record is handled (since handling can be asynchronous)
      if(!c.fail) {
-@@ -4063,6 +4067,54 @@ tls.createConnection = function(options) {
-     return rval;
-   };
+@@ -4061,6 +4065,54 @@
+     }
  
+     return rval;
++  };
++
 +  /**
 +   * Called when TLS protocol data has been received from somewhere and should
 +   * be processed by the TLS engine.
@@ -467,15 +470,13 @@ diff --git a/lib/tls.js b/lib/tls.js
 +    }
 +
 +    return rval;
-+  };
-+
+   };
+ 
    /**
-    * Requests that application data be packaged into a TLS record. The
-    * tlsDataReady handler will be called when the TLS record(s) have been
 diff --git a/lib/x509.js b/lib/x509.js
 --- a/lib/x509.js
 +++ b/lib/x509.js
-@@ -3149,7 +3154,9 @@ pki.verifyCertificateChain = function(caStore, chain, options) {
+@@ -3149,7 +3149,9 @@
      if (error === null &&
        (!first || (chain.length === 0 && (!parent || selfSigned)))) {
        // first check keyUsage extension and then basic constraints
@@ -486,7 +487,7 @@ diff --git a/lib/x509.js b/lib/x509.js
        var keyUsageExt = cert.getExtension('keyUsage');
        if (keyUsageExt !== null) {
          // keyCertSign must be true and there must be a basic
-@@ -3167,7 +3169,16 @@ pki.verifyCertificateChain = function(caStore, chain, options) {
+@@ -3167,6 +3169,15 @@
            };
          }
        }
@@ -502,4 +503,3 @@ diff --git a/lib/x509.js b/lib/x509.js
        // basic constraints cA flag must be set
        if (error === null && bcExt !== null && !bcExt.cA) {
          // bad certificate
-         error = {
