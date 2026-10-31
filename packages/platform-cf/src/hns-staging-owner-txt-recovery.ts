@@ -1,4 +1,5 @@
 import type { Client } from "pg";
+import { hnsExpiredRecoveryOriginSql } from "./hns-owner-recovery-expired-lineage.ts";
 import {
   decodeHnsStagingOwnerTxtReview,
   type HnsStagingOwnerTxtRecovery,
@@ -80,81 +81,7 @@ export async function readCurrentHnsStagingOwnerRecovery(
        AND session.family=b.family AND session.root_label=b.root_label
        AND session.root_label_display=b.root_label_display AND session.path_segment=b.path_segment
      JOIN LATERAL (
-       SELECT session.recovery_authority_reference AS transition_id,
-         session.expected_binding_generation AS expiry_generation
-       WHERE session.recovery_authority_kind='database_time_expiry_transition'
-       UNION ALL
-       SELECT prior.recovery_authority_reference, prior.expected_binding_generation
-       FROM community_route_revalidation_completion_attempts expired
-       JOIN community_route_revalidation_sessions prior
-         ON prior.route_revalidation_id=expired.route_revalidation_id
-         AND prior.revalidation_session_id=expired.revalidation_session_id
-         AND prior.route_binding_id=expired.route_binding_id
-         AND prior.expected_binding_generation=expired.expected_binding_generation
-       JOIN community_route_revalidation_start_reservations reservation
-         ON reservation.route_revalidation_id=prior.route_revalidation_id
-         AND reservation.revalidation_session_id=prior.revalidation_session_id
-         AND reservation.fence_token=prior.start_fence_token
-         AND reservation.state='finalized'
-         AND ROW(reservation.community_id,reservation.route_binding_id,
-           reservation.principal_kind,reservation.principal_id,
-           reservation.expected_binding_generation,reservation.requirement_hash,
-           reservation.start_request_hash,reservation.provider_id,
-           reservation.provider_binding_hash,reservation.provider_configuration_kind,
-           reservation.provider_configuration_reference,reservation.provider_configuration_version,
-           reservation.protocol_version,reservation.environment,reservation.family,
-           reservation.root_label,reservation.root_label_display,reservation.path_segment,
-           reservation.operation_mode,reservation.start_idempotency_key,
-           reservation.recovery_authority_kind,reservation.recovery_authority_reference,
-           reservation.public_start_hash,reservation.provider_start_hash,
-           reservation.provider_configuration_digest,reservation.challenge_expires_at)
-         = ROW(prior.community_id,prior.route_binding_id,
-           prior.principal_kind,prior.principal_id,
-           prior.expected_binding_generation,prior.requirement_hash,
-           prior.start_request_hash,prior.provider_id,
-           prior.provider_binding_hash,prior.provider_configuration_kind,
-           prior.provider_configuration_reference,prior.provider_configuration_version,
-           prior.protocol_version,prior.environment,prior.family,
-           prior.root_label,prior.root_label_display,prior.path_segment,
-           prior.operation_mode,prior.start_idempotency_key,
-           prior.recovery_authority_kind,prior.recovery_authority_reference,
-           prior.public_start_hash,prior.provider_start_hash,
-           prior.provider_configuration_digest,prior.challenge_expires_at)
-       WHERE session.recovery_authority_kind='owner_recovery_terminal'
-         AND expired.route_revalidation_attempt_id=session.recovery_authority_reference
-         AND expired.operation_mode='same_root_recovery'
-         AND expired.state='consumed' AND expired.consumption_kind='session_expired'
-         AND expired.expected_verified_evidence_ref IS NULL
-         AND expired.terminal_at>=prior.challenge_expires_at
-         AND expired.terminal_at<=prior.terminal_at
-         AND prior.terminal_at<=session.started_at
-         AND expired.provider_response_sha256 IS NULL
-         AND expired.raw_provider_response_bytes IS NULL
-         AND prior.status='expired' AND prior.operation_mode='same_root_recovery'
-         AND prior.recovery_authority_kind='database_time_expiry_transition'
-         AND prior.expected_verified_evidence_ref IS NULL
-         AND reservation.expected_verified_evidence_ref IS NULL
-         AND prior.expected_binding_generation+1=session.expected_binding_generation
-         AND prior.expires_at=prior.challenge_expires_at
-         AND prior.started_at=prior.challenge_expires_at-INTERVAL '1 hour'
-         AND ROW(prior.community_id,prior.route_binding_id,prior.principal_kind,
-           prior.principal_id,prior.provider_id,prior.provider_binding_hash,
-           prior.provider_configuration_kind,prior.provider_configuration_reference,
-           prior.provider_configuration_version,prior.provider_configuration_digest,
-           prior.protocol_version,prior.environment,prior.family,prior.root_label,
-           prior.root_label_display,prior.path_segment)
-         = ROW(session.community_id,session.route_binding_id,session.principal_kind,
-           session.principal_id,session.provider_id,session.provider_binding_hash,
-           session.provider_configuration_kind,session.provider_configuration_reference,
-           session.provider_configuration_version,session.provider_configuration_digest,
-           session.protocol_version,session.environment,session.family,session.root_label,
-           session.root_label_display,session.path_segment)
-         AND validate_hns_owner_recovery_terminal_document(
-           expired.terminal_result_document,expired.result_hash,expired.terminal_result_version,
-           expired.route_revalidation_id,expired.revalidation_session_id,
-           expired.route_revalidation_attempt_id,expired.route_binding_id,
-           expired.expected_binding_generation,expired.idempotency_key,
-           expired.completion_request_hash,'session_expired')
+       ${hnsExpiredRecoveryOriginSql("session")}
      ) expiry_origin ON TRUE
      JOIN community_route_revalidation_evidence_snapshots snapshot
        ON snapshot.evidence_ref=e.evidence_ref
