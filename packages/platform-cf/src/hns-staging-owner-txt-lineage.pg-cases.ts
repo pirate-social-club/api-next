@@ -94,6 +94,27 @@ const refusedAtEveryHop: readonly (readonly [string, readonly string[]])[] = [
     [`UPDATE ${RESERVATIONS} SET fence_token=fence_token+7 WHERE revalidation_session_id=$1`],
   ],
   [
+    "attempt created and ended before the challenge expired",
+    [
+      `UPDATE ${ATTEMPTS} attempt SET created_at=session.challenge_expires_at-INTERVAL '2 seconds',
+         terminal_at=session.challenge_expires_at-INTERVAL '1 second'
+       FROM ${SESSIONS} session
+       WHERE session.revalidation_session_id=attempt.revalidation_session_id
+         AND attempt.revalidation_session_id=$1`,
+    ],
+  ],
+  [
+    "attempt in system mode with a null version document",
+    [
+      `UPDATE ${ATTEMPTS} SET operation_mode='system_revalidation',observation_id=NULL,
+         terminal_result_version=NULL,
+         terminal_result_document=regexp_replace(terminal_result_document,'^\\["[^"]*"','[null'),
+         result_hash=encode(sha256(convert_to(
+           regexp_replace(terminal_result_document,'^\\["[^"]*"','[null'),'UTF8')),'hex')
+       WHERE revalidation_session_id=$1`,
+    ],
+  ],
+  [
     "session window is not one hour",
     [
       `UPDATE ${SESSIONS} SET started_at=started_at-INTERVAL '1 second'
@@ -138,8 +159,9 @@ const refusedOnce: readonly (readonly [string, string, readonly string[]])[] = [
     ],
   ],
 ];
-/** The schema refuses these outright, so the matching lineage predicates cannot be
- * reached by any stored row. Pinned here so that loosening a constraint is noticed. */
+/** The schema refuses these single-column writes outright. Pinned here so that loosening
+ * a constraint is noticed. This says nothing about compound rows: the attempt time and
+ * mode predicates are reachable that way and are pinned in refusedAtEveryHop. */
 const refusedAtWrite: readonly (readonly [string, string])[] = [
   [
     "attempt not consumed",
