@@ -3,9 +3,9 @@
   "files": {
     "fixture-target.ts": "c8d001a91cb49503292b5218e8ea169509c3996df92eeca8f25ccdd601573fcf",
     "fixture-bootstrap.ts": "ab080715eadd75633f83d9786c2393f8c72297211f0bd48e84a215c619a449cd",
-    "fixture-cases.ts": "5e55faa8044c96ebc816785b613c9e55ebfd0f7b7a321733b323c44099857945",
+    "fixture-cases.ts": "b62dc07130b89148cb96a3d5d9c608a07ce9d446b40cca874a22c141bf741220",
     "fixture-seed.sql": "d3adf4084803607f43df1d36397b22a65771e1372a0f1ea8c872095cd5d18a32",
     "qualify-compatibility-pg18.ts": "18f8d6094ea2c2548afdc631af36a5c27fb734341b7ef30c50fc296261ffbd4b",
-    "README.md": "c7b9086a4f37dedbea7a6196c7c30b5b97f7d3d312a29c7f21655c023ac63c00"
+    "README.md": "1f1ba0f60f4cf08982f479355aa87fee0b1d555bf8085d33ead375b0e72c9dc2"
   }
 }

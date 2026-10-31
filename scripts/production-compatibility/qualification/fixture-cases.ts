@@ -201,7 +201,7 @@ export async function representativeCases(target: Target, owner: pg.Client, case
   );
   await negative(
     "0284_slot_collision_synthetic_old_post_key_removed",
-    "ALTER TABLE posts DROP CONSTRAINT posts_pkey CASCADE; INSERT INTO posts(community_id,post_id,author_user_id,author_persona_id,post_type,status,title,created_at,updated_at,author_declared_rating,content_rating) SELECT community_id,post_id,author_user_id,author_persona_id,post_type,status,title,created_at,updated_at,author_declared_rating,content_rating FROM posts WHERE post_id='fixture_song_a'",
+    "ALTER TABLE posts DROP CONSTRAINT posts_pkey CASCADE; DROP INDEX api_next.posts_post_id_global_unique; INSERT INTO posts(community_id,post_id,author_user_id,author_persona_id,post_type,status,title,created_at,updated_at,author_declared_rating,content_rating) SELECT community_id,post_id,author_user_id,author_persona_id,post_type,status,title,created_at,updated_at,author_declared_rating,content_rating FROM posts WHERE post_id='fixture_song_a'",
     "song-slots-0284",
     (value) => {
       assert.equal(number(firstRow(value).slot_id_duplicate_groups), 1n);
