@@ -15,9 +15,9 @@ import sys
 import time
 
 REPO = Path('/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/api-website-production-release-tools-20261031')
-APP = REPO.parent / 'v1-hns-browser-renewal-cookies-api-20261029'
-APP_SHA = 'a6bb14b7669ec5900d20b20d1fb077a5bead38bc'
-APP_TREE = 'ba935ba8fdc0526f1a6c0b251a75027314034900'
+APP = REPO.parent / 'v1-self-dependency-advisories-20261031'
+APP_SHA = '6862fa976a2fc387ee0e0274ba9f1b2abc447427'
+APP_TREE = '4ed603e6dca5bb9fd34f9aa0addb94cd8d99b471'
 PRODUCTION = REPO.parents[2] / '.archive/v1-shared-launch-execution-20261023/checkpoints-20261030/final-production-qualification-a6-333/website-production-operation-20261031'
 IMAGE = 'sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280'
 DRIVER = REPO / 'scripts/production-compatibility/qualification/qualify-compatibility-pg18.ts'

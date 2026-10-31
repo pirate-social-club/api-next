@@ -21,7 +21,7 @@ import { assertToolingSource } from "./production-source-binding.ts";
 export { FACTS_PATH };
 
 const BRANCH = "mqfaju65wdm3";
-const BROWSER_PLAN_FILE = "deb332e0543461e0b5b90b4196de30a7f5779a32a7629ea7382ac892bed6af9e";
+const BROWSER_PLAN_FILE = "2d06ca9a9322cc4a6b886d72617082d6b49e51ab0c3d4e9a59216092ba4f6d3d";
 const DIGEST = /^[a-f0-9]{64}$/u;
 const FACT_KEYS = [
   "ordinary_recovery_review_path",

@@ -9,8 +9,8 @@ import { exactKeys, object } from "./compatibility-contract.ts";
 import { QUERIES } from "./inventory.ts";
 
 export const APP_REPO =
-  "/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/v1-hns-browser-renewal-cookies-api-20261029";
-export const APP_SOURCE = "a6bb14b7669ec5900d20b20d1fb077a5bead38bc";
+  "/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/v1-self-dependency-advisories-20261031";
+export const APP_SOURCE = "6862fa976a2fc387ee0e0274ba9f1b2abc447427";
 export const PREFIX_LEDGER = "1f49f7e3d7b3323fc84e15ce365d47d00337fa8047abad9c67458e0b0c40d04b";
 export const root = new URL("../../", import.meta.url);
 export const packageRoot = new URL("./", import.meta.url);

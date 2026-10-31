@@ -26,9 +26,9 @@ export { bound, OPERATION_DIR, record, recordDigest, save };
 
 import pg, { type ClientConfig } from "pg";
 import { runDanceServingPermissionsPreflight } from "../dance-serving-permissions-preflight.ts";
-import { gitEnvironment, injectedProductionUrls } from "./production-managed-environment.ts";
 import { loadPostgresMigrations, runPostgresMigrations } from "../postgres-migrations.ts";
 import { runServingFunctionPrivilegesPreflight } from "../serving-function-privileges-preflight.ts";
+import { gitEnvironment, injectedProductionUrls } from "./production-managed-environment.ts";
 
 import {
   API_APP_SOURCE,
@@ -50,9 +50,9 @@ export const BRANCH = "mqfaju65wdm3";
 export const LEDGER275 = "1f49f7e3d7b3323fc84e15ce365d47d00337fa8047abad9c67458e0b0c40d04b";
 export const LEDGER333 = "95cdd12cfef6dc5eaf89d0e7734b1d692477c12d621f2596d923ad3499a94280";
 export const HELPER = "b0e9fd67fc2a6a4fdc1b4f8ae867153a38639844fb4ee195bebad2cba7f430a4";
-export const DANCE_PLAN_FILE = "9b3f5406c5ea6782f14a5c1bd9ced045759b49f919ff6f2eb089d97fecbea0c9";
+export const DANCE_PLAN_FILE = "816578239c1b206705cb2b24c2ea3b85510eeefc9aaa6d9375d39d6b3a30d406";
 export const DANCE_PLAN = "016fb2701b3e2c90069652613ef358338e68572f3bf15d4ebb06611b1814db78";
-export const BROWSER_PLAN_FILE = "deb332e0543461e0b5b90b4196de30a7f5779a32a7629ea7382ac892bed6af9e";
+export const BROWSER_PLAN_FILE = "2d06ca9a9322cc4a6b886d72617082d6b49e51ab0c3d4e9a59216092ba4f6d3d";
 export const BROWSER_FUNCTIONS = [
   "create_browser_session_v1(jsonb)",
   "read_browser_session_access_v1(text,text,text)",

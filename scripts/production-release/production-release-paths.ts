@@ -3,9 +3,9 @@ import { fileURLToPath } from "node:url";
 export const SOURCE_DIRECTORY = fileURLToPath(new URL("./", import.meta.url));
 export const TOOLING_REPO = fileURLToPath(new URL("../../", import.meta.url));
 export const APP_REPO =
-  "/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/v1-hns-browser-renewal-cookies-api-20261029";
-export const API_APP_SOURCE = "a6bb14b7669ec5900d20b20d1fb077a5bead38bc";
-export const API_APP_TREE = "ba935ba8fdc0526f1a6c0b251a75027314034900";
+  "/media/t42/codedrive/Code/pirate-workspace/.worktrees/api-next/v1-self-dependency-advisories-20261031";
+export const API_APP_SOURCE = "6862fa976a2fc387ee0e0274ba9f1b2abc447427";
+export const API_APP_TREE = "4ed603e6dca5bb9fd34f9aa0addb94cd8d99b471";
 export const WEBSITE_SOURCE = "2df88cf0200fb30535d4d3b5b1034b390e024c51";
 export const WEBSITE_EXECUTOR =
   "/media/t42/codedrive/Code/pirate-workspace/.worktrees/pirate-web-solid/solid-website-production-executor-20261031/scripts/production-website-cutover.mjs";

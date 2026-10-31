@@ -1,13 +1,13 @@
 {
   "kind": "production-compatibility-source-v1",
-  "api_source": "a6bb14b7669ec5900d20b20d1fb077a5bead38bc",
+  "api_source": "6862fa976a2fc387ee0e0274ba9f1b2abc447427",
   "files": {
     "compatibility-contract.test.ts": "e12a4ae395715bf5a7d33e61f7a22ca00742e91b61521b6af952946b05c2eebe",
     "compatibility-contract.ts": "f3557ca57372489c7823e9eea9bf30f518be4178c6186b7da063c25111269dfc",
     "inventory.ts": "4b48056cdf4b528c3c3a84b54a06ddc8e02f246779fd755b011a64729be96b3b",
     "read-production-compatibility.ts": "2e8f7b09463aa932ea6f7ad864237c63d0ca3bdf3cbfd8742e966590382ef875",
-    "source-bindings.json": "8a58ca8cecf61d6b55a3dc7f1e823adeff36ccf8f95fc93755d5e3fcbb859109",
-    "source-inputs.ts": "1fa31e8d7d7c0c289fbd1bb95f013c87c9e91d4def1b65e9eb7810ce54104709",
+    "source-bindings.json": "102ebcf75beb5b33d00840d700e2a10d38f283d1ac74b6f13685da3a9ba294b9",
+    "source-inputs.ts": "8bfc1f9a6f752275a272be06891de389e3aac1f78e97f17caa3dcba61a8590cc",
     "sql/check-activity-qualifications.sql": "0da7fdae1c4aaaf6d2c986fcf5a71752655226397910d94092bdf2975204b679",
     "sql/check-media-upload-reservations.sql": "1789e95d363f26bd5eac6001395619d5fa0166303dd955ad341a1c2d3fac2c38",
     "sql/check-megapot-pool-commitment-effects.sql": "ecacfe09f752adac758b9cdfd7d807a73c76656545f54adb11483019caba30e4",
