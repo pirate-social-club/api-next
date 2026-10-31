@@ -22,8 +22,7 @@ const git = (root: string, args: readonly string[]) =>
   }).trim();
 const relative = "scripts/production-release/";
 const manifestName = "source-manifest.json";
-export const TOOLING_RELEASE_REF =
-  "refs/heads/release/v1-website-qualified-tooling-r2-20261031";
+export const TOOLING_RELEASE_REF = "refs/heads/release/v1-website-qualified-tooling-r2-20261031";
 const publicationPaths = {
   "scripts/production-release": "tree",
   "scripts/production-compatibility": "tree",
@@ -69,7 +68,10 @@ export function validateToolingPublication(snapshot: ToolingPublicationSnapshot)
   assert.equal(snapshot.application_is_ancestor, true, "Accepted main does not contain M");
   assert.equal(snapshot.release_ref, TOOLING_RELEASE_REF);
   assert.equal(snapshot.release_tip, snapshot.source, "Frozen release ref moved or is unpublished");
-  assert.deepEqual(Object.keys(snapshot.objects ?? {}).sort(), Object.keys(publicationPaths).sort());
+  assert.deepEqual(
+    Object.keys(snapshot.objects ?? {}).sort(),
+    Object.keys(publicationPaths).sort(),
+  );
   for (const [path, type] of Object.entries(publicationPaths)) {
     const object = snapshot.objects![path]!;
     assert.equal(object.source_type, type, "Frozen publication object type differs: " + path);
@@ -82,7 +84,10 @@ export function validateToolingPublication(snapshot: ToolingPublicationSnapshot)
 
 function ancestor(source: string, main: string) {
   const result = spawnSync("git", ["merge-base", "--is-ancestor", source, main], {
-    cwd: TOOLING_REPO, encoding: "utf8", timeout: 30_000, env: gitEnvironment(),
+    cwd: TOOLING_REPO,
+    encoding: "utf8",
+    timeout: 30_000,
+    env: gitEnvironment(),
     maxBuffer: 1024 * 1024,
   });
   if (result.error) throw result.error;
@@ -92,29 +97,49 @@ function ancestor(source: string, main: string) {
 
 /** No unrelated Git error is treated as permission to use the content witness. */
 export function assertPublishedToolingSource(source: string) {
-  assert.equal(git(TOOLING_REPO, ["remote", "get-url", "origin"]), "https://github.com/pirate-social-club/api-next.git");
-  const tip = (ref: string) => publishedTip(git(TOOLING_REPO, ["ls-remote", "--refs", "origin", ref]), ref);
+  assert.equal(
+    git(TOOLING_REPO, ["remote", "get-url", "origin"]),
+    "https://github.com/pirate-social-club/api-next.git",
+  );
+  const tip = (ref: string) =>
+    publishedTip(git(TOOLING_REPO, ["ls-remote", "--refs", "origin", ref]), ref);
   const main = tip("refs/heads/main");
   git(TOOLING_REPO, ["fetch", "--no-tags", "origin", "refs/heads/main"]);
-  assert.equal(git(TOOLING_REPO, ["rev-parse", "FETCH_HEAD"]), main, "Accepted main changed during fetch");
+  assert.equal(
+    git(TOOLING_REPO, ["rev-parse", "FETCH_HEAD"]),
+    main,
+    "Accepted main changed during fetch",
+  );
   const sourceIsAncestor = ancestor(source, main);
   const snapshot: ToolingPublicationSnapshot = {
-    source, main, source_is_ancestor: sourceIsAncestor,
+    source,
+    main,
+    source_is_ancestor: sourceIsAncestor,
     application_is_ancestor: sourceIsAncestor || ancestor(API_APP_SOURCE, main),
   };
   if (!sourceIsAncestor) {
     snapshot.release_ref = TOOLING_RELEASE_REF;
     snapshot.release_tip = tip(TOOLING_RELEASE_REF);
-    snapshot.objects = Object.fromEntries(Object.keys(publicationPaths).map(path => [path, {
-      source_oid: git(TOOLING_REPO, ["rev-parse", "--verify", source + ":" + path]),
-      main_oid: git(TOOLING_REPO, ["rev-parse", "--verify", main + ":" + path]),
-      source_type: git(TOOLING_REPO, ["cat-file", "-t", source + ":" + path]),
-      main_type: git(TOOLING_REPO, ["cat-file", "-t", main + ":" + path]),
-    }]));
+    snapshot.objects = Object.fromEntries(
+      Object.keys(publicationPaths).map((path) => [
+        path,
+        {
+          source_oid: git(TOOLING_REPO, ["rev-parse", "--verify", source + ":" + path]),
+          main_oid: git(TOOLING_REPO, ["rev-parse", "--verify", main + ":" + path]),
+          source_type: git(TOOLING_REPO, ["cat-file", "-t", source + ":" + path]),
+          main_type: git(TOOLING_REPO, ["cat-file", "-t", main + ":" + path]),
+        },
+      ]),
+    );
   }
   validateToolingPublication(snapshot);
   assert.equal(tip("refs/heads/main"), main, "Accepted main moved during publication check");
-  if (!sourceIsAncestor) assert.equal(tip(TOOLING_RELEASE_REF), source, "Frozen release ref moved during publication check");
+  if (!sourceIsAncestor)
+    assert.equal(
+      tip(TOOLING_RELEASE_REF),
+      source,
+      "Frozen release ref moved during publication check",
+    );
   return snapshot;
 }
 

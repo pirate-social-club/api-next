@@ -21,8 +21,8 @@
     "production-release-admission.test.ts": "5900b27fe22c9a1033a98659005b4a24d840e6ea3303d163adef70c5a30702d9",
     "production-release-admission.ts": "0dfe46c8014fea15870fd849502d217a9dc26cb08df6a80cb9eab4641d361d20",
     "production-release-paths.ts": "546b36dc4b1b30102515d17edd92eaa74948467ec225e89c0ad2ce3334f96ea2",
-    "production-source-binding.test.ts": "e7c52122417a4afa1a976c9463bf923ef15953d7ead0a488afdd62cfca63067d",
-    "production-source-binding.ts": "9868bda7d4ea3d93ec02a5366528affab9dd3677c9cb9d41b4349ec12034672b",
+    "production-source-binding.test.ts": "b676efcf49eb36a19c1fa267df1925c44e355c6f3ec22f545293f32ac68b79cb",
+    "production-source-binding.ts": "bbf862252c7b3cb2760bd7a1c661102792e95d8d41b0e1a949aebae9eda5a0a8",
     "production-worker-cutover.ts": "40b9f8b70c659df4e89db6b9b465ce1349c7186fb8110209f84993cdb2e6e7e1",
     "production-worker-observations.ts": "3513d79539607086e643238bb065602b0f3163c100e1bd4c42de33683e4c5e10",
     "unfilled-live-facts.template.json": "cdc739dffcb4602b1a4f1d9491943ef7ca3d5ce1fc0fe8c738dc8b56b99fd809"
