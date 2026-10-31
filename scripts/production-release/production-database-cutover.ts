@@ -177,10 +177,15 @@ export async function managedUrls() {
       signal: AbortSignal.timeout(10_000),
     });
     assert.equal(response.status, 200);
-    const { secret } = await response.json();
-    assert.equal(secret.secretKey, key);
-    assert.equal(secret.environment, "prod");
-    const url = new URL(secret.secretValue);
+    const payload: unknown = await response.json();
+    assert.ok(payload !== null && typeof payload === "object" && !Array.isArray(payload));
+    const secret = (payload as Record<string, unknown>).secret;
+    assert.ok(secret !== null && typeof secret === "object" && !Array.isArray(secret));
+    const fields = secret as Record<string, unknown>;
+    assert.equal(fields.secretKey, key);
+    assert.equal(fields.environment, "prod");
+    assert.ok(typeof fields.secretValue === "string");
+    const url = new URL(fields.secretValue);
     assert.equal(url.hostname, "aws-us-east-1-4.pg.psdb.cloud");
     assert.equal(url.port || "5432", "5432");
     assert.equal(url.pathname, "/postgres");

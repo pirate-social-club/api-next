@@ -7,7 +7,8 @@ import { fileHash } from "../production-operation-evidence.ts";
 
 async function main() {
   const [directory, scenario] = Bun.argv.slice(2);
-  assert.ok(directory?.startsWith("/") && scenario);
+  assert.ok(typeof directory === "string" && directory.startsWith("/"));
+  assert.ok(typeof scenario === "string" && scenario.length > 0);
   const wrapperPath = fileURLToPath(import.meta.url);
   const childPath = fileURLToPath(new URL("./process-qualification-child.ts", import.meta.url));
   const executionTools = {
