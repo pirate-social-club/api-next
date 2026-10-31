@@ -243,10 +243,13 @@ def main():
                    '--signal=TERM', '--kill-after=10s', '300s', '/usr/local/bin/docker-entrypoint.sh', 'postgres', '-c', 'listen_addresses=',
                    '-c', 'max_locks_per_transaction=64', '-c', 'shared_buffers=64MB', '-c', 'unix_socket_directories=/var/run/postgresql',
                    '-c', 'cluster_name=pirate_compatibility_' + run_root.name[-32:]]
+        require((expires - utc()).total_seconds() >= 330, 'Insufficient reviewed time before container creation')
         attempted = True; acknowledgement = docker(*command, timeout=30, extra={'POSTGRES_PASSWORD': password}).stdout.decode().strip()
         require(re.fullmatch('[a-f0-9]{64}', acknowledgement), 'Create acknowledgement is malformed'); cid = acknowledgement
         result['container'] = owned(inspect(docker, cid), cid, name, request_sha, review_sha, socket)
-        write(run_root / 'owned-container.json', result['container']); docker('start', cid)
+        write(run_root / 'owned-container.json', result['container'])
+        require((expires - utc()).total_seconds() >= 330, 'Insufficient reviewed time before container start')
+        docker('start', cid)
         ready_until = time.monotonic() + 50
         while time.monotonic() < ready_until:
             logs = docker('logs', cid, check=False)
