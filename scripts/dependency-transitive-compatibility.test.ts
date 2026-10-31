@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { createServer, type Server, type get } from "node:http";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer, type get, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +84,7 @@ test("follow-redirects drops a cross-realm custom credential on a real cross-ori
   const follow = axios("follow-redirects") as { http: { get: typeof get } };
   const sensitiveHeaders = runInNewContext('["X-Synthetic-Secret"]') as string[];
   assert.equal(Array.isArray(sensitiveHeaders), true);
+  // biome-ignore lint/suspicious/useIsArray: This regression proves the fixture belongs to another realm.
   assert.equal(sensitiveHeaders instanceof Array, false);
   let destinationHeaders: Record<string, unknown> | undefined;
   let initialHeader: string | string[] | undefined;
