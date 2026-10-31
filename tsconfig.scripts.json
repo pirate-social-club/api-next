@@ -37,6 +37,8 @@
     "scripts/check-scripts-typecheck-coverage.test.ts",
     "scripts/check-scripts-typecheck-coverage.ts",
     "scripts/dependency-audit.ts",
+    "scripts/node-forge-remediation.test.ts",
+    "scripts/dependency-transitive-compatibility.test.ts",
     "scripts/deploy-worker-with-provenance.ts",
     "scripts/telegram-activation-preflight.ts",
     "scripts/staging-telegram-config.ts",
