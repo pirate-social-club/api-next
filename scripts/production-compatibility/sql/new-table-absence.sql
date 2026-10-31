@@ -79,5 +79,5 @@ WITH introduced(table_name,creation_migration) AS (VALUES
 )
 SELECT count(*) AS expected_absent_count,
  count(*) FILTER(WHERE to_regclass('api_next.'||quote_ident(table_name)) IS NOT NULL) AS unledgered_present_count,
- encode(sha256(convert_to(string_agg(table_name||':'||creation_migration,E'\n' ORDER BY table_name),'UTF8')),'hex') AS introduced_table_set_sha256
+ encode(sha256(convert_to(string_agg(table_name||':'||creation_migration,E'\n' ORDER BY table_name COLLATE "C"),'UTF8')),'hex') AS introduced_table_set_sha256
 FROM introduced;

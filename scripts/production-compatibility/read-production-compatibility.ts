@@ -89,7 +89,7 @@ export async function main(args = Bun.argv.slice(2)) {
     await db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     const identity = (
       await db.query(
-        "SELECT current_user::text role,session_user::text session_role,current_database() database,current_schema() schema,current_schemas(false) schemas,current_setting('transaction_read_only') read_only,current_setting('TimeZone') timezone,current_setting('server_version_num') server_version_num,(extract(epoch FROM current_setting('transaction_timeout')::interval)*1000)::bigint::text transaction_timeout_ms",
+        "SELECT current_user::text role,session_user::text session_role,current_database() database,current_schema() schema,current_schemas(false)::text[] schemas,current_setting('transaction_read_only') read_only,current_setting('TimeZone') timezone,current_setting('server_version_num') server_version_num,(extract(epoch FROM current_setting('transaction_timeout')::interval)*1000)::bigint::text transaction_timeout_ms",
       )
     ).rows[0];
     assert.equal(identity?.role, OWNER);

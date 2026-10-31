@@ -5,7 +5,7 @@
     "compatibility-contract.test.ts": "e12a4ae395715bf5a7d33e61f7a22ca00742e91b61521b6af952946b05c2eebe",
     "compatibility-contract.ts": "f3557ca57372489c7823e9eea9bf30f518be4178c6186b7da063c25111269dfc",
     "inventory.ts": "4b48056cdf4b528c3c3a84b54a06ddc8e02f246779fd755b011a64729be96b3b",
-    "read-production-compatibility.ts": "14419bc39d10e5c766275440a73a575b519ce7719b4ff2b7bffb7ea35210e267",
+    "read-production-compatibility.ts": "2e8f7b09463aa932ea6f7ad864237c63d0ca3bdf3cbfd8742e966590382ef875",
     "source-bindings.json": "8a58ca8cecf61d6b55a3dc7f1e823adeff36ccf8f95fc93755d5e3fcbb859109",
     "source-inputs.ts": "1fa31e8d7d7c0c289fbd1bb95f013c87c9e91d4def1b65e9eb7810ce54104709",
     "sql/check-activity-qualifications.sql": "0da7fdae1c4aaaf6d2c986fcf5a71752655226397910d94092bdf2975204b679",
@@ -18,7 +18,7 @@
     "sql/check-qualification-policy-versions.sql": "b129871a0e98281a5ccbe403c62fd4f34c12ca1dfb9a1670371f7417d37fe976",
     "sql/check-reward-chain-effects.sql": "5a179007148e1046db48879809ef01ecb334291e8fb00d08843dd9d1bda320c1",
     "sql/check-song-reward-offer-legs.sql": "f7d0caa85497a110a001723221ba7066b67c7526edf926e360b98bb36ff43912",
-    "sql/new-table-absence.sql": "3b6e51f2f8a7e0d79ac5528eb3a2e5ed98feca5c5341247e9beaa9ba2018605f",
+    "sql/new-table-absence.sql": "6a6284990d59e6dbc5c984ebbabae5826ff90b8c8c21d9d3831686f48fb1d195",
     "sql/nonce-backfill-0277.sql": "63078325fcfbae470431831e89830793f3d8d57a332927b1734e4529585cae25",
     "sql/predecessor-check-catalogue.sql": "4e50eb3e7da6006917c68af1077f114e9631f296fc247224716e573b5030f65a",
     "sql/song-slots-0284.sql": "d6890eb7e87dac611cf33ffbf0aa0430c4ab0e3ec476d6098fec0cb65db0a871"
