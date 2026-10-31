@@ -169,10 +169,10 @@ export async function ownerRead(url: string, expectedCount?: 275 | 333) {
   try {
     await db.connect();
     await db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-    assert.deepEqual((await db.query("SELECT current_schemas(false) schemas")).rows[0].schemas, [
-      "api_next",
-      "pg_catalog",
-    ]);
+    assert.deepEqual(
+      (await db.query("SELECT current_schemas(false)::text[] schemas")).rows[0].schemas,
+      ["api_next", "pg_catalog"],
+    );
     assert.equal(
       (
         await db.query(
