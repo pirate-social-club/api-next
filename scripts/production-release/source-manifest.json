@@ -1,8 +1,8 @@
 {
   "kind": "website-production-release-source-manifest-v1",
   "files": {
-    "README.md": "435afb0710fd6bf9740267e00114f7132d71ae20519efa9aa5fed24fcdd711d4",
-    "RUNBOOK.md": "ad8ba6040a10d2ab961ae9fa3526539385d9266b3bd764ffd204008342ddb01e",
+    "README.md": "7fbb6ea9e69699219903176b11fa0b941027f7cbef7e03ce406f69a67dabfa50",
+    "RUNBOOK.md": "0620614ac2cf29a3e1de123f16d20a0d00b0578dd665d89ed64e513f5c1e528a",
     "browser-grant-plan-333.json": "2d06ca9a9322cc4a6b886d72617082d6b49e51ab0c3d4e9a59216092ba4f6d3d",
     "fixtures/process-qualification-child.ts": "499c8ae6cacddd7a3e524645e5fbd959250884bb2c0dba828a02fe77849eb937",
     "fixtures/process-qualification-wrapper.ts": "ed63d577538b0090a487fef44da228efa114181c4427351d413d75f69dcb536e",
@@ -20,8 +20,9 @@
     "production-operation-evidence.ts": "e1341faa74a253f739e0fc0ddd5e579c97f93d087d765a9d186793f8863410d3",
     "production-release-admission.test.ts": "5900b27fe22c9a1033a98659005b4a24d840e6ea3303d163adef70c5a30702d9",
     "production-release-admission.ts": "0dfe46c8014fea15870fd849502d217a9dc26cb08df6a80cb9eab4641d361d20",
-    "production-release-paths.ts": "6254599831eff2c8efcd9071171b12721f5e1f18005d3ac7f67a3b8fd3cbd2c5",
-    "production-source-binding.ts": "c4348ef6ce44aaf682529e1e02e179348f47ebdb93ed5c7b807e880c62f199fe",
+    "production-release-paths.ts": "546b36dc4b1b30102515d17edd92eaa74948467ec225e89c0ad2ce3334f96ea2",
+    "production-source-binding.test.ts": "b676efcf49eb36a19c1fa267df1925c44e355c6f3ec22f545293f32ac68b79cb",
+    "production-source-binding.ts": "bbf862252c7b3cb2760bd7a1c661102792e95d8d41b0e1a949aebae9eda5a0a8",
     "production-worker-cutover.ts": "40b9f8b70c659df4e89db6b9b465ce1349c7186fb8110209f84993cdb2e6e7e1",
     "production-worker-observations.ts": "3513d79539607086e643238bb065602b0f3163c100e1bd4c42de33683e4c5e10",
     "unfilled-live-facts.template.json": "cdc739dffcb4602b1a4f1d9491943ef7ca3d5ce1fc0fe8c738dc8b56b99fd809"
