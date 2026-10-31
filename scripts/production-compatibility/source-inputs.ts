@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadPostgresMigrations } from "../postgres-migrations.ts";
+import { gitEnvironment } from "../production-release/production-managed-environment.ts";
 import { exactKeys, object } from "./compatibility-contract.ts";
 import { QUERIES } from "./inventory.ts";
 
@@ -20,10 +21,11 @@ const git = (directory: string, args: string[]) =>
     cwd: directory,
     encoding: "utf8",
     timeout: 15_000,
+    env: gitEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 
-/** Called before credentials and after the read; does not alter a ref or checkout. */
+/** Called before consuming injected URLs and after the read; does not alter a ref or checkout. */
 export async function sourceInputs() {
   const toolingRoot = realpathSync(fileURLToPath(root));
   assert.equal(git(toolingRoot, ["rev-parse", "--show-toplevel"]), toolingRoot);
@@ -36,6 +38,14 @@ export async function sourceInputs() {
   const manifest = object(JSON.parse(manifestBytes.toString("utf8")));
   assert.equal(manifest.kind, "production-compatibility-source-v1");
   assert.equal(manifest.api_source, APP_SOURCE);
+  const environmentHelperSha256 = sha256(
+    readFileSync(new URL("../production-release/production-managed-environment.ts", packageRoot)),
+  );
+  assert.equal(
+    environmentHelperSha256,
+    manifest.environment_helper_sha256,
+    "Managed environment helper changed",
+  );
   const files = object(manifest.files);
   const required = [
     "compatibility-contract.ts",
@@ -53,7 +63,11 @@ export async function sourceInputs() {
       files[name],
       "Compatibility source changed",
     );
-  for (const name of ["postgres-migrations.ts", "postgres-connection-string.ts"]) {
+  for (const name of [
+    "postgres-migrations.ts",
+    "postgres-connection-string.ts",
+    "rewards-e2e/cloudflare-api.mjs",
+  ]) {
     assert.equal(
       sha256(readFileSync(new URL("../" + name, packageRoot))),
       sha256(readFileSync(APP_REPO + "/scripts/" + name)),
@@ -85,6 +99,7 @@ export async function sourceInputs() {
     toolingSource,
     appSource: APP_SOURCE,
     manifestSha256: sha256(manifestBytes),
+    environmentHelperSha256,
     prefix,
     queries: QUERIES.map((query) => ({
       id: query.id,

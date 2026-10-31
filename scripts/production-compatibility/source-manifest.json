@@ -5,9 +5,9 @@
     "compatibility-contract.test.ts": "e12a4ae395715bf5a7d33e61f7a22ca00742e91b61521b6af952946b05c2eebe",
     "compatibility-contract.ts": "f3557ca57372489c7823e9eea9bf30f518be4178c6186b7da063c25111269dfc",
     "inventory.ts": "4b48056cdf4b528c3c3a84b54a06ddc8e02f246779fd755b011a64729be96b3b",
-    "read-production-compatibility.ts": "b3d385e7029e29ecce760e814b6cfe5bb9ce1d664f7877978cbb054081b592a6",
+    "read-production-compatibility.ts": "14419bc39d10e5c766275440a73a575b519ce7719b4ff2b7bffb7ea35210e267",
     "source-bindings.json": "8a58ca8cecf61d6b55a3dc7f1e823adeff36ccf8f95fc93755d5e3fcbb859109",
-    "source-inputs.ts": "d7536446a1ea349032ec036a65fccd4e1120950d3b144221aca6d72361e00d26",
+    "source-inputs.ts": "1fa31e8d7d7c0c289fbd1bb95f013c87c9e91d4def1b65e9eb7810ce54104709",
     "sql/check-activity-qualifications.sql": "0da7fdae1c4aaaf6d2c986fcf5a71752655226397910d94092bdf2975204b679",
     "sql/check-media-upload-reservations.sql": "1789e95d363f26bd5eac6001395619d5fa0166303dd955ad341a1c2d3fac2c38",
     "sql/check-megapot-pool-commitment-effects.sql": "ecacfe09f752adac758b9cdfd7d807a73c76656545f54adb11483019caba30e4",
@@ -22,5 +22,6 @@
     "sql/nonce-backfill-0277.sql": "63078325fcfbae470431831e89830793f3d8d57a332927b1734e4529585cae25",
     "sql/predecessor-check-catalogue.sql": "4e50eb3e7da6006917c68af1077f114e9631f296fc247224716e573b5030f65a",
     "sql/song-slots-0284.sql": "d6890eb7e87dac611cf33ffbf0aa0430c4ab0e3ec476d6098fec0cb65db0a871"
-  }
+  },
+  "environment_helper_sha256": "919286d434da5efa25e23816c69ee87e01670c3090f591a83b619801ef03a55e"
 }

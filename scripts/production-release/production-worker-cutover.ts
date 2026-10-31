@@ -6,6 +6,7 @@ import {
 } from "../deploy-worker-with-provenance.ts";
 import { digest } from "../worker-binding-drift.ts";
 import { readCandidateBindings } from "../worker-deployment-bindings.ts";
+import { deploymentChildEnvironment } from "./production-managed-environment.ts";
 import {
   assertDatabasePlansCommitted,
   BROWSER_PLAN_FILE,
@@ -288,7 +289,7 @@ export async function main(mode = "preview", component: Component = "gateway") {
       writes: 0,
     };
   }
-  assert.ok(!process.env.CLOUDFLARE_API_TOKEN, "Managed OAuth only");
+  // Provider children use the approved login through an explicit environment boundary.
   if (mode === "snapshot")
     return {
       read_only: true,
@@ -354,13 +355,6 @@ export async function main(mode = "preview", component: Component = "gateway") {
     assert.deepEqual(before[key], accepted[key]);
   const urls = await deps.managedUrls();
   await ownerRead(urls.owner, 333);
-  const environment: Record<string, string | undefined> = {
-    ...process.env,
-    RUNTIME_POSTGRES_URL: urls.runtime,
-    CONTROL_PLANE_POSTGRES_RUNTIME_URL: urls.runtime,
-    CONTROL_PLANE_POSTGRES_ADMIN_URL: urls.owner,
-  };
-  delete environment.CLOUDFLARE_API_TOKEN;
   const runner = async (command: readonly string[], cwd: string, signal?: AbortSignal) => {
     if (command[0] === "bunx" && command[1] === "wrangler" && command[2] === "deploy") {
       assert.deepEqual(await deps.collect(component), before);
@@ -376,7 +370,12 @@ export async function main(mode = "preview", component: Component = "gateway") {
         candidate_identity: candidateIdentity(component, review),
       });
     }
-    return deps.runDeploymentCommand(command, cwd, signal, environment);
+    return deps.runDeploymentCommand(
+      command,
+      cwd,
+      signal,
+      deploymentChildEnvironment(command, urls.runtime),
+    );
   };
   const receipt = await withManagedGuardEnvironment(urls, () =>
     deps.deploy(

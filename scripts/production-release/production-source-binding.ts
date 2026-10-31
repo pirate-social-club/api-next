@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { gitEnvironment } from "./production-managed-environment.ts";
 import {
   API_APP_SOURCE,
   API_APP_TREE,
@@ -13,7 +14,12 @@ import {
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const git = (root: string, args: readonly string[]) =>
-  execFileSync("git", [...args], { cwd: root, encoding: "utf8", timeout: 30_000 }).trim();
+  execFileSync("git", [...args], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+    env: gitEnvironment(),
+  }).trim();
 const relative = "scripts/production-release/";
 const manifestName = "source-manifest.json";
 
@@ -58,6 +64,7 @@ export function assertMaintainedSourceEquality() {
     const accepted = execFileSync("git", ["show", API_APP_SOURCE + ":" + path], {
       cwd: TOOLING_REPO,
       timeout: 30_000,
+      env: gitEnvironment(),
     });
     assert.equal(
       sha(readFileSync(join(TOOLING_REPO, path))),

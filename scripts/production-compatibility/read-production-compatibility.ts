@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
@@ -11,11 +10,10 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import pg from "pg";
-import { normalizePostgresConnectionString } from "../postgres-connection-string.ts";
+import { injectedReadOnlyOwnerUrl } from "../production-release/production-managed-environment.ts";
 import {
   aggregateObservation,
   type Observation,
-  object,
   validateComplete,
   validateObservation,
   validateServingReceipt,
@@ -28,47 +26,8 @@ function outside(path: string, root: string) {
   const rel = relative(root, path);
   return rel.startsWith("../") || rel === ".." || isAbsolute(rel);
 }
-async function managedOwnerUrl() {
-  const login = spawnSync("infisical", ["user", "get", "token", "--plain", "--silent"], {
-    cwd: "/tmp",
-    timeout: 10_000,
-    killSignal: "SIGTERM",
-    maxBuffer: 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  assert.equal(login.status, 0);
-  assert.equal(login.error, undefined);
-  assert.ok(login.stdout.length > 0);
-  const endpoint = new URL("https://app.infisical.com/api/v4/secrets/" + SELECTOR);
-  for (const [key, value] of Object.entries({
-    projectId: "fac45f92-9450-42fb-8c2f-f20d043fdfab",
-    environment: "prod",
-    secretPath: "/services/api-next/operator",
-    type: "shared",
-    expandSecretReferences: "false",
-    includeImports: "false",
-  }))
-    endpoint.searchParams.set(key, value);
-  const response = await fetch(endpoint, {
-    headers: { Authorization: "Bearer " + login.stdout.toString().trim() },
-    signal: AbortSignal.timeout(10_000),
-  });
-  assert.equal(response.status, 200);
-  const secret = object(object(await response.json()).secret);
-  assert.equal(secret.secretKey, SELECTOR);
-  assert.equal(secret.environment, "prod");
-  assert.ok(typeof secret.secretValue === "string");
-  const url = new URL(secret.secretValue);
-  assert.equal(decodeURIComponent(url.username), OWNER + ".mqfaju65wdm3");
-  assert.equal(url.hostname, "aws-us-east-1-4.pg.psdb.cloud");
-  assert.equal(url.port || "5432", "5432");
-  assert.equal(url.pathname, "/postgres");
-  assert.equal(url.searchParams.get("sslmode"), "verify-full");
-  url.searchParams.set(
-    "options",
-    "-c search_path=api_next,pg_catalog -c default_transaction_read_only=on -c timezone=UTC -c transaction_timeout=170000",
-  );
-  return normalizePostgresConnectionString(url.toString());
+function managedOwnerUrl() {
+  return injectedReadOnlyOwnerUrl();
 }
 
 /** Two path arguments only; every identifier and SQL statement is source-bound. */
@@ -108,6 +67,7 @@ export async function main(args = Bun.argv.slice(2)) {
     fd = openSync(output, "wx", 0o600);
     result.tooling_source = inputs.toolingSource;
     result.source_manifest_sha256 = inputs.manifestSha256;
+    result.environment_helper_sha256 = inputs.environmentHelperSha256;
     phase = "fresh_serving_origin";
     const servingBytes = readFileSync(servingPath);
     const serving = JSON.parse(servingBytes.toString("utf8"));

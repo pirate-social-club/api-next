@@ -17,7 +17,7 @@ import { exactKeys, type Observation, object } from "../compatibility-contract.t
 import { APP_SOURCE, sha256, sourceInputs } from "../source-inputs.ts";
 
 export const OWNER = "compatibility_fixture_owner";
-export const READER_MANIFEST = "ec01da74f9fa1dca915783db2163809dfd0ba34c9d1c1ba0b4c13a1aa0bd358b";
+export const READER_MANIFEST = "f5089dcd4e87bc5571aa475bd4c0485bc2a430eb91c282f0b8072609c9dfbc7b";
 export const IMAGE = "sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280";
 const sourceDirectory = new URL("./", import.meta.url);
 

@@ -2,6 +2,22 @@
 
 This runbook is proposed source. No command here was executed by its author. Root retains runtime custody and must qualify committed tooling, obtain independent whole-operation acceptance and notify workspace_owner before the first production write under the existing standing authority. A source review does not supply live admission.
 
+## Managed environment boundary
+
+Production database inputs come only from the existing fixed HNS_PRODUCTION_POSTGRES_ADMIN_URL and HNS_PRODUCTION_POSTGRES_RUNTIME_URL selectors, privately injected through the established operator workflow. There is no direct managed-store token request, HTTP credential fetch, printed value, shell interpolation or exported credential file. Missing selectors refuse with static errors. The code verifies exact role/branch/host/port/database/TLS, rejects duplicate query keys and target/TLS overrides, and retains actual read-only database identity, schema ownership, ledger and paused-control proofs. Only sslmode=verify-full, optional sslrootcert=system and existing options are admitted; owner/reader startup settings are replaced by their existing fixed settings while runtime options retain their existing behavior. Synthetic UDS fixture URLs do not use this production helper.
+
+For phases that need database credentials, wrap the OUTER Bun release wrapper, keeping the actual executor directly under GNUtimeout:
+
+```
+infisical run --env=prod --path=/services/api-next/operator --include-imports=false --expand=false --silent -- bun scripts/production-release/production-bounded-command.ts database migrate
+infisical run --env=prod --path=/services/api-next/operator --include-imports=false --expand=false --silent -- bun scripts/production-release/production-bounded-command.ts database grants
+infisical run --env=prod --path=/services/api-next/operator --include-imports=false --expand=false --silent -- bun scripts/production-release/production-bounded-command.ts worker apply gateway
+```
+
+Use the same prefix for later DB-dependent Worker/website apply phases and direct read/verify/reconcile modes. Local preview/init/resolution and provider-only snapshot do not need folder injection. The separately reviewed launch binds exact source, command and scope before invoking the credential runner. The CLI fetches into a private process environment before Bun starts; source/serving/admission checks precede URL parsing/database use, not that earlier CLI fetch. Do not claim otherwise or insert the runner between timeout and executor. The local PG18 qualification remains env-i with synthetic local input only, never this credential workflow.
+
+The supervised executor inherits only safe OS/tool settings and the two fixed selectors, rather than the entire operator folder. Git, Wrangler, cf and managed-login renewal children receive a small explicit environment preserving required HOME/XDG/DBus/CA/proxy configuration while dropping database/operator secrets and code-injection options. cf reads receive only their separately retrieved approved-login token and account; Wrangler uses the approved stored login without an injected diagnostics token. Only the exact maintained bun scripts/telegram-activation-preflight.ts child receives runtime aliases. The owner URL stays in-process for the maintained shutdown guard; existing in-process aliases/restoration are unchanged. The reader manifest explicitly binds the shared environment helper and the controller verifies that same fixed dependency before its synthetic run.
+
 ## Source and preparation
 
 Use the admitted api-next tooling repository and its exact accepted tooling_source/tree. The retained application checkout is fixed by production-release-paths.ts at a6bb14b7669ec5900d20b20d1fb077a5bead38bc. The wrapper derives its own repository and all executors from script location. All commands below run from the admitted repository root and invoke scripts/production-release/ using the exact maintained Bun binary. They do not run from the staging root or the cold archive.
@@ -37,7 +53,7 @@ bun scripts/production-release/production-bounded-command.ts database migrate
 bun scripts/production-release/production-bounded-command.ts database grants
 ```
 
-The wrapper fixes TERM at 180 seconds and KILL ten seconds later. Actual ancestry, pinned binaries, argv, boot/start ticks, owned process group and absent end evidence are checked before credentials. A direct executor write call refuses even if it borrows a recent start. Short child-publication waiting is bounded and does not start another process.
+The wrapper fixes TERM at 180 seconds and KILL ten seconds later. Actual ancestry, pinned binaries, argv, boot/start ticks, owned process group and absent end evidence are checked before database use. A direct executor write call refuses even if it borrows a recent start. Short child-publication waiting is bounded and does not start another process.
 
 Migration requires exact real starting ledger 275, current backup and the maintained expectedLedger transaction guard. Reconciliation of an existing migration attempt reads exact current ledger rather than replaying migration. Each grant phase checks a current backup and runs actual schema 333 read-only preguards before its new marker. General admission reuses independently accepted exact plan bytes and the real historical 275 baseline; it does not require schema 333 functions before migration or pregrant ACLs afterward. COMMIT-sent precedes the actual wire call; an acknowledgement receipt is distinct.
 

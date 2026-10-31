@@ -106,7 +106,10 @@ def source(request, env):
         path = REPO / relative
         observed['manifests'][key] = digest(path)
         require(observed['manifests'][key] == request['manifests'][key], 'Source manifest differs')
-        for name, expected in json.loads(path.read_text())['files'].items():
+        manifest = json.loads(path.read_text())
+        if key == 'reader':
+            require(digest(REPO / 'scripts/production-release/production-managed-environment.ts') == manifest['environment_helper_sha256'], 'Reader environment dependency differs')
+        for name, expected in manifest['files'].items():
             require(not Path(name).is_absolute() and '..' not in Path(name).parts, 'Foreign manifest path')
             require(digest(path.parent / name) == expected, 'Manifest member differs')
     observed.update({'controller_sha256': digest(__file__), 'driver_sha256': digest(DRIVER)})

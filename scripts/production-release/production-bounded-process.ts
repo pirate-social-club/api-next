@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { linuxProcess } from "./production-linux-process-bound.ts";
 import { exclusiveRecord, fileHash } from "./production-operation-evidence.ts";
+import { releaseExecutorEnvironment } from "./production-managed-environment.ts";
 
 export interface ProductionBoundedCommand {
   readonly journalDirectory: string;
@@ -50,7 +51,7 @@ export async function superviseProductionTimeout(input: ProductionBoundedCommand
       ["--signal=TERM", "--kill-after=10s", "180s", ...input.argv],
       {
         cwd: input.journalDirectory,
-        env: { ...process.env, PIRATE_RELEASE_OUTER_START_PATH: startPath },
+        env: { ...releaseExecutorEnvironment(), PIRATE_RELEASE_OUTER_START_PATH: startPath },
         stdio: "inherit",
       },
     );

@@ -275,7 +275,7 @@ export function validateOuterProcessExecution(input: {
   assert.equal(start.argv[0], process.execPath);
   assert.equal(start.argv[1], process.argv[1]);
   assert.deepEqual(start.argv.slice(2), process.argv.slice(2));
-  // The child can start just before its parent publishes its timeout identity. This wait precedes credentials and never starts a process.
+  // The child can start just before its parent publishes its timeout identity. This wait precedes database use and never starts a process.
   const until = process.hrtime.bigint() + 2_000_000_000n;
   while (!existsSync(childPath) && !existsSync(endPath) && process.hrtime.bigint() < until)
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);

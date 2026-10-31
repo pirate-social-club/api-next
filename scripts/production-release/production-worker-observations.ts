@@ -3,10 +3,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { runDeploymentCommand } from "../deploy-worker-with-provenance.ts";
 import {
-  cloudflareAccountId,
-  cloudflareApi,
-  managedToken,
-} from "../rewards-e2e/cloudflare-api.mjs";
+  gitEnvironment,
+  managedProviderApi,
+  managedProviderToken,
+  providerReadEnvironment,
+  wranglerEnvironment,
+} from "./production-managed-environment.ts";
 import {
   bindings,
   digest,
@@ -46,7 +48,7 @@ export const targets = {
 export type Component = keyof typeof targets;
 export function sourceAndBundle(component: Component) {
   const git = (args: string[]) =>
-    execFileSync("/usr/bin/git", args, { cwd: REPO, encoding: "utf8" });
+    execFileSync("/usr/bin/git", args, { cwd: REPO, encoding: "utf8", env: gitEnvironment() });
   assert.equal(git(["rev-parse", "HEAD"]).trim(), SOURCE);
   assert.equal(git(["rev-parse", "HEAD^{tree}"]).trim(), TREE);
   assert.equal(git(["status", "--porcelain"]), "");
@@ -105,12 +107,13 @@ export function runtimeSettings(input: any) {
 }
 
 export async function providerJson(args: string[]) {
-  const token = await managedToken();
-  const result = await runDeploymentCommand(["cf", ...args], REPO, AbortSignal.timeout(30_000), {
-    ...process.env,
-    CLOUDFLARE_API_TOKEN: token,
-    CLOUDFLARE_ACCOUNT_ID: cloudflareAccountId,
-  });
+  const token = await managedProviderToken();
+  const result = await runDeploymentCommand(
+    ["cf", ...args],
+    REPO,
+    AbortSignal.timeout(30_000),
+    providerReadEnvironment(token),
+  );
   assert.equal(result.exitCode, 0);
   assert.ok(result.stdout.length < 48 * 1024 * 1024);
   return JSON.parse(result.stdout);
@@ -120,7 +123,12 @@ export async function collect(component: Component) {
   const target = targets[component];
   const args = ["--env", "production", "--config", target.config, "--json"];
   const command = async (argv: string[]) => {
-    const result = await runDeploymentCommand(argv, REPO, AbortSignal.timeout(30_000));
+    const result = await runDeploymentCommand(
+      argv,
+      REPO,
+      AbortSignal.timeout(30_000),
+      wranglerEnvironment(),
+    );
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.length < 2 * 1024 * 1024);
     return result.stdout;
@@ -167,9 +175,9 @@ export async function collect(component: Component) {
       );
   }
   const currentSettings = runtimeSettings(
-    await cloudflareApi("/workers/scripts/" + target.worker + "/settings"),
+    await managedProviderApi("/workers/scripts/" + target.worker + "/settings"),
   );
-  const latest = await cloudflareApi("/workers/scripts/" + target.worker + "/versions");
+  const latest = await managedProviderApi("/workers/scripts/" + target.worker + "/versions");
   assert.equal(latest.items[0].id, version.id, "Latest upload is not serving");
   assert.deepEqual(parseServingDeployments(await deployments()), before);
   const changes = [...new Set([...actualBindings, ...effective].map((row) => row.name))]

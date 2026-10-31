@@ -26,7 +26,7 @@ export { bound, OPERATION_DIR, record, recordDigest, save };
 
 import pg, { type ClientConfig } from "pg";
 import { runDanceServingPermissionsPreflight } from "../dance-serving-permissions-preflight.ts";
-import { normalizePostgresConnectionString } from "../postgres-connection-string.ts";
+import { gitEnvironment, injectedProductionUrls } from "./production-managed-environment.ts";
 import { loadPostgresMigrations, runPostgresMigrations } from "../postgres-migrations.ts";
 import { runServingFunctionPrivilegesPreflight } from "../serving-function-privileges-preflight.ts";
 
@@ -75,7 +75,8 @@ const ledgerHash = (rows: readonly { version: string; checksum: string }[]) =>
 const self = () => hash(readFileSync(new URL(import.meta.url)));
 
 const realDeps = {
-  git: (args: string[]) => execFileSync("/usr/bin/git", args, { cwd: REPO, encoding: "utf8" }),
+  git: (args: string[]) =>
+    execFileSync("/usr/bin/git", args, { cwd: REPO, encoding: "utf8", env: gitEnvironment() }),
   live: facts,
 
   now: () => Date.now(),
@@ -155,55 +156,7 @@ export function admitted(minimumRemainingMs = 190_000, mode = "verify", requireO
 }
 
 export async function managedUrls() {
-  const login = Bun.spawnSync(["infisical", "user", "get", "token", "--plain", "--silent"], {
-    cwd: "/tmp",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  assert.equal(login.exitCode, 0);
-  async function get(key: string, role: string) {
-    const endpoint = new URL("https://app.infisical.com/api/v4/secrets/" + key);
-    for (const [name, value] of Object.entries({
-      projectId: "fac45f92-9450-42fb-8c2f-f20d043fdfab",
-      environment: "prod",
-      secretPath: "/services/api-next/operator",
-      type: "shared",
-      expandSecretReferences: "false",
-      includeImports: "false",
-    }))
-      endpoint.searchParams.set(name, value);
-    const response = await fetch(endpoint, {
-      headers: { Authorization: "Bearer " + login.stdout.toString().trim() },
-      signal: AbortSignal.timeout(10_000),
-    });
-    assert.equal(response.status, 200);
-    const payload: unknown = await response.json();
-    assert.ok(payload !== null && typeof payload === "object" && !Array.isArray(payload));
-    const secret = (payload as Record<string, unknown>).secret;
-    assert.ok(secret !== null && typeof secret === "object" && !Array.isArray(secret));
-    const fields = secret as Record<string, unknown>;
-    assert.equal(fields.secretKey, key);
-    assert.equal(fields.environment, "prod");
-    assert.ok(typeof fields.secretValue === "string");
-    const url = new URL(fields.secretValue);
-    assert.equal(url.hostname, "aws-us-east-1-4.pg.psdb.cloud");
-    assert.equal(url.port || "5432", "5432");
-    assert.equal(url.pathname, "/postgres");
-    assert.equal(decodeURIComponent(url.username), role + "." + BRANCH);
-    assert.equal(url.searchParams.get("sslmode"), "verify-full");
-    // Pin the writer's startup settings too; the Direct migration layer does
-    // not choose a schema. These are in-memory connection options only.
-    if (role === OWNER)
-      url.searchParams.set(
-        "options",
-        "-c search_path=api_next,pg_catalog -c transaction_timeout=170000",
-      );
-    return normalizePostgresConnectionString(url.toString());
-  }
-  return {
-    owner: await get("HNS_PRODUCTION_POSTGRES_ADMIN_URL", OWNER),
-    runtime: await get("HNS_PRODUCTION_POSTGRES_RUNTIME_URL", RUNTIME),
-  };
+  return injectedProductionUrls();
 }
 
 export async function ownerRead(url: string, expectedCount?: 275 | 333) {
