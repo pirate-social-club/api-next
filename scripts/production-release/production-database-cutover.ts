@@ -148,6 +148,17 @@ export function browserPlanGrants(statements: readonly string[]) {
   return grants;
 }
 
+/** Grant helpers mutate privileges even though their SQL statement starts with SELECT. */
+export function grantPlanPreflightStatements(statements: readonly string[]) {
+  const mutation = statements.findIndex(
+    (statement) =>
+      /^(GRANT|REVOKE) /u.test(statement) ||
+      statement.startsWith('SELECT "api_next".grant_moderated_dance_runtime_v1('),
+  );
+  assert.ok(mutation > 1);
+  return statements.slice(1, mutation);
+}
+
 export function admitted(minimumRemainingMs = 190_000, mode = "verify", requireOuter = false) {
   const result = validateAdmission(mode, self(), requireOuter, minimumRemainingMs);
   assert.equal(result.review.backend_executor_sha256, self());
@@ -345,10 +356,9 @@ async function runPlan(
   };
   try {
     await db.connect();
-    const mutation = statements.findIndex((statement) => /^(GRANT|REVOKE) /u.test(statement));
-    assert.ok(mutation > 1);
+    const preflight = grantPlanPreflightStatements(statements);
     await db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-    for (const statement of statements.slice(1, mutation)) await db.query(statement);
+    for (const statement of preflight) await db.query(statement);
     await db.query("ROLLBACK");
     admitted(190_000, "grants", true);
     checkBackup(review);

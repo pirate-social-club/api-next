@@ -5,6 +5,7 @@ import {
   BROWSER_PLAN_FILE,
   browserPlanGrants,
   DANCE_PLAN_FILE,
+  grantPlanPreflightStatements,
   RUNTIME,
 } from "./production-database-cutover.ts";
 import { fileHash } from "./production-operation-evidence.ts";
@@ -32,4 +33,30 @@ test("committed plans retain accepted bytes and exactly five browser grants insi
   const noCommit = [...plan.statements];
   noCommit.pop();
   expect(() => browserPlanGrants(noCommit)).toThrow();
+});
+
+test("the actual Dance plan's grant helper calls start after the read-only preflight", () => {
+  const plan = JSON.parse(
+    readFileSync(new URL("./production-dance-grant-plan-333.json", import.meta.url), "utf8"),
+  );
+  expect(plan.plan.statements[3]).toBe(
+    `SELECT "api_next".grant_moderated_dance_runtime_v1('${RUNTIME}','account')`,
+  );
+  expect(grantPlanPreflightStatements(plan.plan.statements)).toEqual(
+    plan.plan.statements.slice(1, 3),
+  );
+  expect(grantPlanPreflightStatements(plan.plan.statements)[1]).toStartWith("DO $dance_release$");
+});
+
+test("the actual browser plan retains all read-only settings and its guard before direct grants", () => {
+  const plan = JSON.parse(
+    readFileSync(new URL("./browser-grant-plan-333.json", import.meta.url), "utf8"),
+  );
+  const preflight = grantPlanPreflightStatements(plan.statements);
+  expect(preflight).toEqual(plan.statements.slice(1, 5));
+  expect(preflight).toHaveLength(4);
+  expect(preflight.at(-1)).toStartWith("DO $browser_release$");
+  expect(() =>
+    grantPlanPreflightStatements(["BEGIN", "SET LOCAL search_path TO api_next", "COMMIT"]),
+  ).toThrow();
 });
