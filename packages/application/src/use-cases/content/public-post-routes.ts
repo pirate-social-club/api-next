@@ -6,7 +6,11 @@ import {
   type PublicPostSitemapPageV1,
 } from "@pirate/contracts";
 import { Effect } from "effect";
-import type { ContentStoreService, LocalizedPostDocument } from "../../ports.ts";
+import type {
+  CommunityStoreService,
+  ContentStoreService,
+  LocalizedPostDocument,
+} from "../../ports.ts";
 import { hasDescriptivePostSlugPolicy, isLogicalPostSlug } from "../../post-slug.ts";
 import type { VideoDetailStore } from "./video-detail.ts";
 
@@ -59,6 +63,7 @@ export type PublicPostRouteServices = Readonly<{
   readonly videoDetailStore?: VideoDetailStore;
   readonly publicPostRouteStore: PublicPostRouteStoreService;
   readonly contentStore: Pick<ContentStoreService, "getPost">;
+  readonly communityStore: Pick<CommunityStoreService, "getPreview">;
 }>;
 
 const ANONYMOUS_VIEWER_ID = "public-post-anonymous";
@@ -111,6 +116,7 @@ const projectLiveRecord = (
   live: PublicPostLiveRecord,
   locale: string | undefined,
   contentStore: Pick<ContentStoreService, "getPost">,
+  communityStore: Pick<CommunityStoreService, "getPreview">,
 ): Effect.Effect<PublicPostRouteResultV1, InternalError | NotFound> =>
   Effect.gen(function* () {
     if (
@@ -148,7 +154,22 @@ const projectLiveRecord = (
     if (projected.post.id !== live.post.postId) {
       return yield* new InternalError({ message: "Public post route lookup failed" });
     }
-    return contentResult(live, projected);
+    const community = yield* communityStore
+      .getPreview({
+        communityId: live.post.communityId,
+        ...(locale === undefined ? {} : { locale }),
+        ...(live.viewer.userId === undefined ? {} : { viewerUserId: live.viewer.userId }),
+      })
+      .pipe(
+        Effect.mapError(
+          () => new InternalError({ message: "Public post community lookup failed" }),
+        ),
+      );
+    if (community === null) return yield* notFound();
+    if (community.id !== live.post.communityId) {
+      return yield* new InternalError({ message: "Public post community lookup failed" });
+    }
+    return contentResult(live, { ...projected, community });
   });
 
 export const getPublicPostBySlug = Effect.fn("getPublicPostBySlug")(function* (
@@ -180,7 +201,12 @@ export const getPublicPostBySlug = Effect.fn("getPublicPostBySlug")(function* (
     })
     .pipe(Effect.mapError(storeFailure));
   if (live === null) return yield* notFound();
-  return yield* projectLiveRecord(live, input.locale, services.contentStore);
+  return yield* projectLiveRecord(
+    live,
+    input.locale,
+    services.contentStore,
+    services.communityStore,
+  );
 });
 
 export const getPublicPostCanonicalRouteById = Effect.fn("getPublicPostCanonicalRouteById")(
@@ -217,7 +243,12 @@ export const getPublicPostCanonicalRouteById = Effect.fn("getPublicPostCanonical
       })
       .pipe(Effect.mapError(storeFailure));
     if (live === null) return yield* notFound();
-    return yield* projectLiveRecord(live, input.locale, services.contentStore);
+    return yield* projectLiveRecord(
+      live,
+      input.locale,
+      services.contentStore,
+      services.communityStore,
+    );
   },
 );
 

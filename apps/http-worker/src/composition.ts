@@ -1367,6 +1367,7 @@ export async function createProductionHttpWorker(
     canonicalCommunityRouteStore: makeControlPlaneCanonicalCommunityRouteStore(controlPlane),
   });
   const publicPostRouteHandlers = makePublicPostRouteHandlers({
+    communityStore,
     videoDetailStore: makeControlPlaneVideoDetailStore(controlPlane),
     publicPostRouteStore: makeControlPlanePublicPostSlugStore(controlPlane),
     contentStore,
