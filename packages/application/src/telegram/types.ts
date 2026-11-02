@@ -3,6 +3,7 @@ import type {
   TelegramChannelSetup,
   TelegramDelivery,
   TelegramIntegration,
+  TelegramStudySettings,
 } from "@pirate/contracts";
 import type { TelegramMessage } from "@pirate/domain/telegram";
 import { Data } from "effect";
@@ -53,6 +54,8 @@ export type IntegrationRecord = {
   channelTitle: string | null;
   channelUsername: string | null;
   automaticSince: string | null;
+  /** Absent on pre-Study records. A replacement bot requires new owner intent. */
+  study?: { enabled: boolean; botId: string | null };
   policy: CommunityAssistantPolicy;
   credentials: Partial<Record<Provider, StoredCredential>>;
   lastError: string | null;
@@ -269,6 +272,15 @@ export interface TelegramLanguageSender {
 
 export interface TelegramServices {
   study?: import("../telegram-study.ts").TelegramStudyServices;
+  communityStudy?: {
+    resolve(
+      communityId: string,
+    ): Promise<import("../telegram-study.ts").TelegramStudyServices | undefined>;
+    catalogue(
+      communityId: string,
+      after?: string,
+    ): Promise<import("../telegram-study.ts").TelegramStudyCataloguePage>;
+  };
   store: TelegramStore;
   api: TelegramApi;
   providers: AssistantProviders;
@@ -304,5 +316,15 @@ export function integrationView(record: IntegrationRecord): TelegramIntegration 
     openrouter: credential("openrouter"),
     elevenlabs: credential("elevenlabs"),
     last_error: record.lastError,
+  };
+}
+
+export function telegramStudyView(record: IntegrationRecord): TelegramStudySettings {
+  return {
+    integration: integrationView(record),
+    enabled:
+      record.study?.enabled === true &&
+      record.botId !== null &&
+      record.study.botId === record.botId,
   };
 }

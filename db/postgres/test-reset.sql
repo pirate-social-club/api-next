@@ -560,6 +560,7 @@ TRUNCATE TABLE
   "study_exercise_versions",
   "study_language_profile_units",
   "study_language_profiles",
+  "study_learner_catalogue_decisions",
   "study_lesson_item_state_v2",
   "study_presentations_v2",
   "study_review_items",

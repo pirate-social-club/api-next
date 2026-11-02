@@ -24,6 +24,11 @@ export type TelegramStudyReply = Schema.Schema.Type<typeof TelegramStudyReply>;
 export const TelegramStudyState = Schema.Struct({
   token: Schema.String,
   songs: Schema.Array(Schema.Struct({ postId: Schema.String, title: Schema.String })),
+  catalogueAfter: Schema.optional(Schema.NullOr(Schema.String)),
+  catalogueNext: Schema.optional(Schema.NullOr(Schema.String)),
+  catalogueHistory: Schema.optional(
+    Schema.Array(Schema.NullOr(Schema.String)).check(Schema.isMaxLength(100)),
+  ),
   selectedPostId: Schema.NullOr(Schema.String),
   selectionInboxId: Schema.NullOr(Schema.String),
   navigationUrl: Schema.NullOr(Schema.String),
@@ -117,11 +122,16 @@ export interface TelegramStudyStore {
   save(lease: TelegramStudyLease, state: TelegramStudyState): Promise<void>;
   release(lease: TelegramStudyLease): Promise<void>;
   catalogue(communityId: string): Promise<readonly { postId: string; title: string }[]>;
+  cataloguePage?(communityId: string, after?: string): Promise<TelegramStudyCataloguePage>;
   ready(communityId: string, postId: string): Promise<boolean>;
   /** The message id of this turn's delivered force-reply prompt in this chat, if it is one. */
   promptMessageId(deliveryId: string, chatId: string, promptText?: string): Promise<number | null>;
   expired(sessionId: string): Promise<boolean>;
   cleanup(): Promise<void>;
+}
+export interface TelegramStudyCataloguePage {
+  readonly items: readonly { postId: string; title: string }[];
+  readonly nextCursor: string | null;
 }
 export interface TelegramStudyServices {
   readonly communityId: string;

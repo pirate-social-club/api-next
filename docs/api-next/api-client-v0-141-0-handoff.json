@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.141.0",
+  "sourceBranch": "feat/telegram-community-study-production",
+  "sourceBase": "0222c5310db1c4438e0d9980840c20d8b662114d",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Preserves client140 and adds the owner-only Telegram Study enablement command and bounded catalogue read. Telegram integration responses add study_enabled, reflecting current-bot owner intent. Catalogue reads distinguish runtime unavailable from available empty and expose only eligible ready songs with bounded keyset pagination. No owner policy-approval or reward endpoint is added.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.141.0.tgz",
+    "sha256": "5d7d0d51006ad2a8c4d8c073bca3a31428e1bbb3bb1c0c4599777de7d49e3a07"
+  },
+  "validation": {
+    "status": "Source candidate. Focused unit, type/Effect and actual PostgreSQL serving-role tests run locally; complete repository checks, exact-commit independent review and hosted checks remain required.",
+    "operationalBoundary": "Default-off community practice; staging pilot fence retained. The unseeded learner decision mechanism accepts no real policy or song. No runtime, credentials, deployment, grants, production activation or financial operation."
+  }
+}

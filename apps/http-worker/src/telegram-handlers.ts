@@ -6,12 +6,14 @@ import {
   disconnectTelegram,
   getTelegramSettings,
   getTelegramSetup,
+  getTelegramStudyCatalogue,
   listAssistantOptions,
   reconcileTelegramPublication,
   setAssistantCredential,
   TelegramFailure,
   type TelegramServices,
   updateTelegramSettings,
+  updateTelegramStudy,
 } from "@pirate/application/telegram";
 import {
   AuthError,
@@ -90,6 +92,18 @@ export function makeTelegramHandlers(
         token: (request.body as { token: string }).token,
       }),
     DisconnectCommunityTelegram: (request) => disconnectTelegram(required(), command(request)),
+    UpdateCommunityTelegramStudy: (request) =>
+      updateTelegramStudy(required(), {
+        ...command(request),
+        enabled: (request.body as { enabled: boolean }).enabled,
+      }),
+    GetCommunityTelegramStudyCatalogue: (request) =>
+      getTelegramStudyCatalogue(
+        required(),
+        path(request).communityId,
+        account(request),
+        (request.query as { after?: string } | undefined)?.after,
+      ),
     UpdateCommunityTelegram: (request) =>
       updateTelegramSettings(required(), {
         ...command(request),
