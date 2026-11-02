@@ -16,6 +16,7 @@ import {
   TelegramFailure,
   type TelegramServices,
   type TelegramStore,
+  telegramStudyView,
 } from "./types.ts";
 
 const integration: IntegrationRecord = {
@@ -114,8 +115,8 @@ test("Study intent uses owner authorization, revision and replay without provide
     idempotency_key: "enable",
     enabled: true,
   };
-  expect((await updateTelegramStudy(service, command)).study_enabled).toBe(true);
-  expect((await updateTelegramStudy(service, command)).revision).toBe(2);
+  expect((await updateTelegramStudy(service, command)).enabled).toBe(true);
+  expect((await updateTelegramStudy(service, command)).integration.revision).toBe(2);
   await expect(updateTelegramStudy(service, { ...command, enabled: false })).rejects.toMatchObject({
     reason: "conflict",
   });
@@ -126,6 +127,7 @@ test("Study intent uses owner authorization, revision and replay without provide
     updateTelegramStudy(service, { ...command, idempotency_key: "stale" }),
   ).rejects.toMatchObject({ reason: "conflict" });
   expect(await getTelegramStudyCatalogue(service, "community", "owner")).toEqual({
+    ...telegramStudyView(current),
     availability: "unavailable",
     items: [],
     next_cursor: null,
@@ -138,36 +140,27 @@ test("Study intent uses owner authorization, revision and replay without provide
     call: async <T>() => ({ id: 123, is_bot: true, username: "fixture_bot" }) as T,
   };
   service.vault.seal = async () => "sealed";
-  expect(
-    (
-      await connectTelegram(service, {
-        ...command,
-        expected_revision: 2,
-        idempotency_key: "rotate",
-        token: "fixture",
-      })
-    ).study_enabled,
-  ).toBe(true);
+  await connectTelegram(service, {
+    ...command,
+    expected_revision: 2,
+    idempotency_key: "rotate",
+    token: "fixture",
+  });
+  expect(telegramStudyView(current).enabled).toBe(true);
   service.api.call = async <T>() => ({ id: 456, is_bot: true, username: "replacement_bot" }) as T;
-  expect(
-    (
-      await connectTelegram(service, {
-        ...command,
-        expected_revision: 3,
-        idempotency_key: "replace",
-        token: "replacement",
-      })
-    ).study_enabled,
-  ).toBe(false);
-  expect(
-    (
-      await disconnectTelegram(service, {
-        ...command,
-        expected_revision: 4,
-        idempotency_key: "disconnect",
-      })
-    ).study_enabled,
-  ).toBe(false);
+  await connectTelegram(service, {
+    ...command,
+    expected_revision: 3,
+    idempotency_key: "replace",
+    token: "replacement",
+  });
+  expect(telegramStudyView(current).enabled).toBe(false);
+  await disconnectTelegram(service, {
+    ...command,
+    expected_revision: 4,
+    idempotency_key: "disconnect",
+  });
+  expect(telegramStudyView(current).enabled).toBe(false);
 });
 
 test("wrong webhook secret never persists an update", async () => {

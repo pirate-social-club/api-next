@@ -5,6 +5,7 @@ import {
   type Provider,
   TelegramFailure,
   type TelegramServices,
+  telegramStudyView,
 } from "./types.ts";
 
 type Command = {
@@ -212,17 +213,17 @@ export async function updateTelegramStudy(
     operation: "study",
     enabled: command.enabled,
   });
-  if (prepared.replay) return integrationView(prepared.record);
+  if (prepared.replay) return telegramStudyView(prepared.record);
   if (command.enabled && (prepared.record.status !== "ready" || prepared.record.botId === null))
     throw new TelegramFailure({ reason: "invalid" });
-  return save(
-    services,
-    command,
-    {
-      ...prepared.record,
-      study: { enabled: command.enabled, botId: prepared.record.botId },
-    },
-    prepared.hash,
+  return telegramStudyView(
+    await services.store.saveIntegration(
+      { ...prepared.record, study: { enabled: command.enabled, botId: prepared.record.botId } },
+      command.expected_revision,
+      command.idempotency_key,
+      prepared.hash,
+      command.accountId,
+    ),
   );
 }
 
@@ -233,10 +234,12 @@ export async function getTelegramStudyCatalogue(
   after?: string,
 ) {
   await services.store.owner(communityId, accountId);
+  const snapshot = telegramStudyView(await services.store.integration(communityId));
   if (!services.communityStudy)
-    return { availability: "unavailable" as const, items: [], next_cursor: null };
+    return { ...snapshot, availability: "unavailable" as const, items: [], next_cursor: null };
   const page = await services.communityStudy.catalogue(communityId, after);
   return {
+    ...snapshot,
     availability: "available" as const,
     items: page.items.map((song) => ({ post_id: song.postId, title: song.title })),
     next_cursor: page.nextCursor,

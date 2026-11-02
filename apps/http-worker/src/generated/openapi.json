@@ -72422,9 +72422,6 @@
                     "automatic_publishing": {
                       "type": "boolean"
                     },
-                    "study_enabled": {
-                      "type": "boolean"
-                    },
                     "assistant": {
                       "type": "object",
                       "properties": {
@@ -72544,7 +72541,6 @@
                     "bot_username",
                     "channel",
                     "automatic_publishing",
-                    "study_enabled",
                     "assistant",
                     "openrouter",
                     "elevenlabs",
@@ -73091,9 +73087,6 @@
                     "automatic_publishing": {
                       "type": "boolean"
                     },
-                    "study_enabled": {
-                      "type": "boolean"
-                    },
                     "assistant": {
                       "type": "object",
                       "properties": {
@@ -73213,7 +73206,6 @@
                     "bot_username",
                     "channel",
                     "automatic_publishing",
-                    "study_enabled",
                     "assistant",
                     "openrouter",
                     "elevenlabs",
@@ -73849,9 +73841,6 @@
                     "automatic_publishing": {
                       "type": "boolean"
                     },
-                    "study_enabled": {
-                      "type": "boolean"
-                    },
                     "assistant": {
                       "type": "object",
                       "properties": {
@@ -73971,7 +73960,6 @@
                     "bot_username",
                     "channel",
                     "automatic_publishing",
-                    "study_enabled",
                     "assistant",
                     "openrouter",
                     "elevenlabs",
@@ -74439,204 +74427,213 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "community_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
+                    "integration": {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
                         },
-                        {
-                          "maxLength": 128
-                        }
-                      ]
-                    },
-                    "revision": {
-                      "type": "integer",
-                      "allOf": [
-                        {
-                          "minimum": 0
-                        }
-                      ]
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "disconnected",
-                        "configuring",
-                        "ready",
-                        "error"
-                      ]
-                    },
-                    "bot_username": {
-                      "anyOf": [
-                        {
-                          "type": "string"
+                        "revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "channel": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "title": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "disconnected",
+                            "configuring",
+                            "ready",
+                            "error"
+                          ]
+                        },
+                        "bot_username": {
+                          "anyOf": [
+                            {
                               "type": "string"
                             },
-                            "username": {
-                              "anyOf": [
-                                {
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "channel": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "title": {
                                   "type": "string"
                                 },
+                                "username": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "title",
+                                "username"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "automatic_publishing": {
+                          "type": "boolean"
+                        },
+                        "assistant": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "model": {
+                              "type": "string",
+                              "allOf": [
                                 {
-                                  "type": "null"
+                                  "maxLength": 200
                                 }
                               ]
+                            },
+                            "instructions": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "maxLength": 4000
+                                }
+                              ]
+                            },
+                            "voice_enabled": {
+                              "type": "boolean"
+                            },
+                            "voice_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "voice_model": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "voice_reply_mode": {
+                              "type": "string",
+                              "enum": [
+                                "match_input",
+                                "always",
+                                "on_request"
+                              ]
+                            },
+                            "user_daily_messages": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 100000
+                                }
+                              ]
+                            },
+                            "community_daily_messages": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 100000
+                                }
+                              ]
+                            },
+                            "daily_speech_characters": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 100000
+                                }
+                              ]
+                            },
+                            "remember_conversations": {
+                              "type": "boolean"
                             }
                           },
                           "required": [
-                            "title",
-                            "username"
+                            "enabled",
+                            "model",
+                            "instructions",
+                            "voice_enabled",
+                            "voice_id",
+                            "voice_model",
+                            "voice_reply_mode",
+                            "user_daily_messages",
+                            "community_daily_messages",
+                            "daily_speech_characters",
+                            "remember_conversations"
                           ],
                           "additionalProperties": false
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "automatic_publishing": {
-                      "type": "boolean"
-                    },
-                    "study_enabled": {
-                      "type": "boolean"
-                    },
-                    "assistant": {
-                      "type": "object",
-                      "properties": {
-                        "enabled": {
-                          "type": "boolean"
+                        "openrouter": {
+                          "$ref": "#/components/schemas/_5b__22_POST_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_telegram_2f_study_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
                         },
-                        "model": {
-                          "type": "string",
-                          "allOf": [
+                        "elevenlabs": {
+                          "$ref": "#/components/schemas/_5b__22_POST_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_telegram_2f_study_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                        },
+                        "last_error": {
+                          "anyOf": [
                             {
-                              "maxLength": 200
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
                             }
                           ]
-                        },
-                        "instructions": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "maxLength": 4000
-                            }
-                          ]
-                        },
-                        "voice_enabled": {
-                          "type": "boolean"
-                        },
-                        "voice_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "maxLength": 128
-                            }
-                          ]
-                        },
-                        "voice_model": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "maxLength": 128
-                            }
-                          ]
-                        },
-                        "voice_reply_mode": {
-                          "type": "string",
-                          "enum": [
-                            "match_input",
-                            "always",
-                            "on_request"
-                          ]
-                        },
-                        "user_daily_messages": {
-                          "type": "integer",
-                          "allOf": [
-                            {
-                              "minimum": 1,
-                              "maximum": 100000
-                            }
-                          ]
-                        },
-                        "community_daily_messages": {
-                          "type": "integer",
-                          "allOf": [
-                            {
-                              "minimum": 1,
-                              "maximum": 100000
-                            }
-                          ]
-                        },
-                        "daily_speech_characters": {
-                          "type": "integer",
-                          "allOf": [
-                            {
-                              "minimum": 1,
-                              "maximum": 100000
-                            }
-                          ]
-                        },
-                        "remember_conversations": {
-                          "type": "boolean"
                         }
                       },
                       "required": [
-                        "enabled",
-                        "model",
-                        "instructions",
-                        "voice_enabled",
-                        "voice_id",
-                        "voice_model",
-                        "voice_reply_mode",
-                        "user_daily_messages",
-                        "community_daily_messages",
-                        "daily_speech_characters",
-                        "remember_conversations"
+                        "community_id",
+                        "revision",
+                        "status",
+                        "bot_username",
+                        "channel",
+                        "automatic_publishing",
+                        "assistant",
+                        "openrouter",
+                        "elevenlabs",
+                        "last_error"
                       ],
                       "additionalProperties": false
                     },
-                    "openrouter": {
-                      "$ref": "#/components/schemas/_5b__22_POST_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_telegram_2f_study_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
-                    },
-                    "elevenlabs": {
-                      "$ref": "#/components/schemas/_5b__22_POST_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_telegram_2f_study_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
-                    },
-                    "last_error": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
+                    "enabled": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
-                    "community_id",
-                    "revision",
-                    "status",
-                    "bot_username",
-                    "channel",
-                    "automatic_publishing",
-                    "study_enabled",
-                    "assistant",
-                    "openrouter",
-                    "elevenlabs",
-                    "last_error"
+                    "integration",
+                    "enabled"
                   ],
                   "additionalProperties": false
                 }
@@ -75085,6 +75082,209 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "integration": {
+                      "type": "object",
+                      "properties": {
+                        "community_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            },
+                            {
+                              "maxLength": 128
+                            }
+                          ]
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "disconnected",
+                            "configuring",
+                            "ready",
+                            "error"
+                          ]
+                        },
+                        "bot_username": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "channel": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "title": {
+                                  "type": "string"
+                                },
+                                "username": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "title",
+                                "username"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "automatic_publishing": {
+                          "type": "boolean"
+                        },
+                        "assistant": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "model": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "maxLength": 200
+                                }
+                              ]
+                            },
+                            "instructions": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "maxLength": 4000
+                                }
+                              ]
+                            },
+                            "voice_enabled": {
+                              "type": "boolean"
+                            },
+                            "voice_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "voice_model": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "maxLength": 128
+                                }
+                              ]
+                            },
+                            "voice_reply_mode": {
+                              "type": "string",
+                              "enum": [
+                                "match_input",
+                                "always",
+                                "on_request"
+                              ]
+                            },
+                            "user_daily_messages": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 100000
+                                }
+                              ]
+                            },
+                            "community_daily_messages": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 100000
+                                }
+                              ]
+                            },
+                            "daily_speech_characters": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 100000
+                                }
+                              ]
+                            },
+                            "remember_conversations": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "enabled",
+                            "model",
+                            "instructions",
+                            "voice_enabled",
+                            "voice_id",
+                            "voice_model",
+                            "voice_reply_mode",
+                            "user_daily_messages",
+                            "community_daily_messages",
+                            "daily_speech_characters",
+                            "remember_conversations"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "openrouter": {
+                          "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_telegram_2f_study_2f_catalogue_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                        },
+                        "elevenlabs": {
+                          "$ref": "#/components/schemas/_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_telegram_2f_study_2f_catalogue_22__2c__22_response_22__2c__22_200_22__5d_/%24defs/Objects_"
+                        },
+                        "last_error": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "community_id",
+                        "revision",
+                        "status",
+                        "bot_username",
+                        "channel",
+                        "automatic_publishing",
+                        "assistant",
+                        "openrouter",
+                        "elevenlabs",
+                        "last_error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
                     "availability": {
                       "type": "string",
                       "enum": [
@@ -75139,6 +75339,8 @@
                     }
                   },
                   "required": [
+                    "integration",
+                    "enabled",
                     "availability",
                     "items",
                     "next_cursor"
@@ -75673,9 +75875,6 @@
                     "automatic_publishing": {
                       "type": "boolean"
                     },
-                    "study_enabled": {
-                      "type": "boolean"
-                    },
                     "assistant": {
                       "type": "object",
                       "properties": {
@@ -75795,7 +75994,6 @@
                     "bot_username",
                     "channel",
                     "automatic_publishing",
-                    "study_enabled",
                     "assistant",
                     "openrouter",
                     "elevenlabs",
@@ -76351,9 +76549,6 @@
                     "automatic_publishing": {
                       "type": "boolean"
                     },
-                    "study_enabled": {
-                      "type": "boolean"
-                    },
                     "assistant": {
                       "type": "object",
                       "properties": {
@@ -76473,7 +76668,6 @@
                     "bot_username",
                     "channel",
                     "automatic_publishing",
-                    "study_enabled",
                     "assistant",
                     "openrouter",
                     "elevenlabs",
@@ -78914,9 +79108,6 @@
                     "automatic_publishing": {
                       "type": "boolean"
                     },
-                    "study_enabled": {
-                      "type": "boolean"
-                    },
                     "assistant": {
                       "type": "object",
                       "properties": {
@@ -79036,7 +79227,6 @@
                     "bot_username",
                     "channel",
                     "automatic_publishing",
-                    "study_enabled",
                     "assistant",
                     "openrouter",
                     "elevenlabs",
@@ -247169,6 +247359,38 @@
         }
       },
       "_5b__22_POST_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_telegram_2f_study_22__2c__22_response_22__2c__22_200_22__5d_": {
+        "$defs": {
+          "Objects_": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "missing",
+                  "valid",
+                  "invalid"
+                ]
+              },
+              "checked_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "status",
+              "checked_at"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "_5b__22_GET_22__2c__22__2f_communities_2f__7b_communityId_7d__2f_telegram_2f_study_2f_catalogue_22__2c__22_response_22__2c__22_200_22__5d_": {
         "$defs": {
           "Objects_": {
             "type": "object",

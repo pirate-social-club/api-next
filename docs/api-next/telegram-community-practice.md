@@ -17,3 +17,5 @@ GET /communities/:communityId/telegram/study/catalogue is owner-only and private
 Every new session in this increment remains practice-only, including linked accounts. Migrations 0239 and 0246 are unchanged. Existing Study sessions, completed history and reward rules are not rewritten. Recovery and prospective rewards remain a later increment.
 
 Qualification includes actual PostgreSQL serving-role reads and session creation, missing intent, bot mismatch, disable, latest denial and reconnect refusal, immutable decision history and a real ninth-song start. The unchanged pilot webhook and restricted-learner suites remain acceptance checks. Source qualification does not establish production bot integration, secrets binding, policy acceptance, activation, phone acceptance of this new mode or financial acceptance.
+
+The existing Telegram integration response is unchanged. The new Study command and catalogue read return `integration` plus `enabled`, binding current-bot intent to the integration revision. Candidate client 0.141.0 is retained as rejected compatibility evidence; 0.141.1 supersedes it without changing its bytes.

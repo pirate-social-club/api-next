@@ -3,6 +3,7 @@ import type {
   TelegramChannelSetup,
   TelegramDelivery,
   TelegramIntegration,
+  TelegramStudySettings,
 } from "@pirate/contracts";
 import type { TelegramMessage } from "@pirate/domain/telegram";
 import { Data } from "effect";
@@ -311,13 +312,19 @@ export function integrationView(record: IntegrationRecord): TelegramIntegration 
         ? null
         : { title: record.channelTitle ?? "Channel", username: record.channelUsername },
     automatic_publishing: record.automaticSince !== null,
-    study_enabled:
-      record.study?.enabled === true &&
-      record.botId !== null &&
-      record.study.botId === record.botId,
     assistant: record.policy,
     openrouter: credential("openrouter"),
     elevenlabs: credential("elevenlabs"),
     last_error: record.lastError,
+  };
+}
+
+export function telegramStudyView(record: IntegrationRecord): TelegramStudySettings {
+  return {
+    integration: integrationView(record),
+    enabled:
+      record.study?.enabled === true &&
+      record.botId !== null &&
+      record.study.botId === record.botId,
   };
 }

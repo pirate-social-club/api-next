@@ -56,13 +56,16 @@ export const TelegramIntegration = Schema.Struct({
     Schema.Struct({ title: Schema.String, username: Schema.NullOr(Schema.String) }),
   ),
   automatic_publishing: Schema.Boolean,
-  study_enabled: Schema.Boolean,
   assistant: CommunityAssistantPolicy,
   openrouter: TelegramCredentialStatus,
   elevenlabs: TelegramCredentialStatus,
   last_error: Schema.NullOr(Schema.String),
 });
 export type TelegramIntegration = Schema.Schema.Type<typeof TelegramIntegration>;
+
+const TelegramStudyFields = { integration: TelegramIntegration, enabled: Schema.Boolean };
+export const TelegramStudySettings = Schema.Struct(TelegramStudyFields);
+export type TelegramStudySettings = Schema.Schema.Type<typeof TelegramStudySettings>;
 
 export const TelegramDelivery = Schema.Struct({
   id: Id,
@@ -131,7 +134,7 @@ export const UpdateCommunityTelegramStudy = endpoint({
   auth: Auth.user({ browserSessionOnly: true }),
   cacheControl: "private, no-store",
   request: { path: Path, body: Schema.Struct({ ...Fence, enabled: Schema.Boolean }) },
-  response: TelegramIntegration,
+  response: TelegramStudySettings,
   errors,
 });
 export const GetCommunityTelegramStudyCatalogue = endpoint({
@@ -141,6 +144,7 @@ export const GetCommunityTelegramStudyCatalogue = endpoint({
   cacheControl: "private, no-store",
   request: { path: Path, query: Schema.Struct({ after: Schema.optional(Id) }) },
   response: Schema.Struct({
+    ...TelegramStudyFields,
     availability: Schema.Literals(["available", "unavailable"]),
     items: Schema.Array(Schema.Struct({ post_id: Id, title: Schema.String })),
     next_cursor: Schema.NullOr(Id),
