@@ -90504,6 +90504,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "public_route_href": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         },
@@ -90520,6 +90530,7 @@
                         "generation",
                         "status",
                         "canonical_route",
+                        "public_route_href",
                         "replayed",
                         "retry_after_seconds",
                         "result_hash"
@@ -90766,6 +90777,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "public_route_href": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         },
@@ -90782,6 +90803,7 @@
                         "generation",
                         "status",
                         "canonical_route",
+                        "public_route_href",
                         "replayed",
                         "retry_after_seconds",
                         "result_hash"
@@ -91262,6 +91284,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "public_route_href": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         },
@@ -91278,6 +91310,7 @@
                         "generation",
                         "status",
                         "canonical_route",
+                        "public_route_href",
                         "replayed",
                         "retry_after_seconds",
                         "result_hash"
@@ -91631,6 +91664,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "public_route_href": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         },
@@ -91647,6 +91690,7 @@
                         "generation",
                         "status",
                         "canonical_route",
+                        "public_route_href",
                         "replayed",
                         "retry_after_seconds",
                         "result_hash"

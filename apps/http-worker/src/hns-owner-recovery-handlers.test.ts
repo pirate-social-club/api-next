@@ -510,6 +510,25 @@ describe("HNS owner-recovery HTTP handlers", () => {
     expect(decodePublic(replay.body)).toEqual(replay.body);
   });
 
+  test("keeps the public route link through endpoint decoding on a verified poll", async () => {
+    const stored = { ...(await storedStart()), terminal: null };
+    const handlers = makeHnsOwnerRecoveryHandlers({
+      start: startServices({ replay: stored }).services,
+      poll: pollServices(stored, bytes(positiveResponse)).services,
+    });
+    const response = asResult(await handlers.PollHnsOwnerRecovery(request(pollBody())));
+    expect(response.status).toBe(200);
+    const decoded = Schema.decodeUnknownSync(
+      PollHnsOwnerRecovery.response as unknown as Schema.ConstraintDecoder<unknown>,
+    )(response.body);
+    expect(decoded).toEqual(response.body);
+    expect(decoded).toMatchObject({
+      status: "verified",
+      canonical_route: { path_segment: "app.jazleeuw", href: "/c/app.jazleeuw" },
+      public_route_href: "/c/jazleeuw",
+    });
+  });
+
   test("derives the poll authority without accepting browser provider facts", async () => {
     const stored = { ...(await storedStart()), terminal: null };
     const poll = pollServices(
