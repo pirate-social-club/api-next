@@ -86,6 +86,14 @@ export type SongRewardOfferHandlers = Readonly<{
   GetRewardWinnerSend: EndpointHandler;
 }>;
 
+/** This projection must remain outside lazy provider/database initialization. */
+export function makeRewardServiceAvailabilityHandler(enabled: boolean): EndpointHandler {
+  return (request) => {
+    user(request.principal);
+    return withEndpointResult({ enabled }, 200, { "Cache-Control": "no-store" });
+  };
+}
+
 const rewardUnavailable = (): never => {
   throw new ProviderUnavailable({ message: "Reward services are unavailable" });
 };
