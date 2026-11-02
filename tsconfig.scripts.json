@@ -4,6 +4,7 @@
     "allowJs": true
   },
   "include": [
+    "scripts/public-post-http-release*.ts",
     "scripts/production-release/**/*.ts",
     "scripts/production-compatibility/**/*.ts",
     "scripts/recover-song-funding-cancellation.ts",
