@@ -90415,7 +90415,8 @@
                           "type": "string",
                           "enum": [
                             "root_unavailable",
-                            "expiry_insufficient"
+                            "expiry_insufficient",
+                            "source_ineligible"
                           ]
                         },
                         "replayed": {
@@ -90503,6 +90504,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "public_route_href": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         },
@@ -90519,6 +90530,7 @@
                         "generation",
                         "status",
                         "canonical_route",
+                        "public_route_href",
                         "replayed",
                         "retry_after_seconds",
                         "result_hash"
@@ -90676,7 +90688,8 @@
                           "type": "string",
                           "enum": [
                             "root_unavailable",
-                            "expiry_insufficient"
+                            "expiry_insufficient",
+                            "source_ineligible"
                           ]
                         },
                         "replayed": {
@@ -90764,6 +90777,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "public_route_href": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         },
@@ -90780,6 +90803,7 @@
                         "generation",
                         "status",
                         "canonical_route",
+                        "public_route_href",
                         "replayed",
                         "retry_after_seconds",
                         "result_hash"
@@ -91171,7 +91195,8 @@
                           "type": "string",
                           "enum": [
                             "root_unavailable",
-                            "expiry_insufficient"
+                            "expiry_insufficient",
+                            "source_ineligible"
                           ]
                         },
                         "replayed": {
@@ -91259,6 +91284,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "public_route_href": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         },
@@ -91275,6 +91310,7 @@
                         "generation",
                         "status",
                         "canonical_route",
+                        "public_route_href",
                         "replayed",
                         "retry_after_seconds",
                         "result_hash"
@@ -91539,7 +91575,8 @@
                           "type": "string",
                           "enum": [
                             "root_unavailable",
-                            "expiry_insufficient"
+                            "expiry_insufficient",
+                            "source_ineligible"
                           ]
                         },
                         "replayed": {
@@ -91627,6 +91664,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "public_route_href": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         },
@@ -91643,6 +91690,7 @@
                         "generation",
                         "status",
                         "canonical_route",
+                        "public_route_href",
                         "replayed",
                         "retry_after_seconds",
                         "result_hash"
