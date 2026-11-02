@@ -120,10 +120,76 @@ describe("HNS owner-recovery endpoint contracts", () => {
           href: "/c/app.jazleeuw",
           app_host: null,
         },
+        public_route_href: "/c/jazleeuw",
         replayed: false,
         retry_after_seconds: null,
         result_hash: "a".repeat(64),
       }),
     ).toBe(true);
+  });
+
+  test("carries the bare-root public link beside the authority route on verified polls", () => {
+    const verified = {
+      route_recovery_id: "recovery-1",
+      session_id: "session-1",
+      generation: 8,
+      status: "verified" as const,
+      canonical_route: {
+        family: "hns" as const,
+        root_label: "8s28",
+        root_label_display: "8s28",
+        path_segment: "app.8s28",
+        href: "/c/app.8s28",
+        app_host: null,
+      },
+      public_route_href: "/c/8s28",
+      replayed: true,
+      retry_after_seconds: null,
+      result_hash: "a".repeat(64),
+    };
+    const decodePoll = Schema.decodeUnknownSync(HnsOwnerRecoveryPollResponseV1);
+    expect(decodePoll(verified)).toEqual(verified);
+    expect(decodePoll({ ...verified, public_route_href: null })).toEqual({
+      ...verified,
+      public_route_href: null,
+    });
+    for (const public_route_href of ["/c/app.8s28", "/c/other", "/c/8s28/"]) {
+      expect(Schema.is(HnsOwnerRecoveryPollResponseV1)({ ...verified, public_route_href })).toBe(
+        false,
+      );
+    }
+    const { public_route_href: _omitted, ...withoutLink } = verified;
+    expect(Schema.is(HnsOwnerRecoveryPollResponseV1)(withoutLink)).toBe(false);
+  });
+
+  test("encodes every terminal rejected reason the application stores", () => {
+    for (const reason_code of ["root_unavailable", "expiry_insufficient", "source_ineligible"]) {
+      for (const replayed of [false, true]) {
+        expect(
+          Schema.is(HnsOwnerRecoveryPollResponseV1)({
+            route_recovery_id: "recovery-1",
+            session_id: "session-1",
+            generation: 8,
+            status: "rejected",
+            reason_code,
+            replayed,
+            retry_after_seconds: null,
+            result_hash: "a".repeat(64),
+          }),
+        ).toBe(true);
+      }
+    }
+    expect(
+      Schema.is(HnsOwnerRecoveryPollResponseV1)({
+        route_recovery_id: "recovery-1",
+        session_id: "session-1",
+        generation: 8,
+        status: "rejected",
+        reason_code: "owner_authoritative_source_ineligible",
+        replayed: false,
+        retry_after_seconds: null,
+        result_hash: "a".repeat(64),
+      }),
+    ).toBe(false);
   });
 });
