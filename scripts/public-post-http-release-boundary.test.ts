@@ -11,6 +11,7 @@ import {
 import { parseHttpReleaseArguments } from "./public-post-http-release.ts";
 import { HTTP_RELEASE, type HttpReview, sha256 } from "./public-post-http-release-core.ts";
 import {
+  publicPostBindingObservation,
   publicPostBindingProposal,
   publicPostProviderEnvironment,
   realHttpReleaseIo,
@@ -23,7 +24,7 @@ import {
 import type { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
 import type { withServingFunctionPrivilegesDeployment } from "./serving-function-privileges-preflight.ts";
 import type { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
-import type { Binding, CandidateBindings } from "./worker-binding-drift.ts";
+import { type Binding, type CandidateBindings, digest } from "./worker-binding-drift.ts";
 
 describe("HTTP release admission boundary", () => {
   const fixed = {
@@ -170,9 +171,9 @@ describe("HTTP release admission boundary", () => {
     await expect(realHttpReleaseIo(review).guardedUpload(async (send) => send())).rejects.toThrow(
       "bounded-child-required",
     );
-    await expect(realHttpReleaseIo(review).rollback(HTTP_RELEASE.baseline)).rejects.toThrow(
-      "bounded-child-required",
-    );
+    await expect(
+      realHttpReleaseIo(review).rollback(HTTP_RELEASE.baseline, async () => {}),
+    ).rejects.toThrow("bounded-child-required");
   });
   test("the managed login child strips injected credentials and disables credential-bearing logs", () => {
     const environment = publicPostProviderEnvironment({
@@ -206,6 +207,22 @@ describe("HTTP release admission boundary", () => {
       runtime: {},
       required_secrets: ["EXISTING_AUTH"],
     };
+    for (const change of [
+      { environment: "staging" },
+      { service: "foreign" },
+      { entrypoint: "Other" },
+    ]) {
+      const changed = [{ ...service, ...change }, flag, secret];
+      expect(() => publicPostBindingObservation(changed, candidate, false)).toThrow();
+      const observation = publicPostBindingObservation(changed, candidate, true);
+      expect(observation.verifierActual).toEqual({ ...service, ...change });
+      expect(digest(changed.map(observation.normalize))).not.toEqual(
+        digest(actual.map(observation.normalize)),
+      );
+    }
+    const missing = publicPostBindingObservation([flag, secret], candidate, true);
+    expect(missing.verifierActual).toBeNull();
+    expect(() => publicPostBindingObservation([flag, secret], candidate, false)).toThrow();
     expect(publicPostBindingProposal(actual, candidate).verifierActual.environment).toBe(
       "production",
     );

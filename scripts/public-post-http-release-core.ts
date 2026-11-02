@@ -46,7 +46,10 @@ export interface HttpSnapshot {
   readonly settings_sha256: string;
   readonly declared_comparable_sha256: string;
   readonly actual_comparable_sha256: string;
-  readonly verifier_representations: { readonly actual: Binding; readonly declared: Binding };
+  readonly verifier_representations: {
+    readonly actual: Binding | null;
+    readonly declared: Binding;
+  };
   readonly namespaces: readonly Binding[];
   readonly domains: readonly Record<string, unknown>[];
   readonly subdomain: unknown;
@@ -64,6 +67,11 @@ export interface HttpReview {
   readonly window_start: string;
   readonly window_end: string;
   readonly attempt_sha256?: string;
+  readonly recovery?: {
+    readonly version: string;
+    readonly attempt_sha256: string;
+    readonly configuration_sha256: string;
+  };
   readonly execution_tools: {
     readonly bun_path: string;
     readonly bun_sha256: string;
@@ -91,13 +99,15 @@ export interface HttpReleaseIo {
   readonly now: () => number;
   readonly candidate: () => Promise<HttpCandidate>;
   readonly collect: () => Promise<HttpSnapshot>;
+  /** Observation must remain possible when candidate acceptance fails. */
+  readonly observe: () => Promise<HttpSnapshot>;
   readonly read: (name: string) => unknown;
   readonly record: (name: string, value: unknown) => void;
   readonly guardedUpload: (
     commit: (send: () => Promise<UploadResult>) => Promise<UploadResult>,
-  ) => Promise<void>;
+  ) => Promise<{ readonly version: string }>;
   readonly modules: (version: string) => Promise<void>;
-  readonly rollback: (version: string) => Promise<UploadResult>;
+  readonly rollback: (version: string, recheck: () => Promise<void>) => Promise<UploadResult>;
 }
 
 function configuration(snapshot: HttpSnapshot) {
@@ -109,12 +119,13 @@ function configuration(snapshot: HttpSnapshot) {
     subdomain: snapshot.subdomain,
   };
 }
-export function assertBaseline(snapshot: HttpSnapshot) {
+export const configurationDigest = (snapshot: HttpSnapshot) => digest(configuration(snapshot));
+export function assertBaseline(snapshot: HttpSnapshot, latest = snapshot.version) {
   requireRelease(
     snapshot.version === HTTP_RELEASE.baseline && snapshot.message === `git:${HTTP_RELEASE.base}`,
     "baseline-version-or-source-changed",
   );
-  requireRelease(snapshot.latest === snapshot.version, "unserved-upload-exists");
+  requireRelease(snapshot.latest === latest, "unserved-upload-exists");
   requireRelease(
     snapshot.binding_runtime_sha256 === HTTP_RELEASE.bindings,
     "baseline-binding-or-runtime-drift",
@@ -174,7 +185,7 @@ function redact(result: UploadResult) {
   };
 }
 async function verify(io: HttpReleaseIo, before: HttpSnapshot) {
-  const after = await io.collect();
+  const after = await io.observe();
   requireRelease(
     after.version !== before.version &&
       after.message === `git:${HTTP_RELEASE.source}` &&
@@ -206,24 +217,55 @@ export async function publicPostHttpRelease(
     "candidate-differs",
   );
   if (mode === "snapshot") {
-    const before = await io.collect();
-    assertBaseline(before);
-    return { read_only: true, candidate, snapshot: before, snapshot_sha256: digest(before) };
+    const spent = io.read("upload-attempt.json");
+    const before = spent ? await io.observe() : await io.collect();
+    if (!spent) assertBaseline(before);
+    return {
+      read_only: true,
+      qualified: !spent,
+      candidate,
+      snapshot: before,
+      snapshot_sha256: digest(before),
+      configuration_sha256: configurationDigest(before),
+    };
   }
   requireRelease(review, "independent-review-required");
   assertReview(review, io.now(), mode === "apply" || mode === "rollback");
   requireRelease(candidate.tooling_source === review.tooling_source, "tooling-source-differs");
   if (mode === "verify") {
     const started = attempt(io),
-      current = await io.collect();
+      current = await io.observe();
     if (current.version === started.before.version) {
-      assertBaseline(current);
+      const acknowledgement = io.read("upload-acknowledgement.json") as
+        | { version: string; attempt_sha256: string }
+        | undefined;
+      const rollback = io.read("rollback-attempt.json") as
+        | { from: string; attempt_sha256: string }
+        | undefined;
+      const known = [
+        acknowledgement?.attempt_sha256 === digest(started) ? acknowledgement.version : undefined,
+        rollback?.attempt_sha256 === digest(started) ? rollback.from : undefined,
+      ];
+      requireRelease(
+        current.latest === current.version || known.includes(current.latest),
+        "unresolved-latest-upload",
+      );
+      assertBaseline(current, current.latest);
       requireRelease(
         isDeepStrictEqual(configuration(current), configuration(started.before)),
         "baseline-configuration-changed",
       );
       return { read_only: true, state: "baseline", version: current.version };
     }
+    const acknowledgement = io.read("upload-acknowledgement.json") as
+      | { version: string; attempt_sha256: string }
+      | undefined;
+    if (acknowledgement)
+      requireRelease(
+        acknowledgement.attempt_sha256 === digest(started) &&
+          acknowledgement.version === current.version,
+        "acknowledged-version-not-serving",
+      );
     const after = await verify(io, started.before);
     io.record(`verify-${io.now()}.json`, {
       source: candidate.source,
@@ -235,24 +277,60 @@ export async function publicPostHttpRelease(
   }
   if (mode === "rollback") {
     const started = attempt(io);
+    const recovery = review.recovery;
     requireRelease(
-      started.review_sha256 === reviewSha256 || review.attempt_sha256 === digest(started),
+      recovery?.attempt_sha256 === digest(started),
       "rollback-review-does-not-bind-attempt",
     );
-    const current = await verify(io, started.before);
-    requireRelease(current.version === from, "rollback-from-version-differs");
+    const current = await io.observe();
+    requireRelease(
+      current.version === from && current.version === recovery.version,
+      "rollback-from-version-differs",
+    );
+    requireRelease(
+      current.version !== HTTP_RELEASE.baseline &&
+        current.message === `git:${HTTP_RELEASE.source}` &&
+        current.latest === current.version,
+      "rollback-candidate-ownership-unresolved",
+    );
+    const acknowledgement = io.read("upload-acknowledgement.json") as
+      | { version: string; attempt_sha256: string }
+      | undefined;
+    requireRelease(
+      !acknowledgement ||
+        (acknowledgement.attempt_sha256 === digest(started) &&
+          acknowledgement.version === current.version),
+      "rollback-acknowledged-version-differs",
+    );
+    requireRelease(
+      configurationDigest(current) === recovery.configuration_sha256,
+      "rollback-configuration-not-reviewed",
+    );
+    requireRelease(isDeepStrictEqual(await io.observe(), current), "serving-version-moved");
     io.record("rollback-attempt.json", {
       at: new Date(io.now()).toISOString(),
       from,
+      observed: current,
+      configuration_sha256: configurationDigest(current),
       to: HTTP_RELEASE.baseline,
       attempt_sha256: digest(started),
       review_sha256: reviewSha256,
     });
-    const result = await io.rollback(HTTP_RELEASE.baseline);
+    const result = await io.rollback(HTTP_RELEASE.baseline, async () => {
+      assertReview(review, io.now(), true);
+      requireRelease(
+        isDeepStrictEqual(await io.observe(), current),
+        "serving-version-moved-before-rollback",
+      );
+      requireRelease(
+        isDeepStrictEqual(await io.candidate(), candidate),
+        "candidate-moved-before-rollback",
+      );
+    });
     io.record("rollback-command-result.json", redact(result));
     requireRelease(result.exitCode === 0, "rollback-unresolved-use-read-only-verify");
     const restored = await io.collect();
-    assertBaseline(restored);
+    assertBaseline(restored, current.version);
     requireRelease(
       isDeepStrictEqual(configuration(restored), configuration(started.before)),
       "rollback-configuration-differs",
@@ -264,7 +342,7 @@ export async function publicPostHttpRelease(
   const before = await io.collect();
   assertBaseline(before);
   requireRelease(digest(before) === review.snapshot_sha256, "reviewed-snapshot-differs");
-  await io.guardedUpload(async (send) => {
+  const acknowledgement = await io.guardedUpload(async (send) => {
     assertReview(review, io.now(), true);
     requireRelease(
       isDeepStrictEqual(await io.candidate(), candidate),
@@ -290,7 +368,18 @@ export async function publicPostHttpRelease(
     requireRelease(result.exitCode === 0, "upload-unresolved-use-read-only-verify");
     return result;
   });
+  requireRelease(
+    typeof acknowledgement.version === "string" &&
+      acknowledgement.version.length > 0 &&
+      acknowledgement.version !== before.version,
+    "invalid-upload-acknowledgement",
+  );
+  io.record("upload-acknowledgement.json", {
+    version: acknowledgement.version,
+    attempt_sha256: digest(attempt(io)),
+  });
   const after = await verify(io, before);
+  requireRelease(after.version === acknowledgement.version, "acknowledged-version-not-serving");
   requireRelease(
     isDeepStrictEqual(await io.candidate(), candidate),
     "candidate-moved-after-upload",

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  configurationDigest,
   HTTP_RELEASE,
   type HttpCandidate,
   type HttpReleaseIo,
@@ -82,6 +83,7 @@ function fixture() {
     now: () => state.now,
     candidate: async () => state.candidate,
     collect: async () => state.current,
+    observe: async () => state.current,
     read: (name) => records.get(name),
     record: (name, value) => {
       if (records.has(name)) throw Error("exclusive record already exists");
@@ -104,20 +106,42 @@ function fixture() {
         if (state.throwUpload) throw Error("connection lost after upload");
         return { exitCode: state.exit, stdout: "provider output", stderr: "" };
       });
+      return { version: state.current.version };
     },
     modules: async (version) => {
       events.push(`modules:${version}`);
       if (state.failModules) throw Error("module bytes differ");
     },
-    rollback: async (version) => {
+    rollback: async (version, recheck) => {
+      await recheck();
       events.push(`rollback:${version}`);
-      state.current = baseline;
+      state.current = {
+        ...baseline,
+        latest: state.current.latest,
+        deployment: "rollback-deployment",
+      };
       return { exitCode: 0, stdout: "", stderr: "" };
     },
   };
+  const recover = (from = "candidate-version", patch = {}) =>
+    publicPostHttpRelease(
+      "rollback",
+      {
+        ...review,
+        recovery: {
+          version: "candidate-version",
+          attempt_sha256: digest(records.get("upload-attempt.json")),
+          configuration_sha256: configurationDigest(state.current),
+          ...patch,
+        },
+      },
+      "c".repeat(64),
+      io,
+      from,
+    );
   const run = (mode: "snapshot" | "apply" | "verify" | "rollback", from?: string) =>
     publicPostHttpRelease(mode, review, reviewSha, io, from);
-  return { baseline, review, state, records, events, io, run };
+  return { baseline, review, state, records, events, io, run, recover };
 }
 
 describe("fixed public-post HTTP operation", () => {
@@ -232,17 +256,96 @@ describe("fixed public-post HTTP operation", () => {
   test("rollback verifies the attempted candidate and cannot target an unrelated version", async () => {
     const f = fixture();
     await f.run("apply");
-    await expect(f.run("rollback", "another-version")).rejects.toThrow(
-      "rollback-from-version-differs",
-    );
+    await expect(f.recover("another-version")).rejects.toThrow("rollback-from-version-differs");
     expect(f.records.has("rollback-attempt.json")).toBe(false);
-    await expect(f.run("rollback", "candidate-version")).resolves.toMatchObject({
+    await expect(f.recover()).resolves.toMatchObject({
       rolled_back: true,
       version: HTTP_RELEASE.baseline,
     });
     expect(f.events.filter((value) => value.startsWith("rollback:"))).toEqual([
       `rollback:${HTTP_RELEASE.baseline}`,
     ]);
+    await expect(f.run("verify")).resolves.toMatchObject({ state: "baseline" });
+  });
+  test("persistent module failure remains recoverable with exact independent recovery review", async () => {
+    const f = fixture();
+    f.state.failModules = true;
+    await expect(f.run("apply")).rejects.toThrow("module bytes differ");
+    await expect(f.run("rollback", "candidate-version")).rejects.toThrow(
+      "rollback-review-does-not-bind-attempt",
+    );
+    await expect(f.recover()).resolves.toMatchObject({ rolled_back: true });
+    expect(f.state.failModules).toBe(true);
+    expect(f.state.current.latest).toBe("candidate-version");
+    await expect(f.run("verify")).resolves.toMatchObject({ state: "baseline" });
+    await expect(f.run("apply")).rejects.toThrow("upload-attempt-spent");
+  });
+  test("configuration postcheck failure requires the exact observed recovery configuration", async () => {
+    const f = fixture();
+    await f.run("apply");
+    f.state.current = { ...f.state.current, settings_sha256: "drift" };
+    await expect(f.run("verify")).rejects.toThrow("serving-configuration-changed");
+    await expect(f.run("snapshot")).resolves.toMatchObject({
+      qualified: false,
+      configuration_sha256: configurationDigest(f.state.current),
+    });
+    await expect(
+      f.recover("candidate-version", { configuration_sha256: configurationDigest(f.baseline) }),
+    ).rejects.toThrow("rollback-configuration-not-reviewed");
+    expect(f.records.has("rollback-attempt.json")).toBe(false);
+    await expect(f.recover()).resolves.toMatchObject({ rolled_back: true });
+  });
+  test("an acknowledged upload cannot authorize recovery of a foreign version with the same source tag", async () => {
+    const f = fixture();
+    await f.run("apply");
+    f.state.current = { ...f.state.current, version: "foreign", latest: "foreign" };
+    await expect(f.recover("foreign", { version: "foreign" })).rejects.toThrow(
+      "rollback-acknowledged-version-differs",
+    );
+    expect(f.events.some((event) => event.startsWith("rollback:"))).toBe(false);
+  });
+  test("restored baseline refuses an unrelated newer upload", async () => {
+    const f = fixture();
+    await f.run("apply");
+    await f.recover();
+    f.state.current = { ...f.state.current, latest: "foreign-upload" };
+    await expect(f.run("verify")).rejects.toThrow("unresolved-latest-upload");
+  });
+  test("recovery rechecks the exact observation after maintained preflights", async () => {
+    const f = fixture();
+    await f.run("apply");
+    const started = f.records.get("upload-attempt.json");
+    const review = {
+      ...f.review,
+      recovery: {
+        version: "candidate-version",
+        attempt_sha256: digest(started),
+        configuration_sha256: configurationDigest(f.state.current),
+      },
+    };
+    const io = {
+      ...f.io,
+      rollback: async (_version: string, recheck: () => Promise<void>) => {
+        f.state.current = { ...f.state.current, deployment: "concurrent-deployment" };
+        await recheck();
+        throw Error("must not reach provider");
+      },
+    };
+    await expect(
+      publicPostHttpRelease("rollback", review, "c".repeat(64), io, "candidate-version"),
+    ).rejects.toThrow("serving-version-moved-before-rollback");
+    expect(f.events.some((event) => event.startsWith("rollback:"))).toBe(false);
+  });
+  test("lost acknowledgement can recover only with a new review binding the observed version and spent attempt", async () => {
+    const f = fixture();
+    f.state.throwUpload = true;
+    f.state.failModules = true;
+    await expect(f.run("apply")).rejects.toThrow("upload-unresolved");
+    expect(f.records.has("upload-acknowledgement.json")).toBe(false);
+    await expect(f.recover("candidate-version", { attempt_sha256: "wrong" })).rejects.toThrow(
+      "rollback-review-does-not-bind-attempt",
+    );
+    await expect(f.recover()).resolves.toMatchObject({ rolled_back: true });
     await expect(f.run("verify")).resolves.toMatchObject({ state: "baseline" });
   });
 });

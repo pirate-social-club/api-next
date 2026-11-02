@@ -135,7 +135,49 @@ export function publicPostBindingProposal(
   );
   return { effective, verifierActual, verifierDeclared };
 }
-async function collect(): Promise<HttpSnapshot> {
+export function publicPostBindingObservation(
+  input: readonly ReturnType<typeof bindings>[number][],
+  candidate: CandidateBindings,
+  recovery: boolean,
+) {
+  const actual = bindings(input);
+  const declared = bindings(candidate.bindings);
+  const observed = {
+    effective: bindings([
+      ...declared,
+      ...actual.filter(isSecret).filter((row) => !declared.some((item) => item.name === row.name)),
+    ]),
+    verifierActual: actual.find((row) => row.name === "HNS_OWNER_VERIFIER") ?? null,
+    verifierDeclared: declared.find((row) => row.name === "HNS_OWNER_VERIFIER"),
+  };
+  requireRelease(observed.verifierDeclared, "candidate-verifier-binding-missing");
+  const { effective, verifierActual } = recovery
+    ? observed
+    : publicPostBindingProposal(actual, candidate);
+  const normalize = (row: ReturnType<typeof bindings>[number]) => {
+    if (
+      recovery &&
+      row.name === "HNS_OWNER_VERIFIER" &&
+      (row.type !== "service" ||
+        row.service !== "pirate-hns-owner-verifier-production" ||
+        (row.environment !== undefined && row.environment !== "production"))
+    )
+      return row;
+    return normalizedVerifier(row);
+  };
+  const comparable = (row: ReturnType<typeof bindings>[number]) => {
+    const { namespace_id, ...rest } = row;
+    return normalize(row.type === "durable_object_namespace" ? rest : row);
+  };
+  return {
+    effective,
+    verifierActual,
+    verifierDeclared: observed.verifierDeclared,
+    normalize,
+    comparable,
+  };
+}
+async function collect(recovery = false): Promise<HttpSnapshot> {
   const before = await allocation();
   const version = await providerApi(`${target}/versions/${before.version}`);
   requireRelease(version.id === before.version, "provider-version-differs");
@@ -143,10 +185,8 @@ async function collect(): Promise<HttpSnapshot> {
     actualRuntime = runtime(version.resources.script_runtime);
   const candidate = await readCandidateBindings(app, HTTP_RELEASE.config, "production");
   requireRelease(candidate.worker_name === HTTP_RELEASE.worker, "candidate-target-differs");
-  const { effective, verifierActual, verifierDeclared } = publicPostBindingProposal(
-    actual,
-    candidate,
-  );
+  const { effective, verifierActual, verifierDeclared, normalize, comparable } =
+    publicPostBindingObservation(actual, candidate, recovery);
   const rawDomains = await providerApi("/workers/domains?per_page=100");
   requireRelease(
     Array.isArray(rawDomains) && rawDomains.length < 100,
@@ -157,19 +197,20 @@ async function collect(): Promise<HttpSnapshot> {
     .map((row) => ({ hostname: row.hostname, service: row.service, environment: row.environment }))
     .sort((a, b) => String(a.hostname).localeCompare(String(b.hostname)));
   requireRelease(
-    isDeepStrictEqual(domains, [
-      { hostname: "api-next.pirate.sc", service: HTTP_RELEASE.worker, environment: "production" },
-      {
-        hostname: "hns-community-api.pirate.sc",
-        service: HTTP_RELEASE.worker,
-        environment: "production",
-      },
-    ]),
+    recovery ||
+      isDeepStrictEqual(domains, [
+        { hostname: "api-next.pirate.sc", service: HTTP_RELEASE.worker, environment: "production" },
+        {
+          hostname: "hns-community-api.pirate.sc",
+          service: HTTP_RELEASE.worker,
+          environment: "production",
+        },
+      ]),
     "baseline-domains-differ",
   );
   const subdomain = await providerApi(`${target}/subdomain`);
   requireRelease(
-    isDeepStrictEqual(subdomain, { enabled: true, previews_enabled: false }),
+    recovery || isDeepStrictEqual(subdomain, { enabled: true, previews_enabled: false }),
     "baseline-subdomain-differs",
   );
   const liveSettings = settings(await providerApi(`${target}/settings`));
@@ -181,16 +222,16 @@ async function collect(): Promise<HttpSnapshot> {
     message: String(version.annotations?.["workers/message"] ?? ""),
     latest: latest.items[0].id,
     binding_runtime_sha256: digest({
-      bindings: actual.map(normalizedVerifier),
+      bindings: actual.map(normalize),
       runtime: actualRuntime,
     }),
     settings_sha256: digest(liveSettings),
     actual_comparable_sha256: digest({
-      bindings: actual.map(withoutNamespace),
+      bindings: actual.map(comparable),
       runtime: actualRuntime,
     }),
     declared_comparable_sha256: digest({
-      bindings: effective.map(withoutNamespace),
+      bindings: effective.map(comparable),
       runtime: candidate.runtime,
     }),
     verifier_representations: { actual: verifierActual, declared: verifierDeclared },
@@ -306,14 +347,15 @@ export function realHttpReleaseIo(
   return {
     now: () => Date.now(),
     candidate: () => qualifiedHttpCandidate(review),
-    collect,
+    collect: () => collect(),
+    observe: () => collect(true),
     read,
     record,
     modules,
     guardedUpload: async (commit) => {
       requireRelease(review, "independent-review-required");
       assertBound();
-      await managedGuards(async (runtimeUrl) => {
+      return managedGuards(async (runtimeUrl) => {
         const runner: typeof runDeploymentCommand = async (command, cwd, signal) => {
           requireRelease(cwd === app, "unexpected-command-root");
           const expected = [
@@ -381,7 +423,7 @@ export function realHttpReleaseIo(
             deploymentChildEnvironment(command, runtimeUrl),
           );
         };
-        await deployWorkerWithProvenance(
+        const receipt = await deployWorkerWithProvenance(
           app,
           {
             configPath: HTTP_RELEASE.config,
@@ -399,9 +441,10 @@ export function realHttpReleaseIo(
           undefined,
           verifyFixedPublicPostSource,
         );
+        return { version: receipt.worker_version_id };
       });
     },
-    rollback: async (version) => {
+    rollback: async (version, recheck) => {
       requireRelease(review && version === HTTP_RELEASE.baseline, "fixed-rollback-target-required");
       assertBound();
       return managedGuards(async () => {
@@ -415,6 +458,7 @@ export function realHttpReleaseIo(
           withTelegramActivationDeployment(app, HTTP_RELEASE.config, "production", () =>
             withRewardsBindingDeployment(app, HTTP_RELEASE.config, "production", async (signal) => {
               await funding?.recheck();
+              await recheck();
               return uploadCommand(
                 review,
                 [
