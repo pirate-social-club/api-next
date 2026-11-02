@@ -853,6 +853,114 @@ test("releases inventory-unavailable observations without consuming an attempt",
   expect(fixture.finalizations).toHaveLength(0);
 });
 
+test("a same-key retry reads the chain again after a finalized unavailable observation", async () => {
+  const positive = await positiveResponse();
+  const verifiedBytes = new TextEncoder().encode(JSON.stringify(positive.response));
+  const renewalRequest = positive.request;
+  // The verifier finalizes one observation per observation id and replays it
+  // for any later call with the same id, as its snapshot store does.
+  const verifierObservations = new Map<string, "unavailable" | Uint8Array>();
+  const chain = { calls: 0, failNext: true };
+  const providerObservationIds: string[] = [];
+  const provider: HnsActiveLeaseRenewalServices["provider"] = {
+    renew: (_request, _authority, options) =>
+      Effect.suspend(() => {
+        providerObservationIds.push(options.observation_id);
+        let observed = verifierObservations.get(options.observation_id);
+        if (observed === undefined) {
+          chain.calls += 1;
+          observed = chain.failNext ? "unavailable" : verifiedBytes;
+          chain.failNext = false;
+          verifierObservations.set(options.observation_id, observed);
+        }
+        return observed === "unavailable"
+          ? Effect.fail(new HnsActiveLeaseRenewalProviderFailed({ reason: "unavailable" }))
+          : Effect.succeed(observed);
+      }),
+  };
+  // Every tick reacquires the same durable attempt and observation id on one
+  // key, with a raised fence, as the repository does after a release.
+  let fence = 0;
+  let releases = 0;
+  let stored: HnsActiveLeaseRenewalStoredOperation = {
+    authority,
+    control_identity: persistedIdentity,
+    terminal: null,
+  };
+  const store: HnsActiveLeaseRenewalStore = {
+    resolve: () => Effect.succeed({ authority, control_identity: persistedIdentity }),
+    reserve: (input) => {
+      if (stored.terminal !== null) return Effect.succeed({ kind: "replay", stored });
+      fence += 1;
+      return Effect.succeed({
+        kind: "acquired",
+        reservation: {
+          stored,
+          request: renewalRequest,
+          idempotency_key: input.idempotency_key,
+          attempt: {
+            active_lease_renewal_attempt_id: renewalRequest.active_lease_renewal_attempt_id,
+            evidence_ref: renewalRequest.evidence_ref,
+            observation_id: "observer-renewal-01",
+            fence_token: fence,
+            attempt_number: 1,
+            database_now: "2026-02-02T04:40:00.000Z",
+            lease_expires_at: "2026-02-02T04:40:20.000Z",
+          },
+        },
+      });
+    },
+    release: () => {
+      releases += 1;
+      return Effect.succeed({ kind: "released" });
+    },
+    finalize: (input) =>
+      Effect.promise(async () => {
+        stored = {
+          ...stored,
+          terminal: {
+            result: input.result,
+            result_hash: await hnsActiveLeaseRenewalTerminalResultHash(input.result),
+          },
+        };
+        return { kind: "committed", stored } as const;
+      }),
+  };
+  const services: HnsActiveLeaseRenewalServices = {
+    store,
+    provider,
+    policy: leasePolicy,
+    ids: {
+      renewal: () => renewalRequest.active_lease_renewal_id,
+      attempt: () => renewalRequest.active_lease_renewal_attempt_id,
+      evidence: () => renewalRequest.evidence_ref,
+      observation: () => "observer-renewal-proposed",
+    },
+  };
+  const tick = () =>
+    Effect.runPromise(
+      runHnsActiveLeaseRenewal(
+        { route_binding_id: authority.route_binding_id, idempotency_key: "renewal-generation-12" },
+        services,
+      ),
+    );
+
+  await expect(tick()).rejects.toEqual(
+    new HnsActiveLeaseRenewalProviderFailed({ reason: "unavailable" }),
+  );
+  expect(releases).toBe(1);
+
+  const second = await tick();
+  expect(second).toMatchObject({ status: "verified", outcome_status: "verified", replayed: false });
+  expect(chain.calls).toBe(2);
+  expect(providerObservationIds).toEqual(["observer-renewal-01:1", "observer-renewal-01:2"]);
+
+  const third = await tick();
+  expect(third).toMatchObject({ status: "verified", replayed: true });
+  expect(chain.calls).toBe(2);
+  expect(fence).toBe(2);
+});
+
 test("finalizes prior-evidence ineligibility without calling a hidden retry path", async () => {
   let providerCalls = 0;
   const fixture = await operationFixture(authority, {
