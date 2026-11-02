@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 import type { WorkerDeploymentInput } from "./deploy-worker-with-provenance.ts";
 import { gitEnvironment } from "./production-release/production-managed-environment.ts";
 import {
-  HTTP_RELEASE,
   type HttpCandidate,
+  type HttpOperationPolicy,
   type HttpReview,
+  PUBLIC_POST_OPERATION,
   requireRelease,
   sha256,
 } from "./public-post-http-release-core.ts";
@@ -33,6 +34,24 @@ const paths = [
   "packages/platform-cf/src/video-detail-repository.test.ts",
   "packages/platform-cf/src/video-detail-repository.ts",
 ] as const;
+export interface HttpSourcePolicy extends HttpOperationPolicy {
+  readonly paths: {
+    readonly tooling: string;
+    readonly application: string;
+    readonly packet: string;
+    readonly evidence: string;
+  };
+  readonly applicationBranch: string;
+  readonly changedPaths: readonly string[];
+  readonly recoveryMessage: string;
+}
+export const PUBLIC_POST_SOURCE: HttpSourcePolicy = {
+  ...PUBLIC_POST_OPERATION,
+  paths: HTTP_PATHS,
+  applicationBranch,
+  changedPaths: paths,
+  recoveryMessage: "Public post HTTP baseline recovery",
+};
 export const fileHash = (path: string) => sha256(readFileSync(path));
 function git(root: string, ...args: string[]) {
   return execFileSync("/usr/bin/git", args, {
@@ -52,8 +71,11 @@ function publication(root: string, branch: string, source: string) {
   );
   git(root, "fetch", "--no-tags", "origin", "refs/heads/main");
 }
-export function assertToolingSource(expected?: string) {
-  const root = HTTP_PATHS.tooling,
+export function assertToolingSource(
+  expected?: string,
+  selectedPaths: HttpSourcePolicy["paths"] = HTTP_PATHS,
+) {
+  const root = selectedPaths.tooling,
     source = git(root, "rev-parse", "HEAD");
   const branch = git(root, "branch", "--show-current");
   requireRelease(
@@ -73,30 +95,38 @@ export function assertToolingSource(expected?: string) {
   return source;
 }
 /** The exception admits only this reviewed patch-derived tree, never a floating main application. */
-export function assertFixedHttpInput(root: string, input: WorkerDeploymentInput) {
+export function assertFixedHttpInput(
+  root: string,
+  input: WorkerDeploymentInput,
+  policy: HttpSourcePolicy = PUBLIC_POST_SOURCE,
+) {
   requireRelease(
-    root === HTTP_PATHS.application &&
-      input.configPath === HTTP_RELEASE.config &&
+    root === policy.paths.application &&
+      input.configPath === policy.release.config &&
       input.environment === "production" &&
-      input.sourceRef === HTTP_RELEASE.source &&
+      input.sourceRef === policy.release.source &&
       input.acceptedMainRef === "origin/main" &&
       input.bindingReviewPath === undefined &&
       input.toolingSourceRef === undefined,
     "fixed-http-source-input-required",
   );
 }
-export async function verifyFixedPublicPostSource(root: string, input: WorkerDeploymentInput) {
-  assertFixedHttpInput(realpathSync(root), input);
+export async function verifyFixedPublicPostSource(
+  root: string,
+  input: WorkerDeploymentInput,
+  policy: HttpSourcePolicy = PUBLIC_POST_SOURCE,
+) {
+  assertFixedHttpInput(realpathSync(root), input, policy);
   requireRelease(
     git(root, "rev-parse", "--path-format=absolute", "--git-common-dir") ===
       "/media/t42/codedrive/Code/pirate-workspace/api-next/.git",
     "unregistered-application-repository",
   );
   requireRelease(
-    git(root, "branch", "--show-current") === applicationBranch &&
-      git(root, "rev-parse", "HEAD") === HTTP_RELEASE.source &&
-      git(root, "rev-parse", "HEAD^{tree}") === HTTP_RELEASE.tree &&
-      git(root, "rev-parse", "HEAD^") === HTTP_RELEASE.base,
+    git(root, "branch", "--show-current") === policy.applicationBranch &&
+      git(root, "rev-parse", "HEAD") === policy.release.source &&
+      git(root, "rev-parse", "HEAD^{tree}") === policy.release.tree &&
+      git(root, "rev-parse", "HEAD^") === policy.release.base,
     "fixed-application-tree-differs",
   );
   requireRelease(
@@ -106,26 +136,26 @@ export async function verifyFixedPublicPostSource(root: string, input: WorkerDep
   for (const name of [".env", ".env.production", ".dev.vars", ".dev.vars.production"]) {
     requireRelease(!existsSync(resolve(root, name)), "local-environment-file-refused");
   }
-  publication(root, applicationBranch, HTTP_RELEASE.source);
+  publication(root, policy.applicationBranch, policy.release.source);
   requireRelease(
-    git(root, "merge-base", HTTP_RELEASE.accepted, "FETCH_HEAD") === HTTP_RELEASE.accepted,
+    git(root, "merge-base", policy.release.accepted, "FETCH_HEAD") === policy.release.accepted,
     "reviewed-application-merge-not-accepted",
   );
-  const changed = git(root, "diff", "--name-only", HTTP_RELEASE.base, HTTP_RELEASE.source)
+  const changed = git(root, "diff", "--name-only", policy.release.base, policy.release.source)
     .split("\n")
     .sort();
   requireRelease(
-    JSON.stringify(changed) === JSON.stringify([...paths].sort()),
+    JSON.stringify(changed) === JSON.stringify([...policy.changedPaths].sort()),
     "application-delta-outside-reviewed-seven-files",
   );
-  for (const path of paths) {
+  for (const path of policy.changedPaths) {
     requireRelease(
-      git(root, "rev-parse", `${HTTP_RELEASE.source}:${path}`) ===
-        git(root, "rev-parse", `${HTTP_RELEASE.accepted}:${path}`),
+      git(root, "rev-parse", `${policy.release.source}:${path}`) ===
+        git(root, "rev-parse", `${policy.release.accepted}:${path}`),
       "application-file-differs-from-exact-accepted-merge",
     );
   }
-  return { sourceSha: HTTP_RELEASE.source, configPath: HTTP_RELEASE.config };
+  return { sourceSha: policy.release.source, configPath: policy.release.config };
 }
 interface InputFile {
   readonly path: string;
@@ -159,27 +189,34 @@ export function assertQualifiedInputFile(root: string, row: InputFile) {
     "qualified-input-or-bundle-changed",
   );
 }
-export async function qualifiedHttpCandidate(review?: HttpReview): Promise<HttpCandidate> {
-  const tooling = assertToolingSource(review?.tooling_source);
-  await verifyFixedPublicPostSource(HTTP_PATHS.application, {
-    configPath: HTTP_RELEASE.config,
-    environment: "production",
-    sourceRef: HTTP_RELEASE.source,
-    acceptedMainRef: "origin/main",
-  });
-  const bytes = readFileSync(resolve(HTTP_PATHS.packet, "candidate.json"));
-  requireRelease(sha256(bytes) === HTTP_RELEASE.packet, "qualified-packet-changed");
+export async function qualifiedHttpCandidate(
+  review?: HttpReview,
+  policy: HttpSourcePolicy = PUBLIC_POST_SOURCE,
+): Promise<HttpCandidate> {
+  const tooling = assertToolingSource(review?.tooling_source, policy.paths);
+  await verifyFixedPublicPostSource(
+    policy.paths.application,
+    {
+      configPath: policy.release.config,
+      environment: "production",
+      sourceRef: policy.release.source,
+      acceptedMainRef: "origin/main",
+    },
+    policy,
+  );
+  const bytes = readFileSync(resolve(policy.paths.packet, "candidate.json"));
+  requireRelease(sha256(bytes) === policy.release.packet, "qualified-packet-changed");
   const packet = JSON.parse(bytes.toString("utf8")) as Packet;
   requireRelease(
-    packet.source === HTTP_RELEASE.source &&
-      packet.source_tree === HTTP_RELEASE.tree &&
-      packet.serving_base === HTTP_RELEASE.base &&
+    packet.source === policy.release.source &&
+      packet.source_tree === policy.release.tree &&
+      packet.serving_base === policy.release.base &&
       packet.source_inputs.length === 2993 &&
       packet.virtual_inputs.length === 11,
     "qualified-packet-tuple-differs",
   );
-  for (const row of packet.source_inputs) assertQualifiedInputFile(HTTP_PATHS.application, row);
-  const bundle = resolve(HTTP_PATHS.packet, "bundle");
+  for (const row of packet.source_inputs) assertQualifiedInputFile(policy.paths.application, row);
+  const bundle = resolve(policy.paths.packet, "bundle");
   requireRelease(
     JSON.stringify(readdirSync(bundle).sort()) ===
       JSON.stringify(["README.md", "index.js", "index.js.map"]),
@@ -187,10 +224,10 @@ export async function qualifiedHttpCandidate(review?: HttpReview): Promise<HttpC
   );
   for (const row of packet.bundle_files) assertQualifiedInputFile(bundle, row);
   requireRelease(
-    fileHash(resolve(bundle, "index.js")) === HTTP_RELEASE.module,
+    fileHash(resolve(bundle, "index.js")) === policy.release.module,
     "compiled-entry-differs",
   );
-  for (const root of [HTTP_PATHS.application, HTTP_PATHS.tooling]) {
+  for (const root of [policy.paths.application, policy.paths.tooling]) {
     const installed = JSON.parse(
       readFileSync(resolve(root, "node_modules/wrangler/package.json"), "utf8"),
     );
@@ -201,9 +238,9 @@ export async function qualifiedHttpCandidate(review?: HttpReview): Promise<HttpC
     );
   }
   return {
-    source: HTTP_RELEASE.source,
-    tree: HTTP_RELEASE.tree,
-    module_sha256: HTTP_RELEASE.module,
+    source: policy.release.source,
+    tree: policy.release.tree,
+    module_sha256: policy.release.module,
     tooling_source: tooling,
   };
 }

@@ -15,7 +15,6 @@ import {
 } from "./production-release/production-managed-environment.ts";
 import { exclusiveRecord } from "./production-release/production-operation-evidence.ts";
 import {
-  HTTP_RELEASE,
   type HttpReleaseIo,
   type HttpReview,
   type HttpSnapshot,
@@ -25,7 +24,8 @@ import {
   type UploadResult,
 } from "./public-post-http-release-core.ts";
 import {
-  HTTP_PATHS,
+  type HttpSourcePolicy,
+  PUBLIC_POST_SOURCE,
   qualifiedHttpCandidate,
   verifyFixedPublicPostSource,
 } from "./public-post-http-release-source.ts";
@@ -43,9 +43,6 @@ import {
 } from "./worker-binding-drift.ts";
 import { readCandidateBindings } from "./worker-deployment-bindings.ts";
 
-const app = HTTP_PATHS.application,
-  target = `/workers/scripts/${HTTP_RELEASE.worker}`;
-const nodeCli = resolve(app, "node_modules/wrangler/bin/wrangler.js");
 export const publicPostProviderEnvironment = (
   input?: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> => ({
@@ -100,7 +97,8 @@ function settings(input: Record<string, unknown>) {
   }
   return result;
 }
-async function allocation() {
+async function allocation(policy: HttpSourcePolicy) {
+  const target = `/workers/scripts/${policy.release.worker}`;
   const result = await providerApi(`${target}/deployments`);
   const row = result.deployments?.[0];
   requireRelease(
@@ -177,14 +175,16 @@ export function publicPostBindingObservation(
     comparable,
   };
 }
-async function collect(recovery = false): Promise<HttpSnapshot> {
-  const before = await allocation();
+async function collect(recovery: boolean, policy: HttpSourcePolicy): Promise<HttpSnapshot> {
+  const app = policy.paths.application,
+    target = `/workers/scripts/${policy.release.worker}`;
+  const before = await allocation(policy);
   const version = await providerApi(`${target}/versions/${before.version}`);
   requireRelease(version.id === before.version, "provider-version-differs");
   const actual = bindings(version.resources.bindings),
     actualRuntime = runtime(version.resources.script_runtime);
-  const candidate = await readCandidateBindings(app, HTTP_RELEASE.config, "production");
-  requireRelease(candidate.worker_name === HTTP_RELEASE.worker, "candidate-target-differs");
+  const candidate = await readCandidateBindings(app, policy.release.config, "production");
+  requireRelease(candidate.worker_name === policy.release.worker, "candidate-target-differs");
   const { effective, verifierActual, verifierDeclared, normalize, comparable } =
     publicPostBindingObservation(actual, candidate, recovery);
   const rawDomains = await providerApi("/workers/domains?per_page=100");
@@ -193,16 +193,20 @@ async function collect(recovery = false): Promise<HttpSnapshot> {
     "domain-pagination-required",
   );
   const domains = rawDomains
-    .filter((row) => row.service === HTTP_RELEASE.worker)
+    .filter((row) => row.service === policy.release.worker)
     .map((row) => ({ hostname: row.hostname, service: row.service, environment: row.environment }))
     .sort((a, b) => String(a.hostname).localeCompare(String(b.hostname)));
   requireRelease(
     recovery ||
       isDeepStrictEqual(domains, [
-        { hostname: "api-next.pirate.sc", service: HTTP_RELEASE.worker, environment: "production" },
+        {
+          hostname: "api-next.pirate.sc",
+          service: policy.release.worker,
+          environment: "production",
+        },
         {
           hostname: "hns-community-api.pirate.sc",
-          service: HTTP_RELEASE.worker,
+          service: policy.release.worker,
           environment: "production",
         },
       ]),
@@ -216,7 +220,10 @@ async function collect(recovery = false): Promise<HttpSnapshot> {
   const liveSettings = settings(await providerApi(`${target}/settings`));
   const latest = await providerApi(`${target}/versions`);
   requireRelease(typeof latest.items?.[0]?.id === "string", "latest-version-missing");
-  requireRelease(isDeepStrictEqual(await allocation(), before), "traffic-moved-during-snapshot");
+  requireRelease(
+    isDeepStrictEqual(await allocation(policy), before),
+    "traffic-moved-during-snapshot",
+  );
   return {
     ...before,
     message: String(version.annotations?.["workers/message"] ?? ""),
@@ -240,7 +247,8 @@ async function collect(recovery = false): Promise<HttpSnapshot> {
     subdomain,
   };
 }
-async function modules(versionId: string) {
+async function modules(versionId: string, policy: HttpSourcePolicy) {
+  const app = policy.paths.application;
   const token = await providerToken();
   const result = await runDeploymentCommand(
     [
@@ -250,7 +258,7 @@ async function modules(versionId: string) {
       "get",
       versionId,
       "--worker-id",
-      HTTP_RELEASE.worker,
+      policy.release.worker,
       "--include",
       "modules",
     ],
@@ -271,10 +279,10 @@ async function modules(versionId: string) {
   requireRelease(typeof encoded === "string", "compiled-module-bytes-missing");
   const bytes = Buffer.from(encoded, "base64");
   requireRelease(
-    bytes.toString("base64") === encoded && sha256(bytes) === HTTP_RELEASE.module,
+    bytes.toString("base64") === encoded && sha256(bytes) === policy.release.module,
     "serving-compiled-module-differs",
   );
-  const declared = await readCandidateBindings(app, HTTP_RELEASE.config, "production");
+  const declared = await readCandidateBindings(app, policy.release.config, "production");
   requireRelease(
     version.compatibility_date === declared.runtime.compatibility_date &&
       isDeepStrictEqual(
@@ -284,13 +292,13 @@ async function modules(versionId: string) {
     "module-compatibility-differs",
   );
 }
-function record(name: string, value: unknown) {
+function record(name: string, value: unknown, policy: HttpSourcePolicy) {
   requireRelease(/^[a-z0-9-]+\.json$/.test(name), "invalid-evidence-name");
-  mkdirSync(HTTP_PATHS.evidence, { recursive: true, mode: 0o700 });
-  exclusiveRecord(HTTP_PATHS.evidence, name, value);
+  mkdirSync(policy.paths.evidence, { recursive: true, mode: 0o700 });
+  exclusiveRecord(policy.paths.evidence, name, value);
 }
-function read(name: string): unknown {
-  const path = resolve(HTTP_PATHS.evidence, name);
+function read(name: string, policy: HttpSourcePolicy): unknown {
+  const path = resolve(policy.paths.evidence, name);
   return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
 }
 async function managedGuards<T>(action: (runtimeUrl: string) => Promise<T>) {
@@ -320,7 +328,10 @@ async function uploadCommand(
   argv: readonly string[],
   signal: AbortSignal | undefined,
   assertBound: () => void,
+  policy: HttpSourcePolicy,
 ): Promise<UploadResult> {
+  const app = policy.paths.application,
+    nodeCli = resolve(app, "node_modules/wrangler/bin/wrangler.js");
   assertBound();
   requireRelease(!signal?.aborted, "control-connection-lost-before-upload");
   const group = linuxProcess(process.pid).pgrp;
@@ -343,15 +354,18 @@ export function realHttpReleaseIo(
   assertBound: () => void = () => {
     requireRelease(false, "bounded-child-required");
   },
+  policy: HttpSourcePolicy = PUBLIC_POST_SOURCE,
 ): HttpReleaseIo {
+  const app = policy.paths.application,
+    nodeCli = resolve(app, "node_modules/wrangler/bin/wrangler.js");
   return {
     now: () => Date.now(),
-    candidate: () => qualifiedHttpCandidate(review),
-    collect: () => collect(),
-    observe: () => collect(true),
-    read,
-    record,
-    modules,
+    candidate: () => qualifiedHttpCandidate(review, policy),
+    collect: () => collect(false, policy),
+    observe: () => collect(true, policy),
+    read: (name) => read(name, policy),
+    record: (name, value) => record(name, value, policy),
+    modules: (version) => modules(version, policy),
     guardedUpload: async (commit) => {
       requireRelease(review, "independent-review-required");
       assertBound();
@@ -365,9 +379,9 @@ export function realHttpReleaseIo(
             "--env",
             "production",
             "--config",
-            HTTP_RELEASE.config,
+            policy.release.config,
             "--message",
-            `git:${HTTP_RELEASE.source}`,
+            `git:${policy.release.source}`,
           ];
           if (isDeepStrictEqual(command, expected)) {
             return commit(() =>
@@ -375,17 +389,18 @@ export function realHttpReleaseIo(
                 review,
                 [
                   "deploy",
-                  resolve(HTTP_PATHS.packet, "bundle/index.js"),
+                  resolve(policy.paths.packet, "bundle/index.js"),
                   "--no-bundle",
                   "--env",
                   "production",
                   "--config",
-                  HTTP_RELEASE.config,
+                  policy.release.config,
                   "--message",
-                  `git:${HTTP_RELEASE.source}`,
+                  `git:${policy.release.source}`,
                 ],
                 signal,
                 assertBound,
+                policy,
               ),
             );
           }
@@ -397,7 +412,7 @@ export function realHttpReleaseIo(
             "--env",
             "production",
             "--config",
-            HTTP_RELEASE.config,
+            policy.release.config,
             "--json",
           ];
           if (isDeepStrictEqual(command, versions)) {
@@ -426,9 +441,9 @@ export function realHttpReleaseIo(
         const receipt = await deployWorkerWithProvenance(
           app,
           {
-            configPath: HTTP_RELEASE.config,
+            configPath: policy.release.config,
             environment: "production",
-            sourceRef: HTTP_RELEASE.source,
+            sourceRef: policy.release.source,
             acceptedMainRef: "origin/main",
           },
           runner,
@@ -439,43 +454,52 @@ export function realHttpReleaseIo(
           undefined,
           undefined,
           undefined,
-          verifyFixedPublicPostSource,
+          (root, input) => verifyFixedPublicPostSource(root, input, policy),
         );
         return { version: receipt.worker_version_id };
       });
     },
     rollback: async (version, recheck) => {
-      requireRelease(review && version === HTTP_RELEASE.baseline, "fixed-rollback-target-required");
+      requireRelease(
+        review && version === policy.release.baseline,
+        "fixed-rollback-target-required",
+      );
       assertBound();
       return managedGuards(async () => {
         const funding = await prepareSongFundingBindingAdmission(
           app,
-          HTTP_RELEASE.config,
+          policy.release.config,
           "production",
-          HTTP_RELEASE.source,
+          policy.release.source,
         );
-        return withServingFunctionPrivilegesDeployment(app, HTTP_RELEASE.config, () =>
-          withTelegramActivationDeployment(app, HTTP_RELEASE.config, "production", () =>
-            withRewardsBindingDeployment(app, HTTP_RELEASE.config, "production", async (signal) => {
-              await funding?.recheck();
-              await recheck();
-              return uploadCommand(
-                review,
-                [
-                  "rollback",
-                  version,
-                  "--env",
-                  "production",
-                  "--config",
-                  HTTP_RELEASE.config,
-                  "--yes",
-                  "--message",
-                  "Public post HTTP baseline recovery",
-                ],
-                signal,
-                assertBound,
-              );
-            }),
+        return withServingFunctionPrivilegesDeployment(app, policy.release.config, () =>
+          withTelegramActivationDeployment(app, policy.release.config, "production", () =>
+            withRewardsBindingDeployment(
+              app,
+              policy.release.config,
+              "production",
+              async (signal) => {
+                await funding?.recheck();
+                await recheck();
+                return uploadCommand(
+                  review,
+                  [
+                    "rollback",
+                    version,
+                    "--env",
+                    "production",
+                    "--config",
+                    policy.release.config,
+                    "--yes",
+                    "--message",
+                    policy.recoveryMessage,
+                  ],
+                  signal,
+                  assertBound,
+                  policy,
+                );
+              },
+            ),
           ),
         );
       });
