@@ -1,3 +1,20 @@
 {
-  "breakingChangeWaivers": []
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "03fbec4a2bf84f3dcd250f46a30529779f0756ec",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/canonical-route/ownership-recovery/poll status 202: enum value added: \"source_ineligible\" at reason_code",
+        "response POST /communities/{communityId}/canonical-route/ownership-recovery/poll status 202: property added to closed response: public_route_href",
+        "response POST /communities/{communityId}/canonical-route/ownership-recovery/poll status 422: enum value added: \"source_ineligible\" at reason_code",
+        "response POST /communities/{communityId}/canonical-route/ownership-recovery/poll status 422: property added to closed response: public_route_href",
+        "response POST /communities/{communityId}/canonical-route/ownership-recovery/poll status 503: enum value added: \"source_ineligible\" at reason_code",
+        "response POST /communities/{communityId}/canonical-route/ownership-recovery/poll status 503: property added to closed response: public_route_href",
+        "response POST /communities/{communityId}/canonical-route/ownership-recovery/poll: enum value added: \"source_ineligible\" at reason_code",
+        "response POST /communities/{communityId}/canonical-route/ownership-recovery/poll: property added to closed response: public_route_href"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryPoll",
+      "reason": "HNS lease renewal replay repair, task record tasks/records/v1-hns-lease-renewal-replay-repair-20261031.md (V1 and the 2026-11-02 L1 scope addition by hns_recovery_coordinator). The server already stores and returns rejected reason source_ineligible, which the closed contract refused with a 500; verified polls gain public_route_href, the bare-root /c/<root> link beside the unchanged canonical_route. Admit only this exact baseline and response set; no runtime, credential or production activation."
+    }
+  ]
 }
