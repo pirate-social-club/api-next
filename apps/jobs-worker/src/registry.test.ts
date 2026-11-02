@@ -167,6 +167,29 @@ describe("partitioned shared table writers", () => {
     }
   });
 
+  test("rejects a third writer whose family is already taken, in every order", async () => {
+    const three: SharedTableWriters = { [bindings]: { a: "hns", b: "spaces", c: "hns" } };
+    const orders = [
+      ["a", "b", "c"],
+      ["a", "c", "b"],
+      ["b", "a", "c"],
+      ["b", "c", "a"],
+      ["c", "a", "b"],
+      ["c", "b", "a"],
+    ];
+    for (const order of orders) {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          buildJobRegistry(
+            order.map((name) => writer(name, [bindings])),
+            three,
+          ),
+        ),
+      );
+      expect(error).toMatchObject({ reason: "duplicate-table-writer", key: bindings });
+    }
+  });
+
   test("rejects two writers in the same partition even when both are listed", async () => {
     const sameFamily: SharedTableWriters = {
       [bindings]: { "hns.first": "hns", "hns.second": "hns" },

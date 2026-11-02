@@ -898,13 +898,20 @@ export function makeJobsWorkerDeclarations(
 /**
  * Decides, from one environment's bindings, every declaration the scheduled
  * handler registers. The handler and the configuration test both call this, so
- * the registry is checked against the same composition that runs.
+ * the registry is checked against the same composition that runs. The order
+ * matches the handler before extraction: configuration, alert sink, data
+ * balance, then declarations, so invalid configuration still reports first.
  */
-export function makeScheduledJobDeclarations(env: JobsWorkerEnv, sink: AlertSink) {
+export function makeScheduledJobDeclarations(
+  env: JobsWorkerEnv,
+  makeSink: (env: JobsWorkerEnv) => AlertSink,
+) {
   if (env.CONTROL_PLANE === undefined) {
     throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
   }
   const config = loadJobsWorkerConfig(env);
+  const sink = makeSink(env);
+  const dataBalance = makeDataRegistrationBalanceConfig(env);
   const hns = makeHnsRouteRevalidationComposition(env);
   const megapot = makeMegapotOptions(env, config);
   const rpcUrl = fundingRpcUrl(
@@ -978,7 +985,7 @@ export function makeScheduledJobDeclarations(env: JobsWorkerEnv, sink: AlertSink
   );
   const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
   if (renewal !== null) declarations.push(renewal);
-  return { config, megapot, runtime, declarations };
+  return { config, sink, dataBalance, megapot, runtime, declarations };
 }
 
 export default {
@@ -1018,9 +1025,8 @@ export default {
     if (env.CONTROL_PLANE === undefined) {
       throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
     }
-    const sink = makeJobsAlertSink(env);
-    const { config, megapot, runtime, declarations } = makeScheduledJobDeclarations(env, sink);
-    const dataBalance = makeDataRegistrationBalanceConfig(env);
+    const { config, sink, dataBalance, megapot, runtime, declarations } =
+      makeScheduledJobDeclarations(env, makeJobsAlertSink);
 
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);

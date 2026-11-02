@@ -78,7 +78,7 @@ describe("scheduled registry for every shipped jobs-worker environment", () => {
 
   for (const [name, scope] of scopes) {
     test(`${name} composes a registry with no unpartitioned shared writer`, async () => {
-      const { declarations } = makeScheduledJobDeclarations(environmentFor(scope), sink);
+      const { declarations } = makeScheduledJobDeclarations(environmentFor(scope), () => sink);
       const registry = await Effect.runPromise(buildJobRegistry(declarations));
       expect(registry.declarations.length).toBe(declarations.length);
     });
@@ -87,9 +87,10 @@ describe("scheduled registry for every shipped jobs-worker environment", () => {
   test("staging registers the shared writers that previously collided", () => {
     const staging = config.env?.staging;
     if (staging === undefined) throw new Error("staging configuration missing");
-    const names = makeScheduledJobDeclarations(environmentFor(staging), sink).declarations.map(
-      (declaration) => declaration.name,
-    );
+    const names = makeScheduledJobDeclarations(
+      environmentFor(staging),
+      () => sink,
+    ).declarations.map((declaration) => declaration.name);
     expect(names).toEqual(
       expect.arrayContaining([
         "hns-active-lease-renewal.poll",
@@ -103,7 +104,7 @@ describe("scheduled registry for every shipped jobs-worker environment", () => {
   test("staging fails under the one-writer-per-table rule shipped in fb588f17", async () => {
     const staging = config.env?.staging;
     if (staging === undefined) throw new Error("staging configuration missing");
-    const { declarations } = makeScheduledJobDeclarations(environmentFor(staging), sink);
+    const { declarations } = makeScheduledJobDeclarations(environmentFor(staging), () => sink);
     const error = await Effect.runPromise(Effect.flip(buildJobRegistry(declarations, {})));
     expect(error).toMatchObject({
       _tag: "RegistryConfigurationError",
@@ -115,7 +116,7 @@ describe("scheduled registry for every shipped jobs-worker environment", () => {
     const staging = config.env?.staging;
     if (staging === undefined) throw new Error("staging configuration missing");
     const env = environmentFor(staging);
-    const { declarations } = makeScheduledJobDeclarations(env, sink);
+    const { declarations } = makeScheduledJobDeclarations(env, () => sink);
     const hns = makeHnsRouteRevalidationComposition({ ...env, HNS_OWNERSHIP_ENABLED: "true" });
     if (!hns.enabled) throw new Error("HNS route revalidation did not compose");
     const revalidation = makeHnsRouteRevalidationJob({
