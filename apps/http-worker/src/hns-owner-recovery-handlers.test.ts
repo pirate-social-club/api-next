@@ -23,11 +23,12 @@ import {
   InternalError,
   NotFound,
   OwnerRecoveryInProgress,
+  PollHnsOwnerRecovery,
   ProviderMisconfigured,
   ProviderUnavailable,
   toErrorBody,
 } from "@pirate/contracts";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { makeHnsOwnerRecoveryHandlers } from "./hns-owner-recovery-handlers.ts";
 import type { DecodedRequest, EndpointHandlerResult, Principal } from "./transport.ts";
 
@@ -122,7 +123,10 @@ function asResult(value: unknown): EndpointHandlerResult {
   return value as EndpointHandlerResult;
 }
 
-function providerStartResponse(expiresAt = "2026-02-02T05:38:20.000Z") {
+function providerStartResponse(
+  expiresAt = "2026-02-02T05:38:20.000Z",
+  ownershipSource: "hns_parent_chain_txt" | "owner_authoritative_dns_txt" = "hns_parent_chain_txt",
+) {
   return {
     upstream_session_ref: "nvs_recovery_01",
     expires_at: expiresAt,
@@ -132,8 +136,9 @@ function providerStartResponse(expiresAt = "2026-02-02T05:38:20.000Z") {
       protocol: "hns-txt-challenge",
       version: "1",
       payload: {
-        ownership_source: "hns_parent_chain_txt",
-        challenge_name: "jazleeuw",
+        ownership_source: ownershipSource,
+        challenge_name:
+          ownershipSource === "hns_parent_chain_txt" ? "jazleeuw" : "_pirate.jazleeuw",
         challenge_value: "pirate-verification=nvs_recovery_01",
         expires_at: expiresAt,
       },
@@ -155,20 +160,23 @@ function sessionAuthority(
   };
 }
 
-async function storedStart(): Promise<HnsOwnerRecoveryStoredStart> {
-  const requirementHash = await hnsOwnerRecoveryRequirementHash(authority);
+async function storedStart(
+  startAuthority: HnsOwnerRecoveryAuthorityV1 = authority,
+  ownershipSource: "hns_parent_chain_txt" | "owner_authoritative_dns_txt" = "hns_parent_chain_txt",
+): Promise<HnsOwnerRecoveryStoredStart> {
+  const requirementHash = await hnsOwnerRecoveryRequirementHash(startAuthority);
   const publicStartHash = await hnsOwnerRecoveryPublicStartHash({
-    actor_id: authority.actor_id,
-    community_id: authority.community_id,
-    route_binding_id: authority.route_binding_id,
-    expected_binding_generation: authority.expected_binding_generation,
+    actor_id: startAuthority.actor_id,
+    community_id: startAuthority.community_id,
+    route_binding_id: startAuthority.route_binding_id,
+    expected_binding_generation: startAuthority.expected_binding_generation,
     idempotency_key: startInput.idempotency_key,
     requirement_hash: requirementHash,
   });
   const providerStart = await buildHnsOwnerRecoveryProviderStart({
     route_recovery_id: pollInput.route_recovery_id,
     session_id: pollInput.session_id,
-    authority,
+    authority: startAuthority,
     database_started_at: "2026-02-02T04:38:20.000Z",
   });
   const finalized = await finalizeHnsOwnerRecoveryProviderStart({
@@ -179,7 +187,7 @@ async function storedStart(): Promise<HnsOwnerRecoveryStoredStart> {
       idempotency_key: startInput.idempotency_key,
     },
     started_at: "2026-02-02T04:38:20.000Z",
-    provider_response: providerStartResponse(),
+    provider_response: providerStartResponse(undefined, ownershipSource),
   });
   return { session: finalized.session, session_authority: sessionAuthority(finalized.session) };
 }
@@ -445,6 +453,61 @@ describe("HNS owner-recovery HTTP handlers", () => {
       expect(response.status).toBe(httpStatus);
       expect(response.body).toMatchObject({ status: expectedStatus });
     }
+  });
+
+  test("encodes a stored source-ineligible terminal result on first poll and same-key replay", async () => {
+    const v2Authority: HnsOwnerRecoveryAuthorityV1 = {
+      ...authority,
+      provider_configuration: {
+        ...authority.provider_configuration,
+        version: "hns-observer-config-v2",
+      },
+    };
+    const stored = {
+      ...(await storedStart(v2Authority, "owner_authoritative_dns_txt")),
+      terminal: null,
+    };
+    const poll = pollServices(
+      stored,
+      bytes({
+        status: "ineligible",
+        observation_contract_version: "pirate-hns-target-observation-v3",
+        reason_code: "owner_authoritative_source_ineligible",
+        ownership_source: "owner_authoritative_dns_txt",
+        root_label: "jazleeuw",
+        chain_authority_digest: "6c176a02ca14aedd62328e805389409a1f4b520b97bb90c2e7f90b47d43557d6",
+        authority_inventory_reference: "authority-inventory:regtest-20260824-01",
+        authority_inventory_version: "authority-inventory-v1-20260824-01",
+        authority_inventory_digest: "b".repeat(64),
+        observer_snapshot_sha256: "c".repeat(64),
+        observer_result_sha256: "d".repeat(64),
+        diagnostic_ref: "hns-observer:regtest:recovery-ineligible-01",
+      }),
+    );
+    const handlers = makeHnsOwnerRecoveryHandlers({
+      start: startServices({ replay: stored }).services,
+      poll: poll.services,
+    });
+    // The transport decodes every success body with the endpoint response
+    // schema and answers 500 when it does not decode.
+    const decodePublic = Schema.decodeUnknownSync(
+      PollHnsOwnerRecovery.response as unknown as Schema.ConstraintDecoder<unknown>,
+    );
+
+    const first = asResult(await handlers.PollHnsOwnerRecovery(request(pollBody())));
+    expect(first.status).toBe(422);
+    expect(first.body).toMatchObject({
+      status: "rejected",
+      reason_code: "source_ineligible",
+      replayed: false,
+      retry_after_seconds: null,
+    });
+    expect(decodePublic(first.body)).toEqual(first.body);
+
+    const replay = asResult(await handlers.PollHnsOwnerRecovery(request(pollBody())));
+    expect(replay.status).toBe(422);
+    expect(replay.body).toEqual({ ...(first.body as object), replayed: true });
+    expect(decodePublic(replay.body)).toEqual(replay.body);
   });
 
   test("derives the poll authority without accepting browser provider facts", async () => {

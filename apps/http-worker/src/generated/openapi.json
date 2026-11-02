@@ -90415,7 +90415,8 @@
                           "type": "string",
                           "enum": [
                             "root_unavailable",
-                            "expiry_insufficient"
+                            "expiry_insufficient",
+                            "source_ineligible"
                           ]
                         },
                         "replayed": {
@@ -90676,7 +90677,8 @@
                           "type": "string",
                           "enum": [
                             "root_unavailable",
-                            "expiry_insufficient"
+                            "expiry_insufficient",
+                            "source_ineligible"
                           ]
                         },
                         "replayed": {
@@ -91171,7 +91173,8 @@
                           "type": "string",
                           "enum": [
                             "root_unavailable",
-                            "expiry_insufficient"
+                            "expiry_insufficient",
+                            "source_ineligible"
                           ]
                         },
                         "replayed": {
@@ -91539,7 +91542,8 @@
                           "type": "string",
                           "enum": [
                             "root_unavailable",
-                            "expiry_insufficient"
+                            "expiry_insufficient",
+                            "source_ineligible"
                           ]
                         },
                         "replayed": {

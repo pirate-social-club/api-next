@@ -126,4 +126,35 @@ describe("HNS owner-recovery endpoint contracts", () => {
       }),
     ).toBe(true);
   });
+
+  test("encodes every terminal rejected reason the application stores", () => {
+    for (const reason_code of ["root_unavailable", "expiry_insufficient", "source_ineligible"]) {
+      for (const replayed of [false, true]) {
+        expect(
+          Schema.is(HnsOwnerRecoveryPollResponseV1)({
+            route_recovery_id: "recovery-1",
+            session_id: "session-1",
+            generation: 8,
+            status: "rejected",
+            reason_code,
+            replayed,
+            retry_after_seconds: null,
+            result_hash: "a".repeat(64),
+          }),
+        ).toBe(true);
+      }
+    }
+    expect(
+      Schema.is(HnsOwnerRecoveryPollResponseV1)({
+        route_recovery_id: "recovery-1",
+        session_id: "session-1",
+        generation: 8,
+        status: "rejected",
+        reason_code: "owner_authoritative_source_ineligible",
+        replayed: false,
+        retry_after_seconds: null,
+        result_hash: "a".repeat(64),
+      }),
+    ).toBe(false);
+  });
 });

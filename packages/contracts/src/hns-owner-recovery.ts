@@ -121,7 +121,7 @@ const HnsOwnerRecoveryRejectedResponseV1 = Schema.Struct({
   session_id: OpaqueId,
   generation: PositiveSafeInteger,
   status: Schema.Literal("rejected"),
-  reason_code: Schema.Literals(["root_unavailable", "expiry_insufficient"]),
+  reason_code: Schema.Literals(["root_unavailable", "expiry_insufficient", "source_ineligible"]),
   replayed: Schema.Boolean,
   retry_after_seconds: Schema.Null,
   result_hash: Sha256Hex,
