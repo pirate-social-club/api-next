@@ -32,6 +32,9 @@ TO api_next_app;
 REVOKE DELETE, TRUNCATE ON telegram_bot_grants FROM api_next_app;
 -- Chat progress is revised rather than deleted. Apply this after migration 0238.
 GRANT SELECT, INSERT, UPDATE ON telegram_study_conversations TO api_next_app;
+-- Reviewed learner catalogue decisions are read-only to the serving application.
+GRANT SELECT ON study_learner_catalogue_decisions TO api_next_app;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON study_learner_catalogue_decisions FROM api_next_app;
 REVOKE DELETE, TRUNCATE ON telegram_study_conversations FROM api_next_app;
 -- Migration 0240 adds private bot interface choices; bot callbacks require these
 -- privileges even when linking and practice are disabled.

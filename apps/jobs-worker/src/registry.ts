@@ -209,15 +209,104 @@ function isTableKey(value: string): value is TableKey {
   return /^postgres:[^:]+$/.test(value);
 }
 
+/** A disjoint row family inside one table; at most one writer per family. */
+type SharedWriterPartition = "hns" | "spaces";
+
+/** Per table, the exact declarations allowed to share it and each one's rows. */
+export type SharedTableWriters = Readonly<
+  Partial<Record<TableKey, Readonly<Record<string, SharedWriterPartition>>>>
+>;
+
+const HNS_ACTIVE_LEASE_RENEWAL = "hns-active-lease-renewal.poll";
+const SPACES_ROUTE_RENEWAL = "spaces-native.route-renewal";
+const SPACES_ROOT_OBSERVATION = "spaces-native.root-observation";
+
+/**
+ * The closed list of tables that more than one scheduled declaration may
+ * write. Each listed writer only ever touches rows of its own family, proven
+ * from its SQL; every other shared write remains `duplicate-table-writer`,
+ * including two writers of the same family (for example the active-lease
+ * renewal job beside `hns-route-revalidation.poll`, which is not listed).
+ *
+ * Route bindings and route evidence (paths under packages/platform-cf/src):
+ * - hns, `hns-active-lease-renewal.poll`: candidates and the reserve lock
+ *   select `b.family = 'hns'` and `e.family = b.family`
+ *   (hns-active-lease-renewal-repository.ts:174,182,189,515) and the decoder
+ *   rejects `values.family !== "hns"` (:288). The finalize binding UPDATE is
+ *   keyed by that reserved row's id, generation and evidence (:873-883); the
+ *   evidence INSERT writes the literal `'hns'` (:1090). Its expiry pass runs
+ *   with `family: "hns"` (apps/jobs-worker/src/hns-active-lease-renewal.ts:62)
+ *   and filters `b.family = $1` / `binding.family = $4`
+ *   (community-route-expiry-repository.ts:131,149,267).
+ * - spaces, `spaces-native.route-renewal`: the due read and the row lock
+ *   select `binding.family='spaces'`
+ *   (spaces-community-route-attachment-repository.ts:684,718); the suspend
+ *   and advance UPDATEs are keyed by that locked row's id and generation in
+ *   the same transaction (:759-763, :809-812); the evidence INSERT writes the
+ *   literal `'spaces'` (:779).
+ * A binding's family cannot change: the update guard rejects any change of
+ * `family` (db/postgres/schema.sql:11635-11642), and route evidence is
+ * append-only (schema.sql:62132).
+ *
+ * Handle-sale namespace activations (current and revisions):
+ * - hns, `hns-active-lease-renewal.poll`: the host refresh selects
+ *   `revision.family='hns'` (hns-ownership-host-refresh.ts:71); the revision
+ *   writer decodes only hns rows (handle-sales-repository.ts:112), inserts the
+ *   literal `'hns'` (:1500) and advances `current` by that activation id
+ *   (:1530-1532).
+ * - spaces, `spaces-native.root-observation`: the lock selects
+ *   `current_activation.family='spaces'`
+ *   (spaces-sale-namespace-repository.ts:991), the decoder rejects other
+ *   families (:66), the revision INSERT writes the literal `'spaces'` (:389)
+ *   and `current` advances by that activation id (:1079-1081).
+ * The current row's family is fenced to its revision's and is immutable
+ * (schema.sql:11963,11970); revisions are append-only (schema.sql:62494).
+ */
+export const SHARED_TABLE_WRITERS: SharedTableWriters = {
+  "postgres:community_canonical_route_bindings": {
+    [HNS_ACTIVE_LEASE_RENEWAL]: "hns",
+    [SPACES_ROUTE_RENEWAL]: "spaces",
+  },
+  "postgres:community_route_ownership_evidence": {
+    [HNS_ACTIVE_LEASE_RENEWAL]: "hns",
+    [SPACES_ROUTE_RENEWAL]: "spaces",
+  },
+  "postgres:community_handle_sale_namespace_activation_current": {
+    [HNS_ACTIVE_LEASE_RENEWAL]: "hns",
+    [SPACES_ROOT_OBSERVATION]: "spaces",
+  },
+  "postgres:community_handle_sale_namespace_activation_revisions": {
+    [HNS_ACTIVE_LEASE_RENEWAL]: "hns",
+    [SPACES_ROOT_OBSERVATION]: "spaces",
+  },
+};
+
+/** A second writer is admitted only if every writer of the table is listed for
+ * it and no two share a partition. */
+function admitsSharedWriter(
+  sharedWriters: SharedTableWriters,
+  table: TableKey,
+  existing: readonly string[],
+  next: string,
+): boolean {
+  const listed = sharedWriters[table];
+  if (listed === undefined || !Object.hasOwn(listed, next)) return false;
+  const partition = listed[next];
+  return existing.every((writer) => Object.hasOwn(listed, writer) && listed[writer] !== partition);
+}
+
 /**
  * Validates the complete writer inventory before a scheduler is registered.
- * This is the enforcement point for one-writing-scheduler-per-table.
+ * This is the enforcement point for one-writing-scheduler-per-table; the only
+ * exceptions are the partitioned writers in `SHARED_TABLE_WRITERS`. The second
+ * argument exists for tests of the rule itself.
  */
 export function buildJobRegistry<Failure = unknown, Requirements = never>(
   declarations: readonly JobDeclaration<Failure, Requirements>[],
+  sharedWriters: SharedTableWriters = SHARED_TABLE_WRITERS,
 ): Effect.Effect<JobRegistry<Failure, Requirements>, RegistryConfigurationError> {
   const names = new Set<string>();
-  const writers = new Map<string, string>();
+  const writers = new Map<string, string[]>();
 
   for (const declaration of declarations) {
     if (
@@ -251,8 +340,10 @@ export function buildJobRegistry<Failure = unknown, Requirements = never>(
     for (const table of declaration.writes) {
       if (!isTableKey(table)) return invalid("invalid-table-key", table);
       const previous = writers.get(table);
-      if (previous !== undefined) return invalid("duplicate-table-writer", table);
-      writers.set(table, declaration.name);
+      if (previous === undefined) writers.set(table, [declaration.name]);
+      else if (admitsSharedWriter(sharedWriters, table, previous, declaration.name)) {
+        previous.push(declaration.name);
+      } else return invalid("duplicate-table-writer", table);
     }
     const declaredReads = new Set<string>();
     for (const table of declaration.reads) {
