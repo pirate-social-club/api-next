@@ -24,6 +24,7 @@ import {
 } from "../../../scripts/postgres-migrations";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture";
 import { makeControlPlaneCommunityModerationStore } from "./community-moderation-repository";
+import { makeControlPlaneCommunityStore } from "./community-repository";
 import { makeControlPlaneContentStore } from "./content-repository";
 import { makeControlPlaneFeedStore } from "./feed-repository";
 import { makeControlPlanePersonaStore } from "./persona-repository";
@@ -34,6 +35,7 @@ import {
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { makeControlPlanePublicPostSlugStore } from "./public-post-slug-repository";
 import { makeControlPlaneTextSubmissionStore } from "./text-submission-repository";
+import { makeControlPlaneVideoDetailStore } from "./video-detail-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -518,11 +520,20 @@ suite("Postgres 17 terminal text submission repository", () => {
           expect(alias.slug).toMatch(/^post-[0-9abcdefghjkmnpqrstvwxyz]{10}$/u);
         } else {
           expect(canonicalPath).toBe("/posts/terminal-text");
+          const videoSnapshot = await Effect.runPromise(
+            Effect.scoped(
+              makeControlPlaneVideoDetailStore(runtime).read({
+                selector: { kind: "post_id", value: postId },
+              }),
+            ),
+          );
+          expect(videoSnapshot).toEqual({ kind: "not_video" });
           const route = await Effect.runPromise(
             Effect.scoped(
               getPublicPostCanonicalRouteById(
                 { postId },
                 {
+                  communityStore: makeControlPlaneCommunityStore(runtime),
                   contentStore: makeControlPlaneContentStore(runtime),
                   publicPostRouteStore: makeControlPlanePublicPostSlugStore(runtime),
                 },
@@ -532,6 +543,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           expect(route).toMatchObject({
             kind: "content",
             route: { canonical_path: canonicalPath },
+            content: { community: { id: "text-community", display_name: "Text Order 5" } },
           });
         }
         const current = await Effect.runPromise(
@@ -633,7 +645,11 @@ suite("Postgres 17 terminal text submission repository", () => {
           Effect.scoped(
             getPublicPostCanonicalRouteById(
               { postId: adultPostId, ...viewer },
-              { contentStore, publicPostRouteStore },
+              {
+                contentStore,
+                publicPostRouteStore,
+                communityStore: makeControlPlaneCommunityStore(runtime),
+              },
             ),
           ),
         );
