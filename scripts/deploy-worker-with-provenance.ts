@@ -371,8 +371,9 @@ export async function deployWorkerWithProvenance(
   telegramDeploymentGuard: typeof withTelegramActivationDeployment = withTelegramActivationDeployment,
   servingFunctionGuard: typeof withServingFunctionPrivilegesDeployment = withServingFunctionPrivilegesDeployment,
   fundingBindingGuard: typeof prepareSongFundingBindingAdmission = prepareSongFundingBindingAdmission,
+  verifySource: typeof verifyDeploymentSource = verifyDeploymentSource,
 ): Promise<WorkerDeploymentReceipt> {
-  const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
+  const { sourceSha, configPath } = await verifySource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
     configPath === "apps/http-worker/wrangler.jsonc" && input.environment === "staging";
   let solidRoot = resolve(repositoryRoot, "../pirate-web-solid");
@@ -465,7 +466,9 @@ export async function deployWorkerWithProvenance(
           async (signal) => {
             if (bindingGuard !== null) {
               await bindingGuard.recheck();
-              const current = await verifyDeploymentSource(repositoryRoot, input, runner);
+            }
+            if (bindingGuard !== null || verifySource !== verifyDeploymentSource) {
+              const current = await verifySource(repositoryRoot, input, runner);
               if (current.sourceSha !== sourceSha)
                 throw Error("deployment source changed before upload");
             }
