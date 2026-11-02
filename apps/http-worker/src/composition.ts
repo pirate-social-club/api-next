@@ -348,6 +348,7 @@ import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 import { makeRewardOperationsGuard } from "./reward-operations-guard.ts";
 import {
   makeLazySongRewardOfferHandlers,
+  makeRewardServiceAvailabilityHandler,
   makeSongRewardOfferHandlers,
   makeUnavailableSongRewardOfferHandlers,
 } from "./rewards-song-offer-handlers.ts";
@@ -2096,6 +2097,7 @@ export async function createProductionHttpWorker(
       ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
+      GetRewardServiceAvailability: makeRewardServiceAvailabilityHandler(rewardRoutes !== null),
       ...songContributionHandlers,
       ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,

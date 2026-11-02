@@ -841,6 +841,15 @@ export const GetRewardWinnerSend = endpoint({
   errors: [...WinnerSendErrors],
 });
 
+/** Configuration only: does not assert provider health or authorize reward operations. */
+export const GetRewardServiceAvailability = endpoint({
+  method: "GET",
+  path: "/rewards/availability",
+  auth: Auth.user(),
+  response: Schema.Struct({ enabled: Schema.Boolean }),
+  errors: [...CommonErrors],
+});
+
 /** Current server policy preview. Creation freezes and returns the actual policies. */
 export const GetRewardQualificationPolicies = endpoint({
   method: "GET",
