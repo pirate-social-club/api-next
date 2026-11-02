@@ -48,4 +48,20 @@ FOR EACH ROW EXECUTE FUNCTION guard_study_learner_catalogue_decision();
 CREATE TRIGGER study_learner_catalogue_no_truncate
 BEFORE TRUNCATE ON study_learner_catalogue_decisions
 FOR EACH STATEMENT EXECUTE FUNCTION guard_study_learner_catalogue_decision();
-REVOKE ALL ON study_learner_catalogue_decisions FROM PUBLIC;
+-- Strip ambient default grants. Runtime readers are admitted separately.
+DO $$
+DECLARE trusted text:=current_schema(); t regclass:='study_learner_catalogue_decisions'::regclass;
+  f regprocedure:='guard_study_learner_catalogue_decision()'::regprocedure; grant_row record;
+BEGIN
+  EXECUTE format('REVOKE ALL ON TABLE %s FROM PUBLIC',t);
+  FOR grant_row IN SELECT DISTINCT a.grantee FROM pg_class c,
+    LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
+    WHERE c.oid=t AND a.grantee<>0 AND a.grantee<>c.relowner
+  LOOP EXECUTE format('REVOKE ALL ON TABLE %s FROM %I',t,pg_get_userbyid(grant_row.grantee)); END LOOP;
+  EXECUTE format('ALTER FUNCTION %s SET search_path=pg_catalog,%I,pg_temp',f,trusted);
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f);
+  FOR grant_row IN SELECT DISTINCT a.grantee FROM pg_proc p,
+    LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+    WHERE p.oid=f AND a.grantee<>0 AND a.grantee<>p.proowner
+  LOOP EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',f,pg_get_userbyid(grant_row.grantee)); END LOOP;
+END $$;

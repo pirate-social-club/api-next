@@ -21483,6 +21483,7 @@ $$;
 
 CREATE FUNCTION guard_study_learner_catalogue_decision() RETURNS trigger
     LANGUAGE plpgsql
+    SET search_path FROM CURRENT
     AS $$
 DECLARE previous_revision integer;
 BEGIN
@@ -21504,6 +21505,18 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_study_learner_catalogue_decision'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
 
 CREATE FUNCTION guard_study_session() RETURNS trigger
     LANGUAGE plpgsql

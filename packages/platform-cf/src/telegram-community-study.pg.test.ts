@@ -4,6 +4,7 @@ import {
   applyPostgresTestBaselineConnection,
   createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { withDanceServingPermissionFixture } from "./dance-serving-permissions.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import {
   insertStudySongFixture,
@@ -25,6 +26,60 @@ const suite = connectionString ? describe : describe.skip;
 const schemaOwner = createReusablePostgresTestSchemaOwner();
 
 suite("community Telegram Study eligibility and owner persistence", () => {
+  test("native catalogue installation strips ambient table and function grants", async () => {
+    if (!connectionString) throw Error("Postgres test URL missing");
+    await withDanceServingPermissionFixture(
+      connectionString,
+      async (f) => {
+        const runtime = await f.makeRole();
+        await f.owner.query(
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA ${f.quote(f.schema)} GRANT ALL ON TABLES TO ${f.quote(runtime.role)}`,
+        );
+        await f.owner.query(
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA ${f.quote(f.schema)} GRANT EXECUTE ON FUNCTIONS TO ${f.quote(runtime.role)}`,
+        );
+        try {
+          await f.upgrade();
+          const table = `${f.quote(f.schema)}.study_learner_catalogue_decisions`;
+          const fn = `${f.quote(f.schema)}.guard_study_learner_catalogue_decision()`;
+          const privileges = async () =>
+            (
+              await f.owner.query(
+                `SELECT
+          has_table_privilege($1,$2,'SELECT') can_select,
+          has_table_privilege($1,$2,'INSERT') can_insert,
+          has_table_privilege($1,$2,'UPDATE') can_update,
+          has_table_privilege($1,$2,'DELETE') can_delete,
+          has_table_privilege($1,$2,'TRUNCATE') can_truncate,
+          has_function_privilege($1,$3,'EXECUTE') can_execute,
+          EXISTS(SELECT 1 FROM pg_proc p,LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE p.oid=$3::regprocedure AND a.grantee=0 AND a.privilege_type='EXECUTE') public_execute`,
+                [runtime.role, table, fn],
+              )
+            ).rows;
+          const denied = {
+            can_select: false,
+            can_insert: false,
+            can_update: false,
+            can_delete: false,
+            can_truncate: false,
+            can_execute: false,
+            public_execute: false,
+          };
+          expect(await privileges()).toEqual([denied]);
+          await f.owner.query(`GRANT SELECT ON ${table} TO ${f.quote(runtime.role)}`);
+          expect(await privileges()).toEqual([{ ...denied, can_select: true }]);
+        } finally {
+          await f.owner.query(
+            `ALTER DEFAULT PRIVILEGES IN SCHEMA ${f.quote(f.schema)} REVOKE ALL ON TABLES FROM ${f.quote(runtime.role)}`,
+          );
+          await f.owner.query(
+            `ALTER DEFAULT PRIVILEGES IN SCHEMA ${f.quote(f.schema)} REVOKE EXECUTE ON FUNCTIONS FROM ${f.quote(runtime.role)}`,
+          );
+        }
+      },
+      333,
+    );
+  }, 120000);
   test("the serving role reads only current explicit learner decisions and cannot create approvals", async () => {
     if (!connectionString) throw Error("Postgres test URL missing");
     await schemaOwner.run({
