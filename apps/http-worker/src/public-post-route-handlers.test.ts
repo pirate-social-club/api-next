@@ -74,6 +74,21 @@ describe("public post route HTTP handlers", () => {
         listSitemap: () =>
           Effect.succeed({ object: "public_post_sitemap_page", items: [], next_cursor: null }),
       },
+      communityStore: {
+        getPreview: () =>
+          Effect.succeed({
+            id: "community-1",
+            object: "community_preview",
+            display_name: "Harbor Collective",
+            route_slug: "harbor-collective",
+            membership_mode: "open",
+            human_verification_lane: null,
+            moderators: [],
+            membership_gate_summaries: [],
+            rules: [],
+            created: 1,
+          }),
+      },
       contentStore: { getPost: () => Effect.succeed(content) },
     };
     const worker = createHttpWorker({
@@ -85,10 +100,18 @@ describe("public post route HTTP handlers", () => {
       "http://worker.test/public/posts/by-slug?slug=hello-world",
     );
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
     expect(await response.json()).toMatchObject({
       kind: "content",
       post_id: "post-1",
       route: { canonical_path: "/posts/hello-world" },
+      content: {
+        community: {
+          id: "community-1",
+          display_name: "Harbor Collective",
+          route_slug: "harbor-collective",
+        },
+      },
     });
 
     const encoded = await worker.request(
@@ -112,6 +135,21 @@ describe("public post route HTTP handlers", () => {
         listSitemap: () =>
           Effect.succeed({ object: "public_post_sitemap_page", items: [], next_cursor: null }),
       },
+      communityStore: {
+        getPreview: () =>
+          Effect.succeed({
+            id: "community-1",
+            object: "community_preview",
+            display_name: "Harbor Collective",
+            route_slug: "harbor-collective",
+            membership_mode: "open",
+            human_verification_lane: null,
+            moderators: [],
+            membership_gate_summaries: [],
+            rules: [],
+            created: 1,
+          }),
+      },
       contentStore: { getPost: () => Effect.succeed(content) },
     };
     const handlers = makePublicPostRouteHandlers(services);
@@ -131,6 +169,21 @@ describe("public post route HTTP handlers", () => {
         getCanonicalRouteByPostId: () => Effect.succeed(live),
         listSitemap: () =>
           Effect.succeed({ object: "public_post_sitemap_page", items: [], next_cursor: null }),
+      },
+      communityStore: {
+        getPreview: () =>
+          Effect.succeed({
+            id: "community-1",
+            object: "community_preview",
+            display_name: "Harbor Collective",
+            route_slug: "harbor-collective",
+            membership_mode: "open",
+            human_verification_lane: null,
+            moderators: [],
+            membership_gate_summaries: [],
+            rules: [],
+            created: 1,
+          }),
       },
       contentStore: { getPost: () => Effect.succeed(content) },
     };
@@ -152,6 +205,21 @@ describe("public post route HTTP handlers", () => {
             object: "public_post_sitemap_page",
             items: [{ canonical_path: `/posts/page-${limit}` }],
             next_cursor: null,
+          }),
+      },
+      communityStore: {
+        getPreview: () =>
+          Effect.succeed({
+            id: "community-1",
+            object: "community_preview",
+            display_name: "Harbor Collective",
+            route_slug: "harbor-collective",
+            membership_mode: "open",
+            human_verification_lane: null,
+            moderators: [],
+            membership_gate_summaries: [],
+            rules: [],
+            created: 1,
           }),
       },
       contentStore: { getPost: () => Effect.succeed(content) },
