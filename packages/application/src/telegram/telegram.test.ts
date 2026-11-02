@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { processTelegramInbox } from "./chat.ts";
 import { acceptTelegramUpdate, processTelegramDelivery } from "./delivery.ts";
-import { getTelegramSettings, setAssistantCredential } from "./settings.ts";
+import {
+  connectTelegram,
+  disconnectTelegram,
+  getTelegramSettings,
+  getTelegramStudyCatalogue,
+  setAssistantCredential,
+  updateTelegramStudy,
+} from "./settings.ts";
 import {
   DEFAULT_ASSISTANT_POLICY,
   type DeliveryRecord,
@@ -9,6 +16,7 @@ import {
   TelegramFailure,
   type TelegramServices,
   type TelegramStore,
+  telegramStudyView,
 } from "./types.ts";
 
 const integration: IntegrationRecord = {
@@ -78,6 +86,81 @@ test("settings redact every secret and check ownership before reading", async ()
   await expect(getTelegramSettings(denied, "community", "viewer")).rejects.toMatchObject({
     reason: "unauthorized",
   });
+});
+
+test("Study intent uses owner authorization, revision and replay without providers or channel setup", async () => {
+  let current = { ...integration, channelId: null };
+  const commands = new Map<string, string>();
+  const service = services({
+    owner: async (_community, owner) => {
+      if (owner !== "owner") throw new TelegramFailure({ reason: "unauthorized" });
+    },
+    integration: async () => current,
+    commandReplay: async (_community, key, hash) => {
+      if (!commands.has(key)) return null;
+      if (commands.get(key) !== hash) throw new TelegramFailure({ reason: "conflict" });
+      return {};
+    },
+    saveIntegration: async (next, expected, key, hash) => {
+      expect(expected).toBe(current.revision);
+      commands.set(key, hash);
+      current = { ...next, channelId: null, revision: expected + 1 };
+      return current;
+    },
+  });
+  const command = {
+    communityId: "community",
+    accountId: "owner",
+    expected_revision: 1,
+    idempotency_key: "enable",
+    enabled: true,
+  };
+  expect((await updateTelegramStudy(service, command)).enabled).toBe(true);
+  expect((await updateTelegramStudy(service, command)).integration.revision).toBe(2);
+  await expect(updateTelegramStudy(service, { ...command, enabled: false })).rejects.toMatchObject({
+    reason: "conflict",
+  });
+  await expect(
+    updateTelegramStudy(service, { ...command, accountId: "viewer" }),
+  ).rejects.toMatchObject({ reason: "unauthorized" });
+  await expect(
+    updateTelegramStudy(service, { ...command, idempotency_key: "stale" }),
+  ).rejects.toMatchObject({ reason: "conflict" });
+  expect(await getTelegramStudyCatalogue(service, "community", "owner")).toEqual({
+    ...telegramStudyView(current),
+    availability: "unavailable",
+    items: [],
+    next_cursor: null,
+  });
+  await expect(getTelegramStudyCatalogue(service, "community", "viewer")).rejects.toMatchObject({
+    reason: "unauthorized",
+  });
+  service.api = {
+    ...service.api,
+    call: async <T>() => ({ id: 123, is_bot: true, username: "fixture_bot" }) as T,
+  };
+  service.vault.seal = async () => "sealed";
+  await connectTelegram(service, {
+    ...command,
+    expected_revision: 2,
+    idempotency_key: "rotate",
+    token: "fixture",
+  });
+  expect(telegramStudyView(current).enabled).toBe(true);
+  service.api.call = async <T>() => ({ id: 456, is_bot: true, username: "replacement_bot" }) as T;
+  await connectTelegram(service, {
+    ...command,
+    expected_revision: 3,
+    idempotency_key: "replace",
+    token: "replacement",
+  });
+  expect(telegramStudyView(current).enabled).toBe(false);
+  await disconnectTelegram(service, {
+    ...command,
+    expected_revision: 4,
+    idempotency_key: "disconnect",
+  });
+  expect(telegramStudyView(current).enabled).toBe(false);
 });
 
 test("wrong webhook secret never persists an update", async () => {

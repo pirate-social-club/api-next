@@ -21481,6 +21481,43 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_study_learner_catalogue_decision() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path FROM CURRENT
+    AS $$
+DECLARE previous_revision integer;
+BEGIN
+  IF TG_OP<>'INSERT' THEN
+    RAISE EXCEPTION 'study_learner_catalogue_decision_immutable';
+  END IF;
+  IF NEW.effective_at>clock_timestamp() THEN
+    RAISE EXCEPTION 'study_learner_catalogue_scheduling_unsupported';
+  END IF;
+  NEW.recorded_at := clock_timestamp();
+  -- Match Study admission's community lock. A new denial cannot race acceptance.
+  PERFORM community_id FROM communities WHERE community_id=NEW.community_id FOR UPDATE;
+  SELECT COALESCE(max(decision_revision),0) INTO previous_revision
+    FROM study_learner_catalogue_decisions
+    WHERE community_id=NEW.community_id AND post_id=NEW.post_id;
+  IF NEW.decision_revision<>previous_revision+1 THEN
+    RAISE EXCEPTION 'study_learner_catalogue_revision_conflict';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DO $baseline_function_path$
+DECLARE target_schema TEXT := pg_catalog.current_schema(); target_function RECORD;
+BEGIN
+  SELECT p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) AS identity_arguments
+    INTO STRICT target_function
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname=target_schema AND p.proname='guard_study_learner_catalogue_decision'
+      AND pg_catalog.pg_get_function_arguments(p.oid)='';
+  EXECUTE pg_catalog.format('ALTER FUNCTION %I.%I(%s) SET search_path TO pg_catalog, %I, pg_temp',
+    target_schema,target_function.proname,target_function.identity_arguments,target_schema);
+END
+$baseline_function_path$;
+
 CREATE FUNCTION guard_study_session() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -56778,6 +56815,33 @@ CREATE TABLE study_language_profiles (
     CONSTRAINT study_language_profiles_source_hash_check CHECK ((source_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE study_learner_catalogue_decisions (
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    decision_revision integer NOT NULL,
+    policy_revision text NOT NULL,
+    disposition text NOT NULL,
+    audio_revision integer NOT NULL,
+    lyrics_revision integer NOT NULL,
+    language_profile_revision integer NOT NULL,
+    content_rating text NOT NULL,
+    learner_band text,
+    learning_language text NOT NULL,
+    exercise_type text NOT NULL,
+    reviewer_role text NOT NULL,
+    review_evidence_sha256 text NOT NULL,
+    effective_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT study_learner_catalogue_decisio_language_profile_revision_check CHECK ((language_profile_revision > 0)),
+    CONSTRAINT study_learner_catalogue_decisions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT study_learner_catalogue_decisions_decision_revision_check CHECK ((decision_revision > 0)),
+    CONSTRAINT study_learner_catalogue_decisions_disposition_check CHECK ((disposition = ANY (ARRAY['eligible'::text, 'ineligible'::text, 'fixture_only'::text]))),
+    CONSTRAINT study_learner_catalogue_decisions_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT study_learner_catalogue_decisions_policy_revision_check CHECK (((length(policy_revision) >= 1) AND (length(policy_revision) <= 128))),
+    CONSTRAINT study_learner_catalogue_decisions_review_evidence_sha256_check CHECK ((review_evidence_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_learner_catalogue_decisions_reviewer_role_check CHECK (((length(reviewer_role) >= 1) AND (length(reviewer_role) <= 128)))
+);
+
 CREATE TABLE study_lesson_item_state_v2 (
     session_item_id text NOT NULL,
     session_id text NOT NULL,
@@ -60902,6 +60966,9 @@ ALTER TABLE ONLY study_language_profile_units
 ALTER TABLE ONLY study_language_profiles
     ADD CONSTRAINT study_language_profiles_pkey PRIMARY KEY (community_id, post_id, lyrics_revision, language_profile_revision);
 
+ALTER TABLE ONLY study_learner_catalogue_decisions
+    ADD CONSTRAINT study_learner_catalogue_decisions_pkey PRIMARY KEY (community_id, post_id, decision_revision);
+
 ALTER TABLE ONLY study_lesson_item_state_v2
     ADD CONSTRAINT study_lesson_exact_current_target_v1 UNIQUE (session_id, session_item_id);
 
@@ -63500,6 +63567,10 @@ CREATE TRIGGER study_exercise_versions_immutable BEFORE DELETE OR UPDATE ON stud
 CREATE TRIGGER study_language_profile_units_immutable BEFORE DELETE OR UPDATE ON study_language_profile_units FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
 CREATE TRIGGER study_language_profiles_immutable BEFORE DELETE OR UPDATE ON study_language_profiles FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
+
+CREATE TRIGGER study_learner_catalogue_decision_guard BEFORE INSERT OR DELETE OR UPDATE ON study_learner_catalogue_decisions FOR EACH ROW EXECUTE FUNCTION guard_study_learner_catalogue_decision();
+
+CREATE TRIGGER study_learner_catalogue_no_truncate BEFORE TRUNCATE ON study_learner_catalogue_decisions FOR EACH STATEMENT EXECUTE FUNCTION guard_study_learner_catalogue_decision();
 
 CREATE TRIGGER study_presentations_v2_immutable BEFORE DELETE OR UPDATE ON study_presentations_v2 FOR EACH ROW EXECUTE FUNCTION reject_localization_immutable_mutation();
 
@@ -66996,6 +67067,9 @@ ALTER TABLE ONLY study_language_profile_units
 
 ALTER TABLE ONLY study_language_profiles
     ADD CONSTRAINT study_language_profiles_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY study_learner_catalogue_decisions
+    ADD CONSTRAINT study_learner_catalogue_decisions_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
 
 ALTER TABLE ONLY study_lesson_item_state_v2
     ADD CONSTRAINT study_lesson_exact_session_item_fk FOREIGN KEY (session_item_id, session_id) REFERENCES study_session_items_v2(session_item_id, session_id);

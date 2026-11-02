@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.141.1",
+  "sourceBranch": "feat/telegram-community-study-production",
+  "sourceBase": "0222c5310db1c4438e0d9980840c20d8b662114d",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Preserves all accepted client140 responses, including the closed TelegramIntegration schema. The new owner-only Study command and bounded catalogue read return a dedicated integration/enabled snapshot. Catalogue availability is distinct from an empty ready result. No policy approval or reward endpoint is added.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.141.1.tgz",
+    "sha256": "c47b62666516de7ca6645d64c17bb2ed682abb2c149eb479955c82ef326614b4"
+  },
+  "validation": {
+    "status": "Source candidate. Focused unit, type/Effect and actual PostgreSQL serving-role tests run locally; complete repository checks, exact-commit independent review and hosted checks remain required.",
+    "operationalBoundary": "Default-off community practice; staging pilot fence retained. The unseeded learner decision mechanism accepts no real policy or song. No runtime, credentials, deployment, grants, production activation or financial operation.",
+    "supersedes": "Candidate 0.141.0 failed the closed-response compatibility gate. Its immutable archive is retained unchanged. This patch candidate corrects the contract boundary."
+  }
+}

@@ -6,6 +6,7 @@ import {
 } from "@pirate/application/telegram-study";
 import { Effect } from "effect";
 import type { StudyV2Admission } from "./study-v2-repository.ts";
+import { TELEGRAM_COMMUNITY_STUDY_READY_SQL } from "./telegram-community-study-catalogue.ts";
 import { TELEGRAM_STUDY_READY_SQL } from "./telegram-study-store.ts";
 
 /**
@@ -39,6 +40,7 @@ export function telegramStudyAdmission(
   lease: TelegramStudyLease,
   grant: TelegramStudyGrant,
   postIds: readonly string[],
+  policyRevision?: string,
 ): StudyV2Admission {
   const sender = lease.sender;
   return {
@@ -65,6 +67,17 @@ export function telegramStudyAdmission(
           values: [sender.communityId],
           readonly: false,
         });
+        if (policyRevision !== undefined) {
+          const enabled = yield* transaction.execute({
+            label: "telegram-study.community-enablement",
+            text: `SELECT 1 FROM community_telegram_integrations WHERE community_id=$1
+              AND bot_id=$2 AND bot_epoch=$3 AND record->>'status'='ready'
+              AND record->'study'->>'enabled'='true' AND record->'study'->>'botId'=$2`,
+            values: [sender.communityId, sender.botId, sender.epoch],
+            readonly: true,
+          });
+          if (enabled.rows.length !== 1) return yield* refuse();
+        }
         yield* transaction.execute({
           label: "telegram-study.account-lock",
           text: "SELECT user_id FROM users WHERE user_id=$1 AND status='active' FOR SHARE",
@@ -126,11 +139,25 @@ export function telegramStudyAdmission(
         if (authority.rows.length !== 1) return yield* refuse();
         if (authority.rows[0]?.lease_valid !== true) return yield* new TelegramStudyLeaseExpired();
         if (input.personaId !== undefined) {
-          if (!input.postId || !postIds.includes(input.postId)) return yield* refuse();
+          if (!input.postId || (policyRevision === undefined && !postIds.includes(input.postId)))
+            return yield* refuse();
+          if (policyRevision !== undefined) {
+            // Profile/exercise producers lock the post before appending. Acquire that lock
+            // in a separate statement so the readiness snapshot follows any writer's commit.
+            yield* transaction.execute({
+              label: "telegram-study.catalogue-post-lock",
+              text: "SELECT post_id FROM posts WHERE community_id=$1 AND post_id=$2 FOR SHARE",
+              values: [sender.communityId, input.postId],
+              readonly: false,
+            });
+          }
           const ready = yield* transaction.execute({
             label: "telegram-study.ready-at-acceptance",
-            text: `${TELEGRAM_STUDY_READY_SQL} FOR SHARE OF p,publication,submission`,
-            values: [sender.communityId, [input.postId]],
+            text: `${policyRevision === undefined ? TELEGRAM_STUDY_READY_SQL : TELEGRAM_COMMUNITY_STUDY_READY_SQL} FOR SHARE OF p,publication,submission`,
+            values:
+              policyRevision === undefined
+                ? [sender.communityId, [input.postId]]
+                : [sender.communityId, null, policyRevision, null, input.postId],
             readonly: false,
           });
           if (ready.rows.length !== 1) return yield* refuse();

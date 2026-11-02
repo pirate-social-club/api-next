@@ -75,7 +75,9 @@ suite("immutable song moderation action migration", () => {
 
   test("refuses source or active-trigger drift without changing the prefix", async () => {
     if (connection === undefined) throw Error("Fixture database unavailable");
-    const migration = (await loadPostgresMigrations()).at(-1);
+    const migration = (await loadPostgresMigrations()).find(
+      (candidate) => candidate.version === "0333_media_moderation_immutable_action.sql",
+    );
     expect(migration?.version).toBe("0333_media_moderation_immutable_action.sql");
     if (migration === undefined) throw Error("Moderation migration missing");
     await withDanceServingPermissionFixture(
