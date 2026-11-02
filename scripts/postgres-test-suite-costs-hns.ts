@@ -42,6 +42,10 @@ export const postgresHnsSuiteCostEstimates = {
     milliseconds: 12904,
   },
   "apps/http-worker/src/hns-txt-attachment.pg.test.ts": { sourceCallCount: 4, milliseconds: 28348 },
+  "apps/jobs-worker/src/hns-active-lease-renewal-observer-retry.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 8000,
+  },
   "apps/jobs-worker/src/hns-active-lease-renewal-production.pg.test.ts": {
     sourceCallCount: 1,
     milliseconds: 25519,
