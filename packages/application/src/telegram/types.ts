@@ -53,6 +53,8 @@ export type IntegrationRecord = {
   channelTitle: string | null;
   channelUsername: string | null;
   automaticSince: string | null;
+  /** Absent on pre-Study records. A replacement bot requires new owner intent. */
+  study?: { enabled: boolean; botId: string | null };
   policy: CommunityAssistantPolicy;
   credentials: Partial<Record<Provider, StoredCredential>>;
   lastError: string | null;
@@ -269,6 +271,15 @@ export interface TelegramLanguageSender {
 
 export interface TelegramServices {
   study?: import("../telegram-study.ts").TelegramStudyServices;
+  communityStudy?: {
+    resolve(
+      communityId: string,
+    ): Promise<import("../telegram-study.ts").TelegramStudyServices | undefined>;
+    catalogue(
+      communityId: string,
+      after?: string,
+    ): Promise<import("../telegram-study.ts").TelegramStudyCataloguePage>;
+  };
   store: TelegramStore;
   api: TelegramApi;
   providers: AssistantProviders;
@@ -300,6 +311,10 @@ export function integrationView(record: IntegrationRecord): TelegramIntegration 
         ? null
         : { title: record.channelTitle ?? "Channel", username: record.channelUsername },
     automatic_publishing: record.automaticSince !== null,
+    study_enabled:
+      record.study?.enabled === true &&
+      record.botId !== null &&
+      record.study.botId === record.botId,
     assistant: record.policy,
     openrouter: credential("openrouter"),
     elevenlabs: credential("elevenlabs"),

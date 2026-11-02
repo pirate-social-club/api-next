@@ -56,6 +56,7 @@ export const TelegramIntegration = Schema.Struct({
     Schema.Struct({ title: Schema.String, username: Schema.NullOr(Schema.String) }),
   ),
   automatic_publishing: Schema.Boolean,
+  study_enabled: Schema.Boolean,
   assistant: CommunityAssistantPolicy,
   openrouter: TelegramCredentialStatus,
   elevenlabs: TelegramCredentialStatus,
@@ -122,6 +123,28 @@ export const UpdateCommunityTelegram = endpoint({
     }),
   },
   response: TelegramIntegration,
+  errors,
+});
+export const UpdateCommunityTelegramStudy = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/telegram/study",
+  auth: Auth.user({ browserSessionOnly: true }),
+  cacheControl: "private, no-store",
+  request: { path: Path, body: Schema.Struct({ ...Fence, enabled: Schema.Boolean }) },
+  response: TelegramIntegration,
+  errors,
+});
+export const GetCommunityTelegramStudyCatalogue = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/telegram/study/catalogue",
+  auth: Auth.user(),
+  cacheControl: "private, no-store",
+  request: { path: Path, query: Schema.Struct({ after: Schema.optional(Id) }) },
+  response: Schema.Struct({
+    availability: Schema.Literals(["available", "unavailable"]),
+    items: Schema.Array(Schema.Struct({ post_id: Id, title: Schema.String })),
+    next_cursor: Schema.NullOr(Id),
+  }),
   errors,
 });
 export const DisconnectCommunityTelegram = endpoint({
@@ -254,6 +277,8 @@ export const telegramRegistry = {
   GetCommunityTelegram,
   ConnectCommunityTelegram,
   UpdateCommunityTelegram,
+  UpdateCommunityTelegramStudy,
+  GetCommunityTelegramStudyCatalogue,
   DisconnectCommunityTelegram,
   SetCommunityAssistantCredential,
   ListCommunityAssistantModels,

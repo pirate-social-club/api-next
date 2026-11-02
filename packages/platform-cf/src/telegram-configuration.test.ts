@@ -96,3 +96,35 @@ test("interface languages are optional and must keep English without repeats", (
   for (const invalid of [[], ["ru"], ["en", "en"], ["en", "fr"], "en", ["en", "ru", "ka", "en"]])
     expect(() => decode(invalid)).toThrow("Telegram compact configuration missing or invalid");
 });
+
+test("community practice is an explicit independent delegation and never inherits the pilot", () => {
+  const decode = (change: Record<string, unknown>) =>
+    decodeTelegramConfiguration({
+      TELEGRAM_CONFIG_JSON: JSON.stringify({ ...telegramConfigurationFixture, ...change }),
+    });
+  expect(decode({}).community_practice_enabled).toBeUndefined();
+  expect(() => decode({ community_practice_enabled: true })).toThrow();
+  expect(() =>
+    decode({
+      community_practice_enabled: true,
+      community_practice_policy_revision: "reviewed-policy",
+      practice_enabled: true,
+      practice_community_id: "community",
+      practice_post_ids: ["post"],
+    }),
+  ).toThrow();
+  expect(() =>
+    decode({
+      enabled: false,
+      linking_enabled: false,
+      community_practice_enabled: true,
+      community_practice_policy_revision: "reviewed-policy",
+    }),
+  ).toThrow();
+  expect(
+    decode({
+      community_practice_enabled: true,
+      community_practice_policy_revision: "reviewed-policy",
+    }).community_practice_enabled,
+  ).toBe(true);
+});
