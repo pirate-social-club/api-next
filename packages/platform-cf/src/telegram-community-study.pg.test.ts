@@ -272,7 +272,7 @@ suite("community Telegram Study eligibility and owner persistence", () => {
               waiting =
                 (
                   await admin.query(
-                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND query LIKE '%posts%' AND wait_event_type='Lock' AND state='active') AS waiting",
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity activity JOIN pg_locks locks ON locks.pid=activity.pid WHERE activity.pid<>pg_backend_pid() AND locks.relation='posts'::regclass AND activity.wait_event_type='Lock' AND activity.state='active') AS waiting",
                   )
                 ).rows[0].waiting === true;
               if (waiting) break;
