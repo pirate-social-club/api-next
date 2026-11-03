@@ -7,6 +7,8 @@ import {
   isScheduleDue,
   type JobDeclaration,
   RegistryConfigurationError,
+  SHARED_TABLE_WRITERS,
+  type SharedTableWriters,
   selectDueJobs,
 } from "./registry";
 
@@ -130,5 +132,112 @@ describe("jobs-kernel declaration registry", () => {
   test("rejects malformed cron declarations", async () => {
     const error = await errorOf([{ ...baseJob, schedule: "not-a-cron" }]);
     expect(error).toMatchObject({ reason: "invalid-schedule" });
+  });
+});
+
+describe("partitioned shared table writers", () => {
+  const writer = (name: string, writes: JobDeclaration["writes"]): JobDeclaration => ({
+    ...baseJob,
+    name,
+    lane: name,
+    writes,
+  });
+  const bindings = "postgres:community_canonical_route_bindings" as const;
+  const saleCurrent = "postgres:community_handle_sale_namespace_activation_current" as const;
+
+  test("admits the listed writers of distinct row families on their listed tables", async () => {
+    const registry = await Effect.runPromise(
+      buildJobRegistry([
+        writer("hns-active-lease-renewal.poll", [bindings, saleCurrent]),
+        writer("spaces-native.route-renewal", [bindings]),
+        writer("spaces-native.root-observation", [saleCurrent]),
+      ]),
+    );
+    expect(registry.declarations).toHaveLength(3);
+  });
+
+  test("the shipped list gives every shared table one writer per family", () => {
+    for (const [table, listed] of Object.entries(SHARED_TABLE_WRITERS)) {
+      const partitions = Object.values(listed ?? {});
+      expect({ table, size: new Set(partitions).size }).toEqual({
+        table,
+        size: partitions.length,
+      });
+      expect(partitions.length).toBeGreaterThan(1);
+    }
+  });
+
+  test("rejects a third writer whose family is already taken, in every order", async () => {
+    const three: SharedTableWriters = { [bindings]: { a: "hns", b: "spaces", c: "hns" } };
+    const orders = [
+      ["a", "b", "c"],
+      ["a", "c", "b"],
+      ["b", "a", "c"],
+      ["b", "c", "a"],
+      ["c", "a", "b"],
+      ["c", "b", "a"],
+    ];
+    for (const order of orders) {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          buildJobRegistry(
+            order.map((name) => writer(name, [bindings])),
+            three,
+          ),
+        ),
+      );
+      expect(error).toMatchObject({ reason: "duplicate-table-writer", key: bindings });
+    }
+  });
+
+  test("rejects two writers in the same partition even when both are listed", async () => {
+    const sameFamily: SharedTableWriters = {
+      [bindings]: { "hns.first": "hns", "hns.second": "hns" },
+    };
+    const error = await Effect.runPromise(
+      Effect.flip(
+        buildJobRegistry(
+          [writer("hns.first", [bindings]), writer("hns.second", [bindings])],
+          sameFamily,
+        ),
+      ),
+    );
+    expect(error).toMatchObject({ reason: "duplicate-table-writer", key: bindings });
+  });
+
+  test("rejects an unlisted writer on a listed table, in either order", async () => {
+    const listed = writer("hns-active-lease-renewal.poll", [bindings]);
+    const unlisted = writer("hns-route-revalidation.poll", [bindings]);
+    for (const jobs of [
+      [listed, unlisted],
+      [unlisted, listed],
+    ]) {
+      expect(await errorOf(jobs)).toMatchObject({
+        reason: "duplicate-table-writer",
+        key: bindings,
+      });
+    }
+  });
+
+  test("rejects a listed name on a table it is not listed for", async () => {
+    // Route renewal is listed for bindings, never for sale-namespace activations.
+    for (const jobs of [
+      [
+        writer("hns-active-lease-renewal.poll", [saleCurrent]),
+        writer("spaces-native.route-renewal", [saleCurrent]),
+      ],
+      [
+        writer("spaces-native.root-observation", [bindings]),
+        writer("hns-active-lease-renewal.poll", [bindings]),
+      ],
+      [writer("spaces-native.route-renewal", ["postgres:job_attempts"]), baseJob],
+    ]) {
+      expect(await errorOf(jobs)).toMatchObject({ reason: "duplicate-table-writer" });
+    }
+  });
+
+  test("rejects one declaration listing a shared table twice", async () => {
+    const error = await errorOf([writer("spaces-native.route-renewal", [bindings, bindings])]);
+    expect(error).toMatchObject({ reason: "duplicate-table-writer", key: bindings });
   });
 });

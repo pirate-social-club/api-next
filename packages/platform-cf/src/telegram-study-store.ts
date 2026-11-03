@@ -8,11 +8,11 @@ import { Schema } from "effect";
 import type { TelegramDatabase } from "./telegram-database.ts";
 import { currentBot, lockLinkBot } from "./telegram-linking-context.ts";
 
-export const TELEGRAM_STUDY_READY_SQL = `SELECT p.post_id,publication.title
+export const TELEGRAM_STUDY_READY_BASE_SQL = `SELECT p.post_id,publication.title
 FROM posts p JOIN communities c USING(community_id)
 JOIN media_publication_projections publication USING(community_id,post_id)
 JOIN media_post_submissions submission ON submission.submission_id=publication.submission_id
-WHERE p.community_id=$1 AND p.post_id=ANY($2::text[])
+WHERE p.community_id=$1 AND ($2::text[] IS NULL OR p.post_id=ANY($2::text[]))
   AND p.post_type='song' AND p.status='published' AND p.visibility='public'
   AND p.content_rating='general' AND c.status='active' AND publication.lyrics_status='ready'
   AND EXISTS(SELECT 1 FROM media_song_stems WHERE submission_id=publication.submission_id AND slot='instrumental_audio')
@@ -59,7 +59,9 @@ WHERE p.community_id=$1 AND p.post_id=ANY($2::text[])
       AND exercise.audio_revision=submission.audio_revision AND exercise.lyrics_revision=submission.current_lyrics_revision
       AND exercise.retired_at IS NULL AND exercise.exercise_type='say_it_back'
       AND char_length(exercise.presentation->>'reference_text')>2000
-  ) ORDER BY array_position($2::text[],p.post_id) LIMIT 8`;
+  )`;
+export const TELEGRAM_STUDY_READY_SQL = `${TELEGRAM_STUDY_READY_BASE_SQL}
+  ORDER BY array_position($2::text[],p.post_id) LIMIT 8`;
 
 export function makeTelegramStudyStore(
   db: TelegramDatabase,

@@ -144,10 +144,10 @@ function protocol(
   return { input, operations, events };
 }
 
-test("the actual checksum loader supplies the complete contiguous repository 0001..0333 set", () => {
-  expect(migrations).toHaveLength(333);
+test("the actual checksum loader supplies the complete contiguous repository 0001..0334 set", () => {
+  expect(migrations).toHaveLength(334);
   expect(migrations.map((m) => Number(m.version.slice(0, 4)))).toEqual(
-    Array.from({ length: 333 }, (_, i) => i + 1),
+    Array.from({ length: 334 }, (_, i) => i + 1),
   );
   expect(migrations[274]).toMatchObject({
     version: "0275_video_root_comment_ordering.sql",

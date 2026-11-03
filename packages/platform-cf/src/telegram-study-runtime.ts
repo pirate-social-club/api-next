@@ -17,6 +17,7 @@ import {
   makeElevenLabsStudyBatchTranscriber,
   type StudyAudioBucket,
 } from "./study-spoken-audio.ts";
+import { makeTelegramCommunityStudyCatalogue } from "./telegram-community-study-catalogue.ts";
 import { makeTelegramDatabase } from "./telegram-database.ts";
 import { makeControlPlaneTelegramLinkStore } from "./telegram-linking-repository.ts";
 import { telegramStudyAdmission } from "./telegram-study-admission.ts";
@@ -28,6 +29,8 @@ export interface TelegramPracticeBindings {
   readonly TELEGRAM_STUDY_PRACTICE_ENABLED?: string;
   readonly TELEGRAM_STUDY_PRACTICE_COMMUNITY_ID?: string;
   readonly TELEGRAM_STUDY_PRACTICE_POST_IDS_JSON?: string;
+  readonly TELEGRAM_COMMUNITY_STUDY_ENABLED?: string;
+  readonly TELEGRAM_COMMUNITY_STUDY_POLICY_REVISION?: string;
   readonly API_NEXT_ENV?: string;
   readonly ELEVENLABS_API_KEY?: string;
   readonly LEARNER_AUDIO?: StudyAudioBucket;
@@ -55,7 +58,6 @@ export function makeTelegramStudyServices(
 ): TelegramStudyServices | undefined {
   if (bindings.TELEGRAM_STUDY_PRACTICE_ENABLED !== "true") return undefined;
   const communityId = bindings.TELEGRAM_STUDY_PRACTICE_COMMUNITY_ID;
-  const apiKey = bindings.ELEVENLABS_API_KEY;
   const bucket = bindings.LEARNER_AUDIO;
   if (bindings.API_NEXT_ENV !== "staging" || !communityId || !bucket)
     throw Error(
@@ -66,8 +68,68 @@ export function makeTelegramStudyServices(
   );
   if (new Set(postIds).size !== postIds.length)
     throw Error("Telegram practice catalogue has duplicate songs");
+  return composeStudyServices(bindings, runtime, telegram, communityId, postIds);
+}
+
+/** Explicit production-capable delegation; it never broadens the staging pilot. */
+export function makeTelegramCommunityStudyServices(
+  bindings: TelegramPracticeBindings,
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  telegram: TelegramServices,
+): TelegramServices["communityStudy"] {
+  if (bindings.TELEGRAM_COMMUNITY_STUDY_ENABLED !== "true") return undefined;
+  const policyRevision = bindings.TELEGRAM_COMMUNITY_STUDY_POLICY_REVISION;
+  if (
+    (bindings.API_NEXT_ENV !== "staging" && bindings.API_NEXT_ENV !== "production") ||
+    !policyRevision ||
+    policyRevision.length > 128 ||
+    !bindings.LEARNER_AUDIO ||
+    !bindings.ELEVENLABS_API_KEY?.trim() ||
+    bindings.ELEVENLABS_API_KEY.trim() !== bindings.ELEVENLABS_API_KEY ||
+    bindings.TELEGRAM_STUDY_PRACTICE_ENABLED === "true"
+  )
+    throw Error(
+      "Community Telegram Study requires an explicit environment, policy, audio and transcription delegation",
+    );
+  const catalogue = makeTelegramCommunityStudyCatalogue(
+    makeTelegramDatabase(runtime),
+    policyRevision,
+  );
+  return {
+    catalogue: (communityId, after) => catalogue.page(communityId, after),
+    async resolve(communityId) {
+      const record = await telegram.store.integration(communityId);
+      if (
+        record.status !== "ready" ||
+        !record.botId ||
+        record.study?.enabled !== true ||
+        record.study.botId !== record.botId
+      )
+        return undefined;
+      return composeStudyServices(bindings, runtime, telegram, communityId, [], policyRevision);
+    },
+  };
+}
+
+function composeStudyServices(
+  bindings: TelegramPracticeBindings,
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  telegram: TelegramServices,
+  communityId: string,
+  postIds: readonly string[],
+  policyRevision?: string,
+): TelegramStudyServices {
+  const apiKey = bindings.ELEVENLABS_API_KEY;
+  const bucket = bindings.LEARNER_AUDIO;
+  if (!bucket) throw Error("Telegram Study requires learner audio storage");
   const database = makeTelegramDatabase(runtime);
   const store = makeTelegramStudyStore(database, communityId, postIds);
+  if (policyRevision !== undefined) {
+    const catalogue = makeTelegramCommunityStudyCatalogue(database, policyRevision);
+    store.catalogue = async (community) => (await catalogue.page(community)).items;
+    store.cataloguePage = catalogue.page;
+    store.ready = catalogue.ready;
+  }
   const links = makeControlPlaneTelegramLinkStore(runtime);
   const learners = makeTelegramStudyLearnerStore(database, communityId);
   const transcriber =
@@ -83,7 +145,7 @@ export function makeTelegramStudyServices(
       (task) => {
         workerBackground.defer(() => task);
       },
-      telegramStudyAdmission(lease, grant, postIds),
+      telegramStudyAdmission(lease, grant, postIds, policyRevision),
     );
     return { ...makeStudyV2Service(controlled.store), ...controlled.spoken };
   };
