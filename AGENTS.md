@@ -103,6 +103,18 @@ nothing imports apps; domain uses only Schema/Data effect modules.
 
 ## Runtime
 
+The owner-confirmed posting snapshot has one fixed source-selection mode in the
+same maintained deployer: `--posting-frozen-runtime`, with a separate
+`--repository-root` at exact published EBE/tree52e and accepted main tooling
+selected by `--tooling-source-ref`. It applies only to staging HTTP. The guard
+checks fresh main publication, the fixed release ref, accepted fa101/236
+ancestry and the exact seven-file projection, plus clean same-repository
+source and tooling, again immediately before upload. It does not select other
+snapshots, bypass runtime guards, make the frozen snapshot's disclosed static
+freshness check green, or permit a protected-main merge with red checks.
+Normal modes keep their accepted-main ancestry rule. Actual deployment still
+requires independently reviewed whole-package/current-fact operation acceptance.
+
 All normal staging Worker deploys use `scripts/deploy-worker-with-provenance.ts`.
 Its serving-binding preflight compares the effective candidate with every
 version receiving traffic and refuses unexplained flag or binding differences

@@ -353,6 +353,12 @@ console.log(JSON.stringify({tokenPresent:!!process.env.CLOUDFLARE_API_TOKEN,acco
       ).toThrow(`unknown deployment argument: ${argument}`);
   });
 
+  test("the posting opt-in is absent from ordinary deployment arguments", () => {
+    expect(
+      parseWorkerDeploymentArgs(["--config", input.configPath, "--env", "staging"]),
+    ).not.toHaveProperty("postingFrozenRuntime");
+  });
+
   test("verifies an accepted exact clean tree and tracked config", async () => {
     const { runner } = queueRunner([
       { exitCode: 0, stdout: `${sourceSha}\n` },
