@@ -220,12 +220,17 @@ export function telegramQueueConsumer(queue: unknown, consumers: unknown) {
       Array.isArray(consumers),
     "production-telegram-queue-missing",
   );
-  const rows = consumers.map(configObject);
+  const rows = consumers.map(configObject),
+    consumer = rows[0],
+    targetAliases = ["script_name", "script"].filter(
+      (name) => consumer !== undefined && Object.hasOwn(consumer, name),
+    );
   requireTelegram(
     rows.length === 1 &&
-      rows[0]?.type === "worker" &&
-      rows[0]?.script_name === TELEGRAM_RELEASE.workers.jobs.name &&
-      (rows[0]?.environment === undefined || rows[0]?.environment === "production"),
+      consumer?.type === "worker" &&
+      targetAliases.length > 0 &&
+      targetAliases.every((name) => consumer?.[name] === TELEGRAM_RELEASE.workers.jobs.name) &&
+      (consumer?.environment === undefined || consumer.environment === "production"),
     "telegram-consumer-not-the-production-jobs-worker",
   );
   return { queue: q.queue_name, id: q.queue_id, consumers: rows };
