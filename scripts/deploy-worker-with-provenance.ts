@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   HNS_STAGING_DIRECT_CHECK_COMMAND,
@@ -19,6 +19,8 @@ import {
 import { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
 import type { BindingDriftReceipt } from "./worker-binding-drift.ts";
 
+import { verifyWorkerDeploymentSource } from "./worker-deployment-source.ts";
+
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -30,6 +32,7 @@ export type WorkerDeploymentInput = Readonly<{
   bindingReviewPath?: string;
   repositoryRoot?: string;
   toolingSourceRef?: string;
+  postingFrozenRuntime?: true;
 }>;
 
 export type WorkerDeploymentReceipt = Readonly<{
@@ -75,6 +78,7 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   let bindingReviewPath: string | undefined;
   let repositoryRoot: string | undefined;
   let toolingSourceRef: string | undefined;
+  let postingFrozenRuntime: true | undefined;
   const acceptedMainRef = "origin/main";
 
   for (let index = 0; index < args.length; index += 1) {
@@ -103,6 +107,10 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
         if (!isAbsolute(repositoryRoot)) throw Error("--repository-root must be absolute");
         index += 1;
         break;
+      case "--posting-frozen-runtime":
+        if (postingFrozenRuntime) throw Error("duplicate posting snapshot flag");
+        postingFrozenRuntime = true;
+        break;
       case "--binding-review":
         bindingReviewPath = optionValue(args, index);
         index += 1;
@@ -117,6 +125,13 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   if (!ENVIRONMENT_NAME.test(environment)) throw new Error("--env is invalid");
   if (bindingReviewPath !== undefined && environment !== "staging")
     throw new Error("--binding-review applies only to staging");
+  if (
+    postingFrozenRuntime &&
+    (environment !== "staging" ||
+      configPath !== "apps/http-worker/wrangler.jsonc" ||
+      repositoryRoot === undefined)
+  )
+    throw Error("posting snapshot requires staging HTTP and a separate deployment checkout");
   return {
     configPath,
     environment,
@@ -125,6 +140,7 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
     ...(bindingReviewPath === undefined ? {} : { bindingReviewPath }),
     ...(repositoryRoot === undefined ? {} : { repositoryRoot }),
     ...(toolingSourceRef === undefined ? {} : { toolingSourceRef }),
+    ...(postingFrozenRuntime ? { postingFrozenRuntime } : {}),
   };
 }
 
@@ -241,66 +257,12 @@ async function requiredOutput(
   return result.stdout.trim();
 }
 
-function repositoryPath(repositoryRoot: string, inputPath: string): string {
-  const absolutePath = resolve(repositoryRoot, inputPath);
-  const relativePath = relative(repositoryRoot, absolutePath);
-  if (relativePath.length === 0 || relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error("--config must resolve inside the repository");
-  }
-  return relativePath;
-}
-
 export async function verifyDeploymentSource(
   repositoryRoot: string,
   input: WorkerDeploymentInput,
   runner: CommandRunner = runDeploymentCommand,
 ): Promise<Readonly<{ sourceSha: string; configPath: string }>> {
-  const configPath = repositoryPath(repositoryRoot, input.configPath);
-  const sourceSha = await requiredOutput(
-    runner,
-    ["git", "rev-parse", "--verify", `${input.sourceRef}^{commit}`],
-    repositoryRoot,
-    "source-ref resolution",
-  );
-  if (!FULL_GIT_SHA.test(sourceSha))
-    throw new Error("source ref did not resolve to a full Git SHA");
-
-  const reachable = await runner(
-    ["git", "merge-base", "--is-ancestor", sourceSha, input.acceptedMainRef],
-    repositoryRoot,
-  );
-  if (reachable.exitCode !== 0) {
-    throw new Error(
-      reachable.exitCode === 1
-        ? "source commit is not reachable from accepted main"
-        : `accepted-main reachability check failed (exit ${reachable.exitCode})`,
-    );
-  }
-
-  const tracked = await runner(["git", "diff", "--quiet", sourceSha, "--"], repositoryRoot);
-  if (tracked.exitCode !== 0) {
-    throw new Error(
-      tracked.exitCode === 1
-        ? "checkout tree does not match the source commit"
-        : `checkout tree check failed (exit ${tracked.exitCode})`,
-    );
-  }
-
-  const untracked = await requiredOutput(
-    runner,
-    ["git", "ls-files", "--others", "--exclude-standard"],
-    repositoryRoot,
-    "untracked-file check",
-  );
-  if (untracked.length > 0) throw new Error("checkout contains untracked files");
-
-  await requiredOutput(
-    runner,
-    ["git", "ls-files", "--error-unmatch", "--", configPath],
-    repositoryRoot,
-    "Wrangler config tracking check",
-  );
-  return { sourceSha, configPath };
+  return verifyWorkerDeploymentSource(repositoryRoot, input, runner);
 }
 
 function versionsCommand(input: WorkerDeploymentInput, configPath: string): readonly string[] {
@@ -464,10 +426,14 @@ export async function deployWorkerWithProvenance(
           configPath,
           input.environment,
           async (signal) => {
-            if (bindingGuard !== null) {
-              await bindingGuard.recheck();
+            if (bindingGuard !== null || input.postingFrozenRuntime) {
+              await bindingGuard?.recheck();
             }
-            if (bindingGuard !== null || verifySource !== verifyDeploymentSource) {
+            if (
+              bindingGuard !== null ||
+              input.postingFrozenRuntime ||
+              verifySource !== verifyDeploymentSource
+            ) {
               const current = await verifySource(repositoryRoot, input, runner);
               if (current.sourceSha !== sourceSha)
                 throw Error("deployment source changed before upload");
@@ -559,12 +525,16 @@ export async function resolveDeploymentRepository(
   toolingRoot = fileURLToPath(new URL("../", import.meta.url)),
 ): Promise<string> {
   const target = input.repositoryRoot === undefined ? toolingRoot : resolve(input.repositoryRoot);
-  if (target === resolve(toolingRoot)) return target;
+  const { postingFrozenRuntime, ...normalInput } = input;
+  if (target === resolve(toolingRoot)) {
+    if (postingFrozenRuntime) throw Error("posting snapshot requires separate accepted tooling");
+    return target;
+  }
   if (input.environment !== "staging")
     throw Error("external deployment checkout applies only to staging");
   await verifyDeploymentSource(
     toolingRoot,
-    { ...input, sourceRef: input.toolingSourceRef ?? input.acceptedMainRef },
+    { ...normalInput, sourceRef: input.toolingSourceRef ?? input.acceptedMainRef },
     runner,
   );
   const command = ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"];
