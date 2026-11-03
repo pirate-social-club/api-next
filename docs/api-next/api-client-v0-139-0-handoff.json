@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.139.0",
+  "sourceBranch": "fix/dance-no-pose-policy-20261029",
+  "sourceBase": "91421a53",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Preserves browser renewal from client138 and adds strictly paired prospective no-pose Dance policy/profile/capture-terms-v2, zero opening-cue/body-start offsets and honest attestation-v2 not_required. Retained v1 sessions and their qualification preimages remain unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.139.0.tgz",
+    "sha256": "405cdf43e3f9358d06ee9916da0ad30115e5e1958893a4059989aaa2279cfe57"
+  },
+  "validation": {
+    "status": "Candidate; final combined source qualification and independent producer acceptance remain pending.",
+    "operationalBoundary": "Source only. Migration0330 must precede0331. New admission requires the reviewed paired HTTP/media/Solid source serving at100 percent and policy readback. No captured terms are extended or rewritten."
+  }
+}

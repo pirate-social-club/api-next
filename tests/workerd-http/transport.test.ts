@@ -128,6 +128,33 @@ describe("real HTTP worker transport", () => {
     });
   });
 
+  it("revokes an owned browser session through the native HTTP logout route", async () => {
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
+    });
+    expect(exchange.status).toBe(200);
+    const browser = browserCookies(exchange);
+    expect(browser.cookie).toContain("__Host-pirate_renewal=");
+    const logout = await SELF.fetch("https://worker.test/auth/session/logout", {
+      method: "POST",
+      headers: {
+        cookie: browser.cookie,
+        origin: "https://solid.test",
+        "x-csrf-token": browser.csrf,
+      },
+    });
+    expect(logout.status).toBe(200);
+    expect(logout.headers.get("set-cookie")).toContain("__Host-pirate_renewal=;");
+    expect(
+      (await SELF.fetch("https://worker.test/users/me", { headers: { cookie: browser.cookie } }))
+        .status,
+    ).toBe(401);
+  });
+
   it("serves authenticated replay-safe post votes and protects author-scoped reads", async () => {
     const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",

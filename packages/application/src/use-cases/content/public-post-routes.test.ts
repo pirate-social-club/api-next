@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import type { LocalizedPostDocument } from "../../ports.ts";
+import type { CommunityPreviewDocument, LocalizedPostDocument } from "../../ports.ts";
 import {
   getPublicPostBySlug,
   getPublicPostCanonicalRouteById,
@@ -65,9 +65,28 @@ const live = (overrides: Partial<PublicPostLiveRecord> = {}): PublicPostLiveReco
   ...overrides,
 });
 
+const community: CommunityPreviewDocument = {
+  id: "community-1",
+  object: "community_preview",
+  display_name: "Harbor Collective",
+  route_slug: "harbor-collective",
+  avatar_ref: "https://images.example/community.png",
+  membership_mode: "open",
+  human_verification_lane: null,
+  moderators: [],
+  membership_gate_summaries: [],
+  rules: [],
+  created: 1,
+};
+
 const services = (
   record: PublicPostLiveRecord | null,
-  options: Readonly<{ projected?: LocalizedPostDocument; contentCalls?: string[] }> = {},
+  options: Readonly<{
+    projected?: LocalizedPostDocument;
+    contentCalls?: string[];
+    community?: CommunityPreviewDocument | null;
+    previewCalls?: unknown[];
+  }> = {},
 ): PublicPostRouteServices => {
   const publicPostRouteStore: PublicPostRouteStoreService = {
     getBySlug: () => Effect.succeed(record),
@@ -77,6 +96,12 @@ const services = (
   };
   return {
     publicPostRouteStore,
+    communityStore: {
+      getPreview: (input) => {
+        options.previewCalls?.push(input);
+        return Effect.succeed(options.community === undefined ? community : options.community);
+      },
+    },
     contentStore: {
       getPost: ({ viewerUserId }) => {
         options.contentCalls?.push(viewerUserId);
@@ -235,5 +260,71 @@ describe("public post route use cases", () => {
         getPublicPostSitemap({ cursor: "bad" }, { publicPostRouteStore: invalidCursorStore }),
       ),
     ).rejects.toMatchObject({ _tag: "BadRequest" });
+  });
+});
+
+describe("public post community context", () => {
+  test("both public selectors include the actual community and omit anonymous membership", async () => {
+    for (const read of [getPublicPostBySlug, getPublicPostCanonicalRouteById]) {
+      const previewCalls: unknown[] = [];
+      const result = await Effect.runPromise(
+        read(
+          { slug: "hello-world", postId: "post-1", locale: "en" },
+          services(live(), { previewCalls }),
+        ),
+      );
+      expect(result.kind).toBe("content");
+      if (result.kind !== "content") throw new Error("expected content");
+      expect(result.content.community).toEqual(community);
+      expect(result.content.community).not.toHaveProperty("viewer_membership_status");
+      expect(previewCalls).toEqual([{ communityId: "community-1", locale: "en" }]);
+    }
+  });
+  test("the authenticated viewer, rather than the anonymous sentinel, owns membership", async () => {
+    for (const status of ["member", "not_member", "banned"] as const) {
+      const previewCalls: unknown[] = [];
+      const record = live({
+        viewer: { ...live().viewer, userId: "viewer-1", isMember: status === "member" },
+      });
+      const result = await Effect.runPromise(
+        getPublicPostBySlug(
+          { slug: "hello-world", viewerUserId: "viewer-1" },
+          services(record, {
+            previewCalls,
+            community: { ...community, viewer_membership_status: status },
+          }),
+        ),
+      );
+      expect(result.kind === "content" && result.content.community?.viewer_membership_status).toBe(
+        status,
+      );
+      expect(previewCalls).toEqual([{ communityId: "community-1", viewerUserId: "viewer-1" }]);
+    }
+  });
+  test("missing and rebound previews cannot label content with another community", async () => {
+    for (const preview of [null, { ...community, id: "another-community" }]) {
+      await expect(
+        Effect.runPromise(
+          getPublicPostBySlug({ slug: "hello-world" }, services(live(), { community: preview })),
+        ),
+      ).rejects.toMatchObject({ _tag: preview === null ? "NotFound" : "InternalError" });
+    }
+  });
+  test("hidden and age-locked posts do not read community context", async () => {
+    for (const record of [
+      live({ community: { communityId: "community-1", status: "hidden" } }),
+      live({
+        post: { ...live().post, contentRating: "adult_18" },
+        viewer: { ...live().viewer, ratingViewAllowed: false },
+      }),
+    ]) {
+      const previewCalls: unknown[] = [];
+      await Effect.runPromise(
+        Effect.exit(
+          getPublicPostBySlug({ slug: "hello-world" }, services(record, { previewCalls })),
+        ),
+      );
+      expect(previewCalls).toEqual([]);
+    }
   });
 });

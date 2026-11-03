@@ -40,7 +40,7 @@ export async function historicalReview(
         disposition: f.publication.disposition,
       },
       ids,
-      "arms_t",
+      f.publication.policy.version === "moderator-review-policy-v2" ? "none" : "arms_t",
     ),
   );
   const capture = Schema.decodeUnknownSync(SealedModeratorCaptureSchema)({

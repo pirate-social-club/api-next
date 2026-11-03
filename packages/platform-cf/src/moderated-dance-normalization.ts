@@ -4,6 +4,17 @@ import { CLOUDCONVERT_STORAGE_HOSTS } from "./cloudconvert-storage-hosts.ts";
 import { hmac, sha256Hex } from "./r2-upload-signing.ts";
 import { SONG_VIDEO_CLOUDCONVERT_FFMPEG_VERSION } from "./song-video-cloudconvert-recipe.ts";
 
+/** Versioned safety sample positions only; never movement or pose grading. */
+export function moderatedDanceSafetySampleOffsets(
+  bodyStartMs: number,
+  bodyEndMs: number,
+  profile: ModeratedDanceIntakeProfile,
+): readonly [number, number, number] {
+  return profile.version === "dance-moderated-intake-profile-v2"
+    ? [0, Math.floor(bodyEndMs / 4), Math.floor((bodyEndMs * 3) / 4)]
+    : [0, Math.floor(bodyStartMs / 2), Math.floor((bodyStartMs + bodyEndMs) / 2)];
+}
+
 /** Deterministic body-only image identity. It is replay friction, never a
  * biometric, liveness or near-copy detector. The assigned cue is excluded so
  * copying the same body with a different cue cannot evade this identity.
@@ -54,11 +65,7 @@ export function makeModeratedDanceNormalizationJob(
   });
   // These three full-recording sample positions are part of this versioned
   // recipe, not an automated cue/movement judgment. Every frame is moderated.
-  const offsets = [
-    0,
-    Math.floor(input.bodyStartMs / 2),
-    Math.floor((input.bodyStartMs + input.bodyEndMs) / 2),
-  ];
+  const offsets = moderatedDanceSafetySampleOffsets(input.bodyStartMs, input.bodyEndMs, p);
   return {
     tag: input.tag,
     tasks: {

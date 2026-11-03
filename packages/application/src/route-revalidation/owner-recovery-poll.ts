@@ -119,8 +119,10 @@ export interface HnsOwnerRecoveryPollStore {
    * authority, then returns database time and a lease at least `lease_ms`
    * long. A released same-key retry with the same poll hash must reacquire the
    * same durable attempt, `evidence_ref`, and `observation_id`; new proposals
-   * cannot allocate a second identity. No transaction may span the provider
-   * call.
+   * cannot allocate a second identity. The reacquire raises `fence_token`, and
+   * the provider call is keyed by both, so a retry reads the chain again rather
+   * than replaying the verifier's finalized answer for the earlier fence. No
+   * transaction may span the provider call.
    */
   readonly reserve: (
     input: Readonly<{
@@ -576,7 +578,7 @@ export const pollHnsOwnerRecovery = Effect.fn("pollHnsOwnerRecovery")(function* 
     try: () =>
       services.provider.poll(plan.request, {
         deadline_ms: HNS_OWNER_RECOVERY_POLL_PROVIDER_DEADLINE_MS,
-        observation_id: attempt.observation_id,
+        observation_id: `${attempt.observation_id}:${attempt.fence_token}`,
       }),
     catch: () => new HnsOwnerRecoveryProviderFailed({ reason: "invalid_response" }),
   });

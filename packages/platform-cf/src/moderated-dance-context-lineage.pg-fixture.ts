@@ -13,7 +13,8 @@ export async function seedCapturedSharedDanceObjective(
   f: Awaited<ReturnType<typeof seedModeratedDanceIntake>>,
   admin: Client,
 ) {
-  const fixture = await moderatedDanceContextFixture(true),
+  const noPose = f.publication.policy.version === "moderator-review-policy-v2";
+  const fixture = await moderatedDanceContextFixture(true, noPose),
     o = fixture.resolved;
   const policy = await Effect.runPromise(
     prepareModeratedDancePolicyPublication({
@@ -57,7 +58,7 @@ export async function seedCapturedSharedDanceObjective(
         reviewId: crypto.randomUUID(),
         attemptId: crypto.randomUUID(),
       },
-      "arms_t",
+      noPose ? "none" : "arms_t",
     ),
   );
   const target = {

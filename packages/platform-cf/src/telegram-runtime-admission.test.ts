@@ -9,7 +9,11 @@ import {
 } from "../../testing/src/telegram-configuration-fixture.ts";
 import { makeTelegramLinkServices } from "./telegram-linking-runtime.ts";
 import { makeTelegramServices, makeTelegramWake } from "./telegram-runtime.ts";
-import { makeTelegramStudyServices } from "./telegram-study-runtime.ts";
+import { emptyTelegramIntegration } from "./telegram-settings-store.ts";
+import {
+  makeTelegramCommunityStudyServices,
+  makeTelegramStudyServices,
+} from "./telegram-study-runtime.ts";
 
 function fixture() {
   const calls: ControlPlaneStatement[] = [];
@@ -61,6 +65,49 @@ test("practice defaults off and cannot be activated in production", () => {
       inert,
     ),
   ).toThrow("requires staging");
+  expect(f.calls).toEqual([]);
+});
+
+test("community practice requires separate runtime delegation and current-bot owner intent", async () => {
+  const f = fixture();
+  let record = {
+    ...emptyTelegramIntegration("community"),
+    status: "ready" as const,
+    botId: "123",
+    study: { enabled: false, botId: "123" },
+  };
+  const telegram = {
+    store: {
+      integration: async (community: string) =>
+        community === "community" ? record : emptyTelegramIntegration(community),
+    },
+  } as TelegramServices;
+  const bindings = {
+    TELEGRAM_COMMUNITY_STUDY_ENABLED: "true",
+    TELEGRAM_COMMUNITY_STUDY_POLICY_REVISION: "fixture-policy",
+    API_NEXT_ENV: "production",
+    ELEVENLABS_API_KEY: "fixture",
+    LEARNER_AUDIO: {} as never,
+  };
+  expect(makeTelegramCommunityStudyServices({}, f.runtime, telegram)).toBeUndefined();
+  for (const change of [
+    { API_NEXT_ENV: "unknown" },
+    { TELEGRAM_COMMUNITY_STUDY_POLICY_REVISION: "" },
+    { TELEGRAM_STUDY_PRACTICE_ENABLED: "true" },
+    { ELEVENLABS_API_KEY: " fixture" },
+    { ELEVENLABS_API_KEY: "fixture " },
+  ]) {
+    expect(() =>
+      makeTelegramCommunityStudyServices({ ...bindings, ...change }, f.runtime, telegram),
+    ).toThrow("delegation");
+  }
+  const community = makeTelegramCommunityStudyServices(bindings, f.runtime, telegram);
+  expect(await community?.resolve("community")).toBeUndefined();
+  record = { ...record, study: { enabled: true, botId: "different-bot" } };
+  expect(await community?.resolve("community")).toBeUndefined();
+  record = { ...record, study: { enabled: true, botId: "123" } };
+  expect((await community?.resolve("community"))?.communityId).toBe("community");
+  expect(await community?.resolve("other-community")).toBeUndefined();
   expect(f.calls).toEqual([]);
 });
 

@@ -1,7 +1,8 @@
 // One registry writer for Account Study, Megapot and shared-pot recovery.
-import { AlertCollector, type ControlPlaneDb } from "@pirate/application";
+import { AlertCollector, type ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import type { AlertSink } from "@pirate/platform-cf";
-import { Effect, Schedule } from "effect";
+import { Effect, type Layer, Schedule } from "effect";
+import { runFairSafePoolRecovery, takeSafeRecoveryTurn } from "./fair-safe-pool-recovery.ts";
 import {
   MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
   MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
@@ -14,8 +15,9 @@ const MINIMUM_FINANCIAL_TAIL_MS =
   5 * MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS +
   MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS +
   2_000;
-const FUNDING_BUDGET_MS = 10_000;
-const MINIMUM_FUNDING_TAIL_MS = FUNDING_BUDGET_MS + MINIMUM_FINANCIAL_TAIL_MS;
+const MINIMUM_FUNDING_WORK_MS = 10_000;
+const MAXIMUM_FUNDING_WORK_MS = 20_000;
+const MINIMUM_FUNDING_TAIL_MS = MINIMUM_FUNDING_WORK_MS + MINIMUM_FINANCIAL_TAIL_MS;
 
 /** Keep the original attempt clock and await recovery before any financial
  * setup. A failed or uncertain recovery ends the tick without a retry.
@@ -59,7 +61,14 @@ export const runSerialStudyMegapotRecovery = Effect.fn("SerialStudyMegapot.run")
       funding: "skipped_remaining_budget" as const,
       fundingRemainingMs,
     };
-  yield* input.funding.pipe(Effect.timeout(FUNDING_BUDGET_MS));
+  // The quote batch needs more than ten seconds after its serialized claims.
+  // Use available time without borrowing the counted rollback/close tail or
+  // changing the original fifty-second tick and its financial-first ordering.
+  const fundingBudgetMs = Math.min(
+    MAXIMUM_FUNDING_WORK_MS,
+    fundingRemainingMs - MINIMUM_FINANCIAL_TAIL_MS,
+  );
+  yield* input.funding.pipe(Effect.timeout(fundingBudgetMs));
   return { financial: "ran" as const, remainingMs, funding: "ran" as const, fundingRemainingMs };
 });
 
@@ -68,6 +77,7 @@ export function makeSerialStudyMegapotRecoveryJob(
   study: Job | undefined,
   megapot: Job,
   funding?: Job,
+  boundedRuntime?: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ): Job {
   if (
     // The financial step is the EOA rewards cycle or, where that is off, the Safe
@@ -91,14 +101,28 @@ export function makeSerialStudyMegapotRecoveryJob(
     ...(study === undefined ? [] : [study]),
     ...(funding === undefined ? [] : [funding]),
   ];
-  const reads = [...new Set(sources.flatMap((job) => job.reads))];
-  const writes = [...new Set(sources.flatMap((job) => job.writes))];
+  const fairSafe = megapot.name === "safe-pool-pilot.cycle";
+  const cursorTables = fairSafe ? ["postgres:reward_joint_cycle_turn_v1" as const] : [];
+  const reads = [...new Set([...sources.flatMap((job) => job.reads), ...cursorTables])];
+  const writes = [...new Set([...sources.flatMap((job) => job.writes), ...cursorTables])];
   const expectedFailures = [...new Set(sources.flatMap((job) => job.expectedFailures))];
   const expectedFailure = Object.fromEntries(expectedFailures.map((tag) => [tag, "high" as const]));
   const run = Effect.fn("SerialStudyMegapotRecoveryJob.run")(function* () {
     const context = yield* JobContext;
     if (context.startedAtMs === undefined)
       throw new Error("Original joint attempt clock unavailable");
+    if (fairSafe) {
+      const result = yield* runFairSafePoolRecovery({
+        study: study?.run ?? Effect.void,
+        financial: megapot.run,
+        ...(funding === undefined ? {} : { funding: funding.run }),
+        takeTurn: takeSafeRecoveryTurn,
+        outerStartedAtMs: context.startedAtMs,
+        now: Date.now,
+      });
+      (sink.log ?? console.info)("safe-pool-pilot.recovery-progress", result);
+      return;
+    }
     const result = yield* runSerialStudyMegapotRecovery({
       study: study?.run ?? Effect.void,
       financial: megapot.run,
@@ -143,6 +167,6 @@ export function makeSerialStudyMegapotRecoveryJob(
       defect: "high",
     },
     retry: Schedule.recurs(0),
-    run,
+    run: fairSafe && boundedRuntime !== undefined ? run.pipe(Effect.provide(boundedRuntime)) : run,
   };
 }

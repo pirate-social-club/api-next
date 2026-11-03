@@ -95,7 +95,10 @@ suite("Safe pool pilot reward routes", () => {
         );
       }
       await admin.query("SET session_replication_role = origin");
-      const base = await makeHttpWorkerTestBindings(connection);
+      const base = {
+        ...(await makeHttpWorkerTestBindings(connection)),
+        SONG_FUNDING_COMMANDS: { connectionString: "postgres://funding@127.0.0.1:1/fixture" },
+      };
       const fetches: string[] = [];
       globalThis.fetch = (async (input: string | URL | Request) => {
         fetches.push(String(input));

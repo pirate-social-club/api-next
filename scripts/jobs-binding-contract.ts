@@ -12,6 +12,7 @@ export const JOBS_BINDING_KINDS = {
   CF_VERSION_METADATA: "platform",
   CRON_LOCK: "platform",
   CONTROL_PLANE: "platform",
+  SONG_FUNDING_JOBS: "platform",
   KARAOKE_ATTEMPT: "platform",
   LEARNER_AUDIO: "platform",
   MEGAPOT_COMMITMENTS: "platform",

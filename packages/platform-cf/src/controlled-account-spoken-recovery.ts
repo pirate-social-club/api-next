@@ -28,13 +28,16 @@ const Ready = Schema.Array(
 export const makeControlledAccountSpokenRecovery = (
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
   finalize: ControlledAccountSpokenProtocol["finalize"],
+  maximum = 25,
 ) => ({
   recover: Effect.fn("controlledAccountSpokenRecovery.recover")(function* () {
+    if (!Number.isInteger(maximum) || maximum < 1 || maximum > 25)
+      throw new Error("Recovery bound 1..25 required");
     const rows = yield* boundedLearnerAudioTransaction((tx) =>
       tx.execute<unknown>({
         label: "account-spoken.recovery.closed-checkpoints",
-        text: "SELECT list_closed_account_spoken_checkpoints_private_v1(25) AS result",
-        values: [],
+        text: "SELECT list_closed_account_spoken_checkpoints_private_v1($1) AS result",
+        values: [maximum],
         readonly: false,
       }),
     ).pipe(Effect.provide(runtime));
@@ -44,7 +47,9 @@ export const makeControlledAccountSpokenRecovery = (
         const envelope = Schema.decodeUnknownSync(Schema.Struct({ result: Schema.Unknown }), {
           onExcessProperty: "error",
         })(rows.rows[0]);
-        return Schema.decodeUnknownSync(Ready, { onExcessProperty: "error" })(envelope.result);
+        return Schema.decodeUnknownSync(Ready.check(Schema.isMaxLength(maximum)), {
+          onExcessProperty: "error",
+        })(envelope.result);
       },
       catch: () =>
         new ControlPlaneStatementFailed({

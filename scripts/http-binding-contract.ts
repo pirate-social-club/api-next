@@ -29,6 +29,7 @@ export const HTTP_BINDING_KINDS = {
   MEDIA_DERIVED: "platform",
   CF_VERSION_METADATA: "platform",
   CONTROL_PLANE: "platform",
+  SONG_FUNDING_COMMANDS: "platform",
   GUEST_STUDY_PUBLIC_READ: "platform",
   GUEST_STUDY_CONTROLLED_LEARNING: "platform",
   GUEST_STUDY_CRON: "platform",

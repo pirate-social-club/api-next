@@ -5,6 +5,7 @@ import {
   applyPostgresTestBaselineConnection,
   createReusablePostgresTestSchemaOwner,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { prepareModeratedDancePolicyPublication } from "../../application/src/use-cases/dance/moderated-policy.ts";
 import { executeDanceReviewCommand } from "../../application/src/use-cases/dance/moderator-review-services.ts";
 import { transitionModeratorReview } from "../../domain/src/dance/moderator-review.ts";
 import { ModeratorReviewFactsSchema } from "../../domain/src/dance/moderator-review-schema.ts";
@@ -35,6 +36,7 @@ const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;
 
 async function withFixture(
   use: (f: Awaited<ReturnType<typeof seed>>, admin: Client) => Promise<void>,
+  options: Parameters<typeof seed>[3] = {},
 ) {
   if (url === undefined) throw new Error("Isolated target not configured");
   return reusableSchema.run({
@@ -52,7 +54,7 @@ async function withFixture(
           )
         ).rows[0]?.present,
       ).toBe(true);
-      await use(await seed(admin, scoped.toString()), admin);
+      await use(await seed(admin, scoped.toString(), undefined, options), admin);
     },
   });
 }
@@ -516,4 +518,191 @@ suite("moderated Dance authority after real blocking locks", () => {
         ).rows[0]?.reads,
       ).toBe(2);
     }));
+});
+
+suite("prospective no-pose authority on native PostgreSQL", () => {
+  test("new admission preserves old terms and receipts while new capture starts without a pose", async () =>
+    withFixture(
+      async (f, admin) => {
+        await f.ready();
+        const old = await Effect.runPromise(f.store.command(f.create)).catch((error) => {
+          throw new Error("initial retained-policy capture failed", { cause: error });
+        });
+        const snapshot = (
+          await admin.query(
+            "SELECT terms::TEXT AS terms FROM dance_moderated_sessions_v1 WHERE session_id=$1",
+            [old.session.session_id],
+          )
+        ).rows[0]?.terms;
+        const policy = await Effect.runPromise(
+          prepareModeratedDancePolicyPublication({
+            ...f.publication,
+            policy_id: "prospective-no-pose",
+            policy: {
+              ...f.publication.policy,
+              version: "moderator-review-policy-v2",
+              qualificationVersion: "no-pose-qualification",
+              rubricVersion: "no-pose-rubric",
+            },
+            profile: {
+              ...f.publication.profile,
+              version: "dance-moderated-intake-profile-v2",
+              cueStartMs: 0,
+              cueEndMs: 0,
+              cueHoldMs: 0,
+              bodyStartMs: 0,
+            },
+            disclosure: {
+              ...f.publication.disclosure,
+              owner_rubric_text: "Assess the selected dance; no opening pose is required",
+            },
+          }),
+        );
+        await expect(
+          admin.query("SELECT publish_moderated_dance_policy_v1($1::jsonb)", [
+            JSON.stringify({ ...policy, profile: f.publication.profile }),
+          ]),
+        ).rejects.toMatchObject({ code: "DRV06" });
+        await admin.query("SELECT publish_moderated_dance_policy_v1($1::jsonb)", [
+          JSON.stringify(policy),
+        ]);
+        expect(await Effect.runPromise(f.store.command(f.create))).toEqual(old);
+        expect(
+          (
+            await admin.query(
+              "SELECT terms::TEXT AS terms FROM dance_moderated_sessions_v1 WHERE session_id=$1",
+              [old.session.session_id],
+            )
+          ).rows[0]?.terms,
+        ).toBe(snapshot);
+        // Preserve the old immutable capture and let its actual admitted window
+        // expire. A new policy cannot bypass the one-active-take fence.
+        await Bun.sleep(Math.max(0, old.session.expires_at_ms - Date.now()) + 30);
+        await admin.query(
+          "SELECT claim_moderated_dance_owned_cleanup_v1('isolated-expiry-cleanup')",
+        );
+        await f.ready();
+        const next = await Effect.runPromise(
+          f.store.command({
+            ...f.create,
+            idempotency_key: "fresh-no-pose",
+            expected_policy_hash: policy.policy.hash,
+          }),
+        ).catch((error) => {
+          throw new Error("fresh no-pose capture failed", { cause: error });
+        });
+        expect(next.session.cue).toEqual({ kind: "none", start_ms: 0, end_ms: 0, hold_ms: 0 });
+        expect(next.session.body_start_ms).toBe(0);
+        expect(next.session.body_end_ms).toBe(f.facts.bodyDurationMs);
+        expect(old.session.cue.kind).toBe("arms_t");
+        expect(old.session.body_start_ms).toBe(2000);
+        const stored = (
+          await admin.query("SELECT terms FROM dance_moderated_sessions_v1 WHERE session_id=$1", [
+            next.session.session_id,
+          ])
+        ).rows[0]?.terms;
+        expect(stored.version).toBe("dance-moderated-capture-terms-v2");
+        expect(stored.capture.policy.version).toBe("moderator-review-policy-v2");
+        expect(
+          (
+            await admin.query(
+              "SELECT bindings FROM reward_activity_objective_captures_v2 WHERE source_id=$1",
+              [next.session.session_id],
+            )
+          ).rows[0]?.bindings,
+        ).toEqual([]);
+        expect(
+          (
+            await admin.query(
+              "SELECT terms::TEXT AS terms FROM dance_moderated_sessions_v1 WHERE session_id=$1",
+              [old.session.session_id],
+            )
+          ).rows[0]?.terms,
+        ).toBe(snapshot);
+        expect(await Effect.runPromise(f.store.command(f.create))).toEqual(old);
+      },
+      { profile: { sessionTtlMs: 2500, uploadTtlMs: 1000, presignTtlSeconds: 1 } },
+    ));
+  test.each(["passed", "not_passed"] as const)(
+    "actual distinct-owner %s records not_required and no forged pose can qualify",
+    async (result) =>
+      withFixture(
+        async (f, admin) => {
+          const before = await historicalReview(f, admin, Date.now() + 60000),
+            actor = { kind: "account", accountId: "private-test-owner" } as const;
+          const now = Date.now();
+          const facts = Schema.decodeUnknownSync(ModeratorReviewFactsSchema)(
+            (
+              await admin.query(
+                "SELECT moderated_dance_review_facts_v1($1,$2::jsonb,'verdict',$3) AS packet",
+                [before.capture.reviewId, JSON.stringify(actor), now],
+              )
+            ).rows[0]?.packet,
+          );
+          const transition = transitionModeratorReview(
+            before,
+            { kind: "verdict", version: "dance-owner-verdict-attestation-v2", verdict: result },
+            actor,
+            before.revision,
+            now,
+            facts,
+          );
+          expect(transition.refusal).toBeNull();
+          const forged = reviewCommit(before, transition, actor, "verdict", "forged-pose", now);
+          const wrong = {
+            ...forged,
+            transition: {
+              ...transition,
+              state: {
+                ...transition.state,
+                attestation: {
+                  ...transition.state.attestation,
+                  version: "dance-owner-verdict-attestation-v1",
+                  cue: "affirmed",
+                },
+              },
+            },
+          };
+          await expect(
+            admin.query("SELECT commit_moderated_dance_review_v1($1::jsonb)", [
+              JSON.stringify(wrong),
+            ]),
+          ).rejects.toMatchObject({ code: "DRV05" });
+          const store = makeControlPlaneModeratorReviewStore(
+            makeDirectPostgresControlPlaneLayer(f.connection),
+            {
+              account: () => Effect.succeed(actor),
+              worker: () => Effect.succeed({ kind: "worker", accountId: "fixture-worker" }),
+            },
+          );
+          const receipt = await Effect.runPromise(
+            executeDanceReviewCommand(
+              {
+                version: "dance-owner-verdict-attestation-v2",
+                operation: "verdict",
+                idempotency_key: "truthful-no-pose",
+                community_id: before.capture.communityId,
+                review_id: before.capture.reviewId,
+                expected_review_revision: before.revision,
+                verdict: result,
+              },
+              store,
+            ),
+          );
+          expect(receipt.outcome).toBe("applied");
+          expect(receipt.result.verdict).toBe(result);
+          expect(receipt.result.cue_attestation).toBe("not_required");
+          const qualifications = (
+            await admin.query(
+              "SELECT evidence_summary FROM activity_qualifications WHERE dance_review_id=$1",
+              [before.capture.reviewId],
+            )
+          ).rows;
+          expect(qualifications).toHaveLength(result === "passed" ? 1 : 0);
+          if (result === "passed")
+            expect(qualifications[0]?.evidence_summary.cue_attestation).toBe("not_required");
+        },
+        { noPose: true },
+      ),
+  );
 });

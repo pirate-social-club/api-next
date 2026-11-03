@@ -23,7 +23,7 @@ const Positive = Schema.Int.check(
 const Day = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u));
 
 export const ModeratorReviewPolicySchema: Schema.Codec<ReviewPolicy> = Schema.Struct({
-  version: Schema.Literal("moderator-review-policy-v1"),
+  version: Schema.Literals(["moderator-review-policy-v1", "moderator-review-policy-v2"]),
   hash: Hash,
   qualificationVersion: Id,
   qualificationHash: Hash,
@@ -75,8 +75,8 @@ const CaptureFields = {
   bodyEndMs: Positive,
   cueId: Id,
   cueStartMs: Natural,
-  cueEndMs: Positive,
-  cueHoldMs: Positive,
+  cueEndMs: Natural,
+  cueHoldMs: Natural,
   timezone: Id,
   timezoneVersion: Id,
   rewardMode: Schema.Literals(["practice", "reward_eligible"]),
@@ -107,9 +107,12 @@ const Submit: Schema.Codec<SubmitReceipt> = Schema.Struct({
   sourceDigest: Hash,
 });
 const Attestation: Schema.Codec<OwnerAttestation> = Schema.Struct({
-  version: Schema.Literal("dance-owner-verdict-attestation-v1"),
+  version: Schema.Literals([
+    "dance-owner-verdict-attestation-v1",
+    "dance-owner-verdict-attestation-v2",
+  ]),
   producer: Schema.Literal("owner_verdict_attestation"),
-  cue: Schema.Literals(["affirmed", "not_attested"]),
+  cue: Schema.Literals(["affirmed", "not_attested", "not_required"]),
   reviewerAccountId: Id,
   assignmentId: Id,
   assignmentRevision: Positive,

@@ -39,7 +39,10 @@ export const ModeratedDanceDisposition = Schema.Struct({
 /** Every value comes from a dated admitted profile. No adapter-selected TTL,
  * upload, rate, work, replay-retention or safety-spend limit is authoritative. */
 export const ModeratedDanceIntakeProfile = Schema.Struct({
-  version: Schema.Literal("dance-moderated-intake-profile-v1"),
+  version: Schema.Literals([
+    "dance-moderated-intake-profile-v1",
+    "dance-moderated-intake-profile-v2",
+  ]),
   sessionTtlMs: Positive,
   uploadTtlMs: Positive,
   presignTtlSeconds: Positive,
@@ -56,9 +59,9 @@ export const ModeratedDanceIntakeProfile = Schema.Struct({
   mediaLeaseMs: Positive,
   maximumOwnerPendingReviews: Positive,
   cueStartMs: Natural,
-  cueEndMs: Positive,
-  cueHoldMs: Positive,
-  bodyStartMs: Positive,
+  cueEndMs: Natural,
+  cueHoldMs: Natural,
+  bodyStartMs: Natural,
   normalizationWidth: Positive,
   normalizationHeight: Positive,
   normalizationFps: Positive,
@@ -81,9 +84,12 @@ export const ModeratedDanceIntakeProfile = Schema.Struct({
     p.presignTtlSeconds <= 604800 &&
     p.presignTtlSeconds * 1000 <= p.uploadTtlMs &&
     p.uploadTtlMs <= p.sessionTtlMs &&
-    p.cueStartMs < p.cueEndMs &&
-    p.cueEndMs <= p.bodyStartMs &&
-    p.cueHoldMs <= p.cueEndMs - p.cueStartMs &&
+    (p.version === "dance-moderated-intake-profile-v2"
+      ? p.cueStartMs === 0 && p.cueEndMs === 0 && p.cueHoldMs === 0 && p.bodyStartMs === 0
+      : p.cueStartMs < p.cueEndMs &&
+        p.cueEndMs <= p.bodyStartMs &&
+        p.cueHoldMs > 0 &&
+        p.cueHoldMs <= p.cueEndMs - p.cueStartMs) &&
     p.normalizationWidth <= 4096 &&
     p.normalizationHeight <= 4096 &&
     p.normalizationFps <= 120 &&
@@ -152,12 +158,15 @@ export function selectModeratedDanceCue(nextU32: () => number) {
 export const prepareModeratedDanceTerms = Effect.fn("ModeratedDance.prepareTerms")(function* (
   facts: ModeratedDanceCreationFacts,
   ids: Readonly<{ sessionId: string; reviewId: string; attemptId: string }>,
-  cue: "hands_on_head" | "arms_t" | "hands_on_hips",
+  cue: "hands_on_head" | "arms_t" | "hands_on_hips" | "none",
 ) {
   const f = Schema.decodeUnknownSync(ModeratedDanceCreationFacts, { onExcessProperty: "error" })(
     facts,
   );
+  const noPose = f.policy.version === "moderator-review-policy-v2";
   if (
+    noPose !== (f.profile.version === "dance-moderated-intake-profile-v2") ||
+    noPose !== (cue === "none") ||
     f.bodyDurationMs < 6000 ||
     f.bodyDurationMs > 30000 ||
     !Number.isSafeInteger(f.nowMs + f.profile.sessionTtlMs) ||
@@ -213,7 +222,7 @@ export const prepareModeratedDanceTerms = Effect.fn("ModeratedDance.prepareTerms
     objectives: f.objectives,
   };
   const preimage = {
-    version: "dance-moderated-capture-terms-v1",
+    version: noPose ? "dance-moderated-capture-terms-v2" : "dance-moderated-capture-terms-v1",
     session_id: ids.sessionId,
     created_at_ms: f.nowMs,
     policy_id: f.policyId,

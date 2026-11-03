@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.137.0",
+  "sourceBranch": "feat/v1-open-reward-funding",
+  "sourceBase": "1b8a9bb9b5683a995dba2bd5c18609af45755a61",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Shared song terms add safe_treasury_ticket_first_v1 and optional empty_winnings_recipient. The new policy requires and hashes the recipient Safe address. Zero-qualifier net winnings stay in that Safe as treasury allocations, without a participant credit or outbound payout. Existing terms and never-expiring participant credits remain unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.137.0.tgz",
+    "sha256": "43bdd8edf192031ead414c05f8764471c129242750b3b7435b45ed54e3419d7f"
+  },
+  "validation": {
+    "status": "Candidate; qualification and accepted source are recorded in the lifecycle coordinator task.",
+    "operationalBoundary": "Paired client must serve before prospective terms admission. No production activation, automated signing, cap increase or historical term rewrite."
+  }
+}

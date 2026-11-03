@@ -8,6 +8,7 @@ import {
   makeStaticHnsForwarderKeyRegistryV1,
 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
+import { browserSessionTransportFixture } from "./browser-session.test-fixtures.ts";
 import type { GuestStudyServingComposition } from "./guest-study-serving-composition.ts";
 import { makeHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 import { createHttpWorker } from "./transport.ts";
@@ -139,6 +140,7 @@ export async function servingHnsHarness(
     },
   });
   const worker = createHttpWorker({
+    browserSessions: browserSessionTransportFixture(),
     ...(guestStudy === undefined ? {} : { guestStudy }),
     config: {
       corsOrigin: "https://community.example",

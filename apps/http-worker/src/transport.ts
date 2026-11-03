@@ -1,4 +1,9 @@
 import type { BrowserParticipationContext } from "@pirate/application/guest-participation-authority";
+import type {
+  BrowserSessionCookies,
+  BrowserSessionFailure,
+  BrowserSessionService,
+} from "@pirate/application/use-cases/browser-sessions";
 import {
   HNS_FORWARDER_HOST_HEADER,
   isCanonicalHnsForwarderHost,
@@ -9,7 +14,6 @@ import {
   PERSONA_WALLET_SETUP_SESSION_SCOPE,
 } from "@pirate/application/use-cases/identity-registration-handler";
 import {
-  MAX_BROWSER_SESSION_TTL_SECONDS,
   makeSessionExchangeHandler,
   type SessionExchangeHandlerResult,
   type SessionExchangeServices,
@@ -26,11 +30,16 @@ import {
 import type { SpacesRouteAttachmentStore } from "@pirate/platform-cf/spaces-community-route-attachment-repository";
 import type { SpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
 import type { SpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { binaryEndpointResponse } from "./binary-response.ts";
+import {
+  BROWSER_RENEWAL_COOKIE_NAME,
+  browserSessionCookieHeaders,
+  clearBrowserSessionCookieHeaders,
+} from "./browser-session-cookies.ts";
 import {
   BOUNDARY_FAILURE_EVENT,
   type BoundaryFailureDisposition,
@@ -174,6 +183,7 @@ export interface HttpWorkerOptions {
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
   /** Application use cases are installed by generated route name. */
   readonly sessionExchange?: SessionExchangeServices;
+  readonly browserSessions?: BrowserSessionService;
   /** Registration is installed only with both mandatory global limiters. */
   readonly identityRegistration?: IdentityRegistrationHandlerServices;
   /** Profile projection is installed by the generated GetMyProfile binding. */
@@ -289,8 +299,6 @@ const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
  * is therefore sent through that proxy; no cross-site cookie shortcut is part
  * of the browser contract.
  */
-const SESSION_COOKIE_ATTRIBUTES = "; Path=/; Secure; SameSite=Lax";
-const SESSION_COOKIE_CLEAR_ATTRIBUTES = `${SESSION_COOKIE_ATTRIBUTES}; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0`;
 
 type ParsedCookies = {
   readonly values: ReadonlyMap<string, string>;
@@ -301,6 +309,7 @@ type ParsedCookies = {
 const SENSITIVE_COOKIE_NAMES = new Set([
   SESSION_COOKIE_NAME,
   CSRF_COOKIE_NAME,
+  BROWSER_RENEWAL_COOKIE_NAME,
   "__Host-pirate_telegram_link",
 ]);
 const hasControlCharacter = (value: string): boolean =>
@@ -366,38 +375,6 @@ function parseCookies(context: HttpContext): ParsedCookies {
     }
   }
   return { values: cookies, duplicateNames, invalidNames };
-}
-
-function randomToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-}
-
-function sessionCookieHeaders(token: string, ttlSeconds: number): readonly string[] {
-  if (
-    token.length === 0 ||
-    token.length > MAX_COOKIE_VALUE_BYTES ||
-    /[\s;\r\n]/u.test(token) ||
-    !Number.isSafeInteger(ttlSeconds) ||
-    ttlSeconds <= 0 ||
-    ttlSeconds > MAX_BROWSER_SESSION_TTL_SECONDS
-  ) {
-    throw new InternalError({ message: "Session exchange failed" });
-  }
-  const csrf = randomToken();
-  return [
-    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly${SESSION_COOKIE_ATTRIBUTES}; Max-Age=${ttlSeconds}`,
-    `${CSRF_COOKIE_NAME}=${csrf}${SESSION_COOKIE_ATTRIBUTES}; Max-Age=${ttlSeconds}`,
-  ];
-}
-
-function clearSessionCookieHeaders(): readonly string[] {
-  return [
-    `${SESSION_COOKIE_NAME}=${SESSION_COOKIE_CLEAR_ATTRIBUTES}; HttpOnly`,
-    `${CSRF_COOKIE_NAME}=${SESSION_COOKIE_CLEAR_ATTRIBUTES}`,
-  ];
 }
 
 function allowedOrigins(
@@ -1074,7 +1051,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
             ? makeIdentityRegistrationHandler(options.identityRegistration)
             : undefined) ??
-          (binding.name === "SessionLogout" ? () => ({ status: "ok" }) : undefined) ??
+          (binding.name === "SessionLogout" || binding.name === "SessionRenew"
+            ? () => ({ status: "ok" })
+            : undefined) ??
           (binding.name === "GetMyProfile" ? options.profile : undefined);
         if (
           handler === undefined &&
@@ -1130,14 +1109,23 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             parsedCookies.duplicateNames.has(SESSION_COOKIE_NAME) ||
             parsedCookies.duplicateNames.has(CSRF_COOKIE_NAME) ||
             parsedCookies.invalidNames.has(SESSION_COOKIE_NAME) ||
-            parsedCookies.invalidNames.has(CSRF_COOKIE_NAME)
+            parsedCookies.invalidNames.has(CSRF_COOKIE_NAME) ||
+            parsedCookies.duplicateNames.has(BROWSER_RENEWAL_COOKIE_NAME) ||
+            parsedCookies.invalidNames.has(BROWSER_RENEWAL_COOKIE_NAME)
           ) {
             throw new AuthError({ message: "Authentication failed" });
           }
           const sessionCookie = cookies.get(SESSION_COOKIE_NAME);
+          const renewalCookie = cookies.get(BROWSER_RENEWAL_COOKIE_NAME);
           const hasSessionCookie = sessionCookie !== undefined && sessionCookie !== "";
-          const hasBrowserCredential = hasSessionCookie;
-          if (hasAuthorizationHeader && hasSessionCookie) {
+          const hasBrowserCredential =
+            hasSessionCookie || (renewalCookie !== undefined && renewalCookie !== "");
+          if (
+            hasAuthorizationHeader &&
+            (hasBrowserCredential ||
+              binding.name === "SessionRenew" ||
+              binding.name === "SessionLogout")
+          ) {
             throw new AuthError({ message: "Authentication failed" });
           }
           if (isBrowserSessionOnly(binding.endpoint)) {
@@ -1152,7 +1140,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           if (
             !isPublic(binding.endpoint) &&
             !hasCredentials &&
-            !hasBrowserCredential &&
+            !hasSessionCookie &&
             !isOptionalUser(binding.endpoint)
           ) {
             throw new AuthError({ message: "Authentication required" });
@@ -1174,7 +1162,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
               endpoint: binding.endpoint,
               credentials: {
                 ...(authorization === undefined ? {} : { authorization }),
-                ...(hasBrowserCredential ? { sessionCookie } : {}),
+                ...(hasSessionCookie ? { sessionCookie } : {}),
               },
             });
           }
@@ -1188,7 +1176,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           // remain a separate authentication contract.
           const unsafeSessionBoundary =
             UNSAFE_METHODS.has(context.req.method) &&
-            (SESSION_ISSUANCE_ENDPOINTS.has(binding.name) || binding.name === "SessionLogout");
+            (SESSION_ISSUANCE_ENDPOINTS.has(binding.name) ||
+              binding.name === "SessionLogout" ||
+              binding.name === "SessionRenew");
           if (unsafeSessionBoundary) {
             enforceExactOrigin(context, options.config);
           }
@@ -1198,6 +1188,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             UNSAFE_METHODS.has(context.req.method) &&
             (!isPublic(binding.endpoint) ||
               binding.name === "SessionLogout" ||
+              binding.name === "SessionRenew" ||
               SESSION_ISSUANCE_ENDPOINTS.has(binding.name))
           ) {
             enforceCookieCsrf(context, options.config, cookies);
@@ -1242,12 +1233,69 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
             await options.authorize?.({ endpoint: binding.endpoint, input: requestWithEdgeIp });
           }
 
-          const result = await handler(requestWithEdgeIp);
+          const browser = options.browserSessions;
+          const runBrowser = <A>(effect: Effect.Effect<A, BrowserSessionFailure>) =>
+            Effect.runPromise(
+              effect.pipe(
+                Effect.mapError((error) =>
+                  error.reason === "invalid"
+                    ? new AuthError({ message: "Authentication failed" })
+                    : new InternalError({ message: "Session service unavailable" }),
+                ),
+              ),
+            );
+          let issuedCookies: BrowserSessionCookies | undefined;
+          let result: unknown;
+          if (binding.name === "SessionRenew") {
+            if (browser === undefined)
+              throw new InternalError({ message: "Session service unavailable" });
+            if (!renewalCookie) throw new AuthError({ message: "Authentication required" });
+            issuedCookies = await runBrowser(
+              browser.renew({
+                renewal: renewalCookie,
+                csrf: cookies.get(CSRF_COOKIE_NAME) ?? "",
+                origin: context.req.header("origin") ?? "",
+              }),
+            );
+            result = {
+              status: "renewed",
+              user_id: issuedCookies.accountId,
+              expires_at: issuedCookies.expiresAt,
+            };
+          } else if (binding.name === "SessionLogout") {
+            if (browser === undefined)
+              throw new InternalError({ message: "Session service unavailable" });
+            await runBrowser(
+              browser.revoke({
+                ...(renewalCookie ? { renewal: renewalCookie } : {}),
+                ...(hasSessionCookie ? { accessToken: sessionCookie } : {}),
+                csrf: cookies.get(CSRF_COOKIE_NAME) ?? "",
+                origin: context.req.header("origin") ?? "",
+              }),
+            );
+            result = { status: "ok" };
+          } else result = await handler(requestWithEdgeIp);
           const sessionResult =
             (binding.name === "SessionExchange" || binding.name === "RegisterIdentity") &&
             isSessionExchangeResult(result)
               ? result
               : undefined;
+          if (sessionResult !== undefined) {
+            if (browser === undefined)
+              throw new InternalError({ message: "Session service unavailable" });
+            issuedCookies = await runBrowser(
+              browser.issue({
+                accessToken: sessionResult.sessionToken,
+                providerSubject: sessionResult.providerSubject,
+                origin: context.req.header("origin") ?? "",
+                ...(renewalCookie ? { previousRenewal: renewalCookie } : {}),
+                ...(hasSessionCookie ? { previousAccessToken: sessionCookie } : {}),
+                ...(cookies.get(CSRF_COOKIE_NAME) === undefined
+                  ? {}
+                  : { previousCsrf: cookies.get(CSRF_COOKIE_NAME)! }),
+              }),
+            );
+          }
           const body = sessionResult
             ? sessionResult.response
             : isHandlerResult(result)
@@ -1269,11 +1317,11 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           const decoded = decodeResponse(binding.endpoint, body);
           const responseHeaders = isHandlerResult(result) ? result.responseHeaders : undefined;
           const cookiesToSet =
-            sessionResult === undefined
-              ? binding.name === "SessionLogout"
-                ? clearSessionCookieHeaders()
-                : undefined
-              : sessionCookieHeaders(sessionResult.sessionToken, sessionResult.sessionTtlSeconds);
+            issuedCookies !== undefined
+              ? browserSessionCookieHeaders(issuedCookies)
+              : binding.name === "SessionLogout"
+                ? clearBrowserSessionCookieHeaders()
+                : undefined;
           const request = requestShape(binding.endpoint);
           const noStore =
             binding.endpoint.cacheControl !== undefined ||
@@ -1352,8 +1400,11 @@ function isSessionExchangeResult(value: unknown): value is SessionExchangeHandle
     "response" in value &&
     "sessionToken" in value &&
     "sessionTtlSeconds" in value &&
+    "providerSubject" in value &&
     typeof value.sessionToken === "string" &&
-    typeof value.sessionTtlSeconds === "number"
+    typeof value.sessionTtlSeconds === "number" &&
+    typeof value.providerSubject === "string" &&
+    value.providerSubject.trim() !== ""
   );
 }
 
@@ -1374,7 +1425,9 @@ export async function authenticatePrivateBrowserMedia(
     parsed.duplicateNames.has(SESSION_COOKIE_NAME) ||
     parsed.duplicateNames.has(CSRF_COOKIE_NAME) ||
     parsed.invalidNames.has(SESSION_COOKIE_NAME) ||
-    parsed.invalidNames.has(CSRF_COOKIE_NAME)
+    parsed.invalidNames.has(CSRF_COOKIE_NAME) ||
+    parsed.duplicateNames.has(BROWSER_RENEWAL_COOKIE_NAME) ||
+    parsed.invalidNames.has(BROWSER_RENEWAL_COOKIE_NAME)
   )
     throw new AuthError({ message: "Authentication failed" });
   const sessionCookie = parsed.values.get(SESSION_COOKIE_NAME);

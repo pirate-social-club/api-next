@@ -16,6 +16,7 @@ import {
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { Hono } from "hono";
+import { browserSessionTransportFixture } from "./browser-session.test-fixtures.ts";
 import {
   createHttpWorker,
   type DecodedRequest,
@@ -23,6 +24,8 @@ import {
   type EndpointHandler,
   withEndpointResult,
 } from "./transport.ts";
+
+const browserSessions = browserSessionTransportFixture();
 
 const feed = { items: [], top_communities: [], next_cursor: null };
 const publicCommunityThreads = {
@@ -193,6 +196,7 @@ describe("contracts-generated HTTP worker", () => {
     const response = await createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
       sessionExchange: sessionServices,
+      browserSessions,
     }).request("http://worker.test/auth/session/exchange", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://solid.test" },
@@ -213,6 +217,7 @@ describe("contracts-generated HTTP worker", () => {
     const app = createHttpWorker({
       config: { corsOrigin: "https://app.pirate,https://pirate.app,https://pirate.sc" },
       sessionExchange: sessionServices,
+      browserSessions,
     });
     const request = (origin: string) =>
       app.request("https://worker.test/auth/session/exchange", {
@@ -235,6 +240,7 @@ describe("contracts-generated HTTP worker", () => {
     const app = createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
       identityRegistration: registrationServices,
+      browserSessions,
     });
     const response = await app.request("http://worker.test/auth/register", {
       method: "POST",
@@ -276,6 +282,7 @@ describe("contracts-generated HTTP worker", () => {
     const app = createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
       identityRegistration: registrationServices,
+      browserSessions,
     });
     const body = JSON.stringify({
       privy_access_token: "privy-proof",
@@ -361,6 +368,7 @@ describe("contracts-generated HTTP worker", () => {
     const app = createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
       sessionExchange: sessionServices,
+      browserSessions,
     });
     const request = {
       method: "POST",
@@ -386,6 +394,7 @@ describe("contracts-generated HTTP worker", () => {
     const app = createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
       sessionExchange: sessionServices,
+      browserSessions,
     });
     const body = JSON.stringify({
       proof: { type: "privy_access_token", privy_access_token: "privy-proof" },
@@ -429,6 +438,7 @@ describe("contracts-generated HTTP worker", () => {
     const app = createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
       sessionExchange: sessionServices,
+      browserSessions,
       handlers: { ClearPostVote: () => clearedVote },
       authenticate: ({ credentials }) => ({
         kind: "user",
@@ -568,8 +578,8 @@ describe("contracts-generated HTTP worker", () => {
     expect(authenticateCalls).toBe(3);
   });
 
-  it("clears the host-only session and CSRF cookies exactly on logout", async () => {
-    const app = createHttpWorker({ config: { corsOrigin: "https://solid.test" } });
+  it("clears the host-only access, renewal and CSRF cookies exactly on logout", async () => {
+    const app = createHttpWorker({ config: { corsOrigin: "https://solid.test" }, browserSessions });
     const missingCsrf = await app.request("https://worker.test/auth/session/logout", {
       method: "POST",
       headers: {
@@ -608,6 +618,7 @@ describe("contracts-generated HTTP worker", () => {
     expect(await response.json()).toEqual({ status: "ok" });
     const setCookie = response.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("__Host-pirate_session=;");
+    expect(setCookie).toContain("__Host-pirate_renewal=;");
     expect(setCookie).toContain("__Host-pirate_csrf=;");
     expect(setCookie).toContain("Path=/");
     expect(setCookie).toContain("Max-Age=0");

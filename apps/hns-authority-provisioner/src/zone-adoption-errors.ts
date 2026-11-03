@@ -1,4 +1,5 @@
 import { HnsAuthoritySuccessorPromotionRefusal } from "../../../packages/platform-cf/src/hns-authority-successor-promotion.ts";
+import { HnsStagingOwnerTxtRefusal } from "../../../packages/platform-cf/src/hns-staging-owner-txt-review.ts";
 import { HnsStagingRelocationRefusal } from "../../../packages/platform-cf/src/hns-staging-relocation-review.ts";
 import { HnsZoneAdoptionRefusal } from "../../../packages/platform-cf/src/hns-zone-adoption.ts";
 import { HnsZoneAdoptionDeltaRefusal } from "../../../packages/platform-cf/src/hns-zone-adoption-delta.ts";
@@ -33,6 +34,7 @@ export function zoneAdoptionRefusalReason(error: unknown): string | null {
     error instanceof HnsZoneAdoptionRefusal ||
     error instanceof HnsZoneAdoptionDeltaRefusal ||
     error instanceof HnsStagingRelocationRefusal ||
+    error instanceof HnsStagingOwnerTxtRefusal ||
     error instanceof PowerDnsWildcardFamilyRefusal
   )
     return error.message;

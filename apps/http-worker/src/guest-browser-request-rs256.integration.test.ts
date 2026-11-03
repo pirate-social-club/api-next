@@ -6,6 +6,7 @@ import type {
   ProvedGuestCredential,
   ProvedGuestIntent,
 } from "@pirate/application/guest-participation-authority";
+import { BrowserSessionFailure } from "@pirate/application/use-cases/browser-sessions";
 import {
   ControlPlaneAcquireFailed,
   IdentityResolutionError,
@@ -23,6 +24,7 @@ const productOrigin = "https://community.example";
 const ordinaryScope = "ordinary-browser-fixture-v1";
 const otherUserScope = "future-other-user-purpose-v1";
 const now = 1_797_000_000;
+const browserSessionId = `bs_${"1".repeat(32)}`;
 const credentialId = "A".repeat(22);
 const intentId = `gai_${"B".repeat(21)}A`;
 const guestSecret = "A".repeat(43);
@@ -89,6 +91,24 @@ async function fixture() {
   };
   const accountVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identity, {
     additionalUserScopes: [PERSONA_WALLET_SETUP_SESSION_SCOPE, otherUserScope],
+    browserSessions: {
+      verify: (claims) => {
+        if (
+          claims.sid !== browserSessionId ||
+          claims.token_use !== "browser_access" ||
+          claims.sub !== "canonical-account"
+        )
+          return Effect.fail(new BrowserSessionFailure({ reason: "invalid" }));
+        return identity.resolveCanonical({ sourceUserId: "source-account" }).pipe(
+          Effect.mapError(
+            (error) =>
+              new BrowserSessionFailure({
+                reason: error instanceof IdentityResolutionError ? "invalid" : "unavailable",
+              }),
+          ),
+        );
+      },
+    },
   });
   const proof: ProvedGuestCredential = {
     ownerId: "original-guest-owner",
@@ -152,7 +172,11 @@ async function fixture() {
     });
   return {
     options,
-    sessionCrypto,
+    sessionCrypto: {
+      ...sessionCrypto,
+      sign: (input: Parameters<typeof sessionCrypto.sign>[0]) =>
+        sessionCrypto.sign({ ...input, browserSessionId }),
+    },
     accountVerifier,
     auth,
     request,
@@ -165,14 +189,14 @@ async function fixture() {
 
 test("actual RS256 PEM/sign/verify and canonical lookup supply exact ordinary versus setup purpose", async () => {
   const f = await fixture();
-  const ordinary = await f.sessionCrypto.sign({ sub: "source-account", scope: ordinaryScope });
+  const ordinary = await f.sessionCrypto.sign({ sub: "canonical-account", scope: ordinaryScope });
   const setup = await f.sessionCrypto.sign({
-    sub: "source-account",
+    sub: "canonical-account",
     scope: PERSONA_WALLET_SETUP_SESSION_SCOPE,
   });
-  const other = await f.sessionCrypto.sign({ sub: "source-account", scope: otherUserScope });
+  const other = await f.sessionCrypto.sign({ sub: "canonical-account", scope: otherUserScope });
   const verified = await Effect.runPromise(
-    f.accountVerifier.verify({ token: ordinary, requiredClassification: "user" }),
+    f.accountVerifier.verify({ token: ordinary, requiredClassification: "user", browser: true }),
   );
   expect({
     classification: verified.classification,
@@ -211,7 +235,7 @@ test("actual RS256 PEM/sign/verify and canonical lookup supply exact ordinary ve
 
 test("tampered or validly signed wrong issuer/audience/expired sessions never supply account fallback; valid guest proof remains independent", async () => {
   const f = await fixture();
-  const ordinary = await f.sessionCrypto.sign({ sub: "source-account", scope: ordinaryScope });
+  const ordinary = await f.sessionCrypto.sign({ sub: "canonical-account", scope: ordinaryScope });
   const parts = ordinary.split(".");
   if (parts.length !== 3 || !parts[2]) throw new Error("synthetic signed token shape unavailable");
   const tampered = `${parts[0]}.${parts[1]}.${parts[2][0] === "A" ? "B" : "A"}${parts[2].slice(1)}`;
@@ -219,10 +243,10 @@ test("tampered or validly signed wrong issuer/audience/expired sessions never su
   const wrongAudience = await makeSessionCrypto({ ...f.options, audience: "wrong-audience" });
   const tokens = [
     tampered,
-    await wrongIssuer.sign({ sub: "source-account", scope: ordinaryScope }),
-    await wrongAudience.sign({ sub: "source-account", scope: ordinaryScope }),
+    await wrongIssuer.sign({ sub: "canonical-account", scope: ordinaryScope }),
+    await wrongAudience.sign({ sub: "canonical-account", scope: ordinaryScope }),
     await f.sessionCrypto.sign({
-      sub: "source-account",
+      sub: "canonical-account",
       scope: ordinaryScope,
       iat: now - 60,
       exp: now - 1,

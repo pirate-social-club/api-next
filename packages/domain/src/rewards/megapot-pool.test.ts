@@ -340,3 +340,21 @@ describe("Megapot pool drawing reducer", () => {
     ).toEqual({ _tag: "transition_rejected", rejected: "stale_version" });
   });
 });
+
+test("only an explicit treasury disposition permits an empty participant snapshot", () => {
+  const input = {
+    poolLegId: "treasury-pool",
+    drawingId: 1n,
+    termsHash: `0x${"11".repeat(32)}`,
+    fallback: false,
+    beneficiaries: [],
+    sha256: digest,
+  };
+  expect(() => buildMegapotBeneficiarySnapshot(input)).toThrow("empty-beneficiaries");
+  const snapshot = buildMegapotBeneficiarySnapshot({ ...input, emptyTreasury: true });
+  expect(snapshot.privateLeaves).toEqual([]);
+  expect(snapshot.published).toMatchObject({ fallback: false, leafCount: 0, leafCommitments: [] });
+  expect(() =>
+    buildMegapotBeneficiarySnapshot({ ...input, fallback: true, emptyTreasury: true }),
+  ).toThrow("invalid-snapshot");
+});

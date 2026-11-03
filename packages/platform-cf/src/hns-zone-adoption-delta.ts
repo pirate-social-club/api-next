@@ -45,6 +45,7 @@ export const HNS_ZONE_ADOPTION_DELTA_KINDS = [
   "wildcard_family_removed",
   "serial_only",
   "staging_gateway_relocated",
+  "staging_owner_txt_refreshed",
 ] as const;
 export type HnsZoneAdoptionDeltaKind = (typeof HNS_ZONE_ADOPTION_DELTA_KINDS)[number];
 

@@ -69,21 +69,25 @@ export function makeControlPlaneRewardSafeWorkStore(
           )
         : Effect.fail(failed("invalid-row")),
 
-    /** Purchases and payouts whose owner execution the scan has bound. */
+    /** Purchases, payouts and refunds whose owner execution the scan has bound. */
     loadBoundEffects: (custody: RewardSafeCustody, limit: number) =>
       validLimit(limit)
         ? read(
             "reward-safe-work.bound-effects.read",
             `SELECT effect_id, effect_kind FROM reward_chain_effects
               WHERE execution_mode='safe_owner_v1' AND state='confirming'
-                AND effect_kind IN ('ticket_purchase','reward_payout')
+                AND effect_kind IN ('ticket_purchase','reward_payout','reward_refund')
                 AND chain_id=$1 AND signer_address=$2
               ORDER BY updated_at, effect_id LIMIT $3`,
             [custody.chainId, custody.safeAddress, limit],
             (rows) =>
               rows.map((row) => {
                 const kind = text(row, "effect_kind");
-                if (kind !== "ticket_purchase" && kind !== "reward_payout") {
+                if (
+                  kind !== "ticket_purchase" &&
+                  kind !== "reward_payout" &&
+                  kind !== "reward_refund"
+                ) {
                   throw new Error("invalid effect_kind");
                 }
                 return { effectId: text(row, "effect_id"), kind } as const;

@@ -237,7 +237,7 @@ describe("jobs-worker HNS route-revalidation composition", () => {
     );
   });
 
-  test("keeps HNS disabled and the verifier unbound in every Wrangler environment", async () => {
+  test("keeps the legacy writer disabled and non-staging verifier bindings absent", async () => {
     const wrangler = BunRuntime.JSONC.parse(
       await BunRuntime.file(new URL("../wrangler.jsonc", import.meta.url)).text(),
     ) as {
@@ -254,8 +254,13 @@ describe("jobs-worker HNS route-revalidation composition", () => {
       >;
     };
 
-    for (const environment of [wrangler, ...Object.values(wrangler.env ?? {})]) {
+    for (const [name, environment] of [
+      ["default", wrangler],
+      ...Object.entries(wrangler.env ?? {}),
+    ] as const) {
       expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
+      if (name === "staging") continue;
+      expect(environment.vars?.HNS_ACTIVE_LEASE_RENEWAL_ENABLED).not.toBe("true");
       expect(environment.services ?? []).not.toContainEqual(
         expect.objectContaining({ binding: "HNS_OWNER_VERIFIER" }),
       );

@@ -29,6 +29,7 @@ export interface BearerSessionVerifier {
   readonly verify: (input: {
     readonly token: string;
     readonly requiredClassification: "user";
+    readonly browser?: boolean;
   }) => Effect.Effect<
     {
       readonly userId: string;
@@ -58,7 +59,7 @@ export const authenticateSession = Effect.fn("authenticateSession")(function* (
   if (token === null) return yield* new AuthError({ message: "Authentication failed" });
 
   const verified = yield* services.verifier
-    .verify({ token, requiredClassification: "user" })
+    .verify({ token, requiredClassification: "user", browser: input.sessionCookie !== undefined })
     .pipe(
       Effect.mapError((error) =>
         typeof error === "object" &&

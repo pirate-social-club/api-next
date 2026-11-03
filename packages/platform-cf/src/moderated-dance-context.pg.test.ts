@@ -42,6 +42,7 @@ const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;
 
 async function withFixture(
   use: (f: Awaited<ReturnType<typeof seedModeratedDanceIntake>>, admin: Client) => Promise<void>,
+  options: Parameters<typeof seedModeratedDanceIntake>[3] = {},
 ) {
   if (url === undefined) throw new Error("Isolated target required");
   return reusableSchema.run({
@@ -52,7 +53,10 @@ async function withFixture(
       scoped.searchParams.set("options", `-c search_path=${schema}`);
       await applyPostgresTestBaselineConnection({ connectionString: scoped.toString() });
       await admin.query(`SET search_path TO ${quote(schema)}`);
-      await use(await seedModeratedDanceIntake(admin, scoped.toString()), admin);
+      await use(
+        await seedModeratedDanceIntake(admin, scoped.toString(), undefined, options),
+        admin,
+      );
     },
   });
 }
@@ -81,69 +85,79 @@ async function withFreshFixture(
 }
 
 suite("moderated Dance frozen context with real PostgreSQL authority", () => {
-  test("retained funded objective resolves exactly; later funding cannot upgrade practice; corrupted lineage fails closed", async () =>
-    withFixture(async (f, admin) => {
-      await f.ready();
-      const practice = await Effect.runPromise(f.store.command(f.create));
-      const frozen = await seedCapturedSharedDanceObjective(f, admin);
-      const read = () =>
-        Effect.runPromise(
-          f.store.captureContext(f.facts.communityId, frozen.terms.capture.sessionId),
-        );
-      const wire = await read();
-      expect(wire.reward_mode).toBe("reward_eligible");
-      expect(wire.rewards_enabled).toBe(false);
-      expect(wire.objectives).toHaveLength(1);
-      expect(wire.objectives[0]?.binding.objective_id).toBe(frozen.resolved.binding.objective_id);
-      expect(wire.objectives[0]?.chain_id).toBe(84532);
-      const old = await Effect.runPromise(
-        f.store.captureContext(f.facts.communityId, practice.session.session_id),
-      );
-      expect(old.reward_mode).toBe("practice");
-      expect(old.objectives).toEqual([]);
-      const cases = [
-        {
-          change:
-            "UPDATE song_reward_offer_legs SET token_address='0xffffffffffffffffffffffffffffffffffffffff' WHERE leg_id='test-leg'",
-          values: [],
-          restore: "UPDATE song_reward_offer_legs SET token_address=$1 WHERE leg_id='test-leg'",
-          original: [frozen.resolved.token_address],
+  test.each([false, true])(
+    "retained funded objective resolves exactly with noPose=%s; later funding cannot upgrade practice; corrupted lineage fails closed",
+    async (noPose) =>
+      withFixture(
+        async (f, admin) => {
+          await f.ready();
+          const practice = await Effect.runPromise(f.store.command(f.create));
+          const frozen = await seedCapturedSharedDanceObjective(f, admin);
+          const read = () =>
+            Effect.runPromise(
+              f.store.captureContext(f.facts.communityId, frozen.terms.capture.sessionId),
+            );
+          const wire = await read();
+          expect(wire.reward_mode).toBe("reward_eligible");
+          expect(wire.rewards_enabled).toBe(false);
+          expect(wire.objectives).toHaveLength(1);
+          expect(wire.objectives[0]?.binding.objective_id).toBe(
+            frozen.resolved.binding.objective_id,
+          );
+          expect(wire.objectives[0]?.chain_id).toBe(84532);
+          const old = await Effect.runPromise(
+            f.store.captureContext(f.facts.communityId, practice.session.session_id),
+          );
+          expect(old.reward_mode).toBe("practice");
+          expect(old.objectives).toEqual([]);
+          const cases = [
+            {
+              change:
+                "UPDATE song_reward_offer_legs SET token_address='0xffffffffffffffffffffffffffffffffffffffff' WHERE leg_id='test-leg'",
+              values: [],
+              restore: "UPDATE song_reward_offer_legs SET token_address=$1 WHERE leg_id='test-leg'",
+              original: [frozen.resolved.token_address],
+            },
+            {
+              change:
+                "UPDATE song_reward_offer_legs SET shared_song_terms_v2=jsonb_set(shared_song_terms_v2,'{qualification_bindings,2,binding_id}','\"foreign-binding\"') WHERE leg_id='test-leg'",
+              values: [],
+              restore:
+                "UPDATE song_reward_offer_legs SET shared_song_terms_v2=$1::jsonb WHERE leg_id='test-leg'",
+              original: [JSON.stringify(frozen.resolved.terms)],
+            },
+            {
+              change:
+                "UPDATE qualification_policy_versions SET policy_document=jsonb_set(policy_document,'{producer_id}','\"foreign-producer\"') WHERE qualification_policy_version_id=$1",
+              values: [frozen.resolved.binding.qualification_policy_id],
+              restore:
+                "UPDATE qualification_policy_versions SET policy_document=$1::jsonb WHERE qualification_policy_version_id=$2",
+              original: [
+                JSON.stringify(frozen.resolved.qualification_document),
+                frozen.resolved.binding.qualification_policy_id,
+              ],
+            },
+            {
+              change:
+                "UPDATE dance_moderated_policy_disclosures_v1 SET disclosure=jsonb_set(disclosure,'{owner_rubric_text}','\"foreign-rubric\"') WHERE policy_id=$1",
+              values: [frozen.policy.policy_id],
+              restore:
+                "UPDATE dance_moderated_policy_disclosures_v1 SET disclosure=$1::jsonb WHERE policy_id=$2",
+              original: [JSON.stringify(frozen.policy.disclosure), frozen.policy.policy_id],
+            },
+          ];
+          for (const fault of cases) {
+            await injectContextLineageFault(admin, fault.change, fault.values);
+            await expect(read()).rejects.toMatchObject({ reason: "unavailable" });
+            await injectContextLineageFault(admin, fault.restore, fault.original);
+            expect((await read()).session.terms_hash).toBe(frozen.terms.terms_hash);
+          }
+          expect(wire.session.cue.kind).toBe(noPose ? "none" : "arms_t");
+          expect(wire.session.body_start_ms).toBe(noPose ? 0 : 2000);
         },
-        {
-          change:
-            "UPDATE song_reward_offer_legs SET shared_song_terms_v2=jsonb_set(shared_song_terms_v2,'{qualification_bindings,2,binding_id}','\"foreign-binding\"') WHERE leg_id='test-leg'",
-          values: [],
-          restore:
-            "UPDATE song_reward_offer_legs SET shared_song_terms_v2=$1::jsonb WHERE leg_id='test-leg'",
-          original: [JSON.stringify(frozen.resolved.terms)],
-        },
-        {
-          change:
-            "UPDATE qualification_policy_versions SET policy_document=jsonb_set(policy_document,'{producer_id}','\"foreign-producer\"') WHERE qualification_policy_version_id=$1",
-          values: [frozen.resolved.binding.qualification_policy_id],
-          restore:
-            "UPDATE qualification_policy_versions SET policy_document=$1::jsonb WHERE qualification_policy_version_id=$2",
-          original: [
-            JSON.stringify(frozen.resolved.qualification_document),
-            frozen.resolved.binding.qualification_policy_id,
-          ],
-        },
-        {
-          change:
-            "UPDATE dance_moderated_policy_disclosures_v1 SET disclosure=jsonb_set(disclosure,'{owner_rubric_text}','\"foreign-rubric\"') WHERE policy_id=$1",
-          values: [frozen.policy.policy_id],
-          restore:
-            "UPDATE dance_moderated_policy_disclosures_v1 SET disclosure=$1::jsonb WHERE policy_id=$2",
-          original: [JSON.stringify(frozen.policy.disclosure), frozen.policy.policy_id],
-        },
-      ];
-      for (const fault of cases) {
-        await injectContextLineageFault(admin, fault.change, fault.values);
-        await expect(read()).rejects.toMatchObject({ reason: "unavailable" });
-        await injectContextLineageFault(admin, fault.restore, fault.original);
-        expect((await read()).session.terms_hash).toBe(frozen.terms.terms_hash);
-      }
-    }));
+        { noPose },
+      ),
+  );
   test("practice context retains original consent/rubric after a current policy rotation and charges captured read limits", async () =>
     withFixture(async (f, admin) => {
       await f.ready();

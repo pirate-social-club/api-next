@@ -189,3 +189,40 @@ describe("unregistered moderated Dance contracts", () => {
     expect(() => decodeDanceReviewCommandReceiptV1({ ...receipt, outcome: "applied" })).toThrow();
   });
 });
+
+test.each(["passed", "not_passed"] as const)(
+  "no-pose private %s result cannot claim a pose affirmation",
+  (verdict) => {
+    const reviewed = {
+      ...result,
+      state: "reviewed",
+      verdict,
+      captured_policy: { ...result.captured_policy, version: "moderator-review-policy-v2" },
+      cue_attestation: "not_required",
+      submitted_at: "1970-01-01T00:00:02.000Z",
+      terminal_at: "1970-01-01T00:00:03.000Z",
+      initial_submit_receipt: {
+        receipt_id: "submit",
+        show_publicly_if_passed: false,
+        publication_disclosure_version: "disclosure-v1",
+        submitted_at: "1970-01-01T00:00:02.000Z",
+      },
+      show_publicly_if_passed: false,
+      publication_choice_revision: 1,
+    };
+    expect(decodeDanceReviewPrivateResultV1(reviewed).cue_attestation).toBe("not_required");
+    for (const cue_attestation of ["affirmed", "not_attested", null])
+      expect(() => decodeDanceReviewPrivateResultV1({ ...reviewed, cue_attestation })).toThrow();
+    expect(() =>
+      decodeDanceReviewPrivateResultV1({ ...reviewed, captured_policy: result.captured_policy }),
+    ).toThrow();
+    expect(
+      decodeDanceReviewCommandV1({
+        ...common,
+        operation: "verdict",
+        version: "dance-owner-verdict-attestation-v2",
+        verdict,
+      }).version,
+    ).toBe("dance-owner-verdict-attestation-v2");
+  },
+);

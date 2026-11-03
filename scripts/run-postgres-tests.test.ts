@@ -123,8 +123,8 @@ describe("PostgreSQL test discovery", () => {
     });
   });
 
-  test("balances every general file across six independent CI shards", () => {
-    expect(postgresGeneralShardCount).toBe(6);
+  test("balances every general file across seven independent CI shards", () => {
+    expect(postgresGeneralShardCount).toBe(7);
     const files = [
       "heavy.pg.test.ts",
       "medium.pg.test.ts",
@@ -132,6 +132,7 @@ describe("PostgreSQL test discovery", () => {
       "small-b.pg.test.ts",
       "small-c.pg.test.ts",
       "small-d.pg.test.ts",
+      "small-e.pg.test.ts",
     ];
     const weights = {
       "heavy.pg.test.ts": 8,
@@ -140,6 +141,7 @@ describe("PostgreSQL test discovery", () => {
       "small-b.pg.test.ts": 2,
       "small-c.pg.test.ts": 1,
       "small-d.pg.test.ts": 1,
+      "small-e.pg.test.ts": 1,
     };
     const shards = shardPostgresTestFiles(files, postgresGeneralShardCount, weights);
 
@@ -189,7 +191,7 @@ describe("PostgreSQL test discovery", () => {
     );
   });
 
-  test("fits the tracked workload in six shards while five still exceed unchanged planning headroom", async () => {
+  test("fits the tracked workload in seven shards while six still exceed unchanged planning headroom", async () => {
     const tracked = Bun.spawnSync(["git", "ls-files", "-z", "*.pg.test.ts"]);
     expect(tracked.exitCode).toBe(0);
     const files = tracked.stdout
@@ -220,23 +222,21 @@ describe("PostgreSQL test discovery", () => {
     const totals = shards.map((shard) =>
       shard.reduce((sum, file) => sum + (weights[file] ?? 0), 0),
     );
-    // Observations only plan capacity; six actual green runs are still required.
+    // Observations only plan capacity; seven actual green runs are still required.
     // Keep180s of headroom inside the unchanged900s general runner deadline.
     expect(Math.max(...totals) * 100).toBeLessThanOrEqual(720_000);
-    const five = shardPostgresTestFiles(audited, 5, weights);
-    const fiveTotals = five.map((shard) =>
+    const six = shardPostgresTestFiles(audited, 6, weights);
+    const sixTotals = six.map((shard) =>
       shard.reduce((sum, file) => sum + (weights[file] ?? 0), 0),
     );
-    expect(Math.max(...fiveTotals) * 100).toBeGreaterThan(720_000);
+    expect(Math.max(...sixTotals) * 100).toBeGreaterThan(720_000);
     // Even perfect rebalancing cannot fix capacity when the mean exceeds it.
-    expect((fiveTotals.reduce((sum, weight) => sum + weight, 0) / 5) * 100).toBeGreaterThan(
-      720_000,
-    );
+    expect((sixTotals.reduce((sum, weight) => sum + weight, 0) / 6) * 100).toBeGreaterThan(720_000);
     console.log(
       JSON.stringify({
         auditedFiles: audited.length,
-        sixShardMilliseconds: totals.map((weight) => weight * 100),
-        insufficientFiveShardMilliseconds: fiveTotals.map((weight) => weight * 100),
+        sevenShardMilliseconds: totals.map((weight) => weight * 100),
+        insufficientSixShardMilliseconds: sixTotals.map((weight) => weight * 100),
         notificationsWholeFileObservations: "completed-source158; planning only",
       }),
     );

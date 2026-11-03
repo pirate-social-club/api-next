@@ -7,9 +7,15 @@ const QUANTITY = /^0x(?:0|[1-9a-f][0-9a-f]*)$/u;
 export async function readNativeBalance(
   rpc: NativeBalanceJsonRpc,
   account: string,
+  blockNumber?: bigint,
 ): Promise<bigint> {
   if (!ADDRESS.test(account)) throw new Error("invalid native balance account");
-  const value = await rpc("eth_getBalance", [account.toLowerCase(), "latest"]);
+  if (blockNumber !== undefined && blockNumber < 0n)
+    throw new Error("invalid native balance block");
+  const value = await rpc("eth_getBalance", [
+    account.toLowerCase(),
+    blockNumber === undefined ? "latest" : `0x${blockNumber.toString(16)}`,
+  ]);
   if (typeof value !== "string" || !QUANTITY.test(value)) {
     throw new Error("invalid native balance response");
   }

@@ -353,6 +353,20 @@ const verdict = (p: MemoryPorts, key = "verdict", choice = "passed") => ({
   verdict: choice,
 });
 
+function expectTerminalEffects(p: MemoryPorts, winner: "passed" | "not_passed") {
+  const effects = [...p.effects.values()];
+  const qualifications = effects.filter((i) => i.kind === "qualification");
+  expect(p.state.verdict).toBe(winner);
+  expect(effects.filter((i) => i.kind === "result")).toHaveLength(1);
+  expect(qualifications).toHaveLength(winner === "passed" ? 1 : 0);
+  expect(effects.filter((i) => i.kind === "handoff_release")).toHaveLength(
+    winner === "passed" ? 1 : 0,
+  );
+  expect(p.state.attestation?.cue).toBe(winner === "passed" ? "affirmed" : "not_attested");
+  if (winner === "passed") expect(qualifications[0]?.qualification?.score_bps).toBeNull();
+  else expect(p.state.qualificationRef).toBeNull();
+}
+
 describe("offline moderated Dance application ports", () => {
   test("authenticate before strict decode; browser cannot provide actor, worker evidence or scores", async () => {
     const p = new MemoryPorts();
@@ -468,7 +482,7 @@ describe("offline moderated Dance application ports", () => {
     q.factsValue = { ...q.factsValue, owner: { ...nextOwner, accountId: "dancer" } };
     expect((await run(verdict(q), q)).refusal_code).toBe("self_review");
   });
-  test("competing terminal commands produce one result/qualification/handoff under serialized fake ports", async () => {
+  test("competing terminal commands preserve only the winning verdict's effects under serialized fake ports", async () => {
     const p = new MemoryPorts();
     await ready(p);
     const pass = verdict(p, "pass", "passed"),
@@ -476,13 +490,32 @@ describe("offline moderated Dance application ports", () => {
     const results = await Promise.all([run(pass, p), run(fail, p)]);
     expect(results.filter((r) => r.outcome === "applied")).toHaveLength(1);
     expect(results.filter((r) => r.outcome === "refused")).toHaveLength(1);
-    for (const kind of ["result", "qualification", "handoff_release"])
-      expect([...p.effects.values()].filter((i) => i.kind === kind)).toHaveLength(1);
-    expect(p.state.attestation?.cue).toBe("affirmed");
-    expect(
-      [...p.effects.values()].find((i) => i.kind === "qualification")?.qualification?.score_bps,
-    ).toBeNull();
+    const winner = results.find((r) => r.outcome === "applied")?.result.verdict;
+    if (winner !== "passed" && winner !== "not_passed") throw new Error("Missing terminal winner");
+    expectTerminalEffects(p, winner);
+    const effects = structuredClone([...p.effects]);
+    expect(await run(pass, p)).toEqual(results[0]);
+    expect(await run(fail, p)).toEqual(results[1]);
+    expect([...p.effects]).toEqual(effects);
   });
+  test.each(["passed", "not_passed"] as const)(
+    "first terminal %s determines effects and later refusal remains replayable",
+    async (winner) => {
+      const p = new MemoryPorts();
+      await ready(p);
+      const first = verdict(p, "first", winner);
+      const second = verdict(p, "second", winner === "passed" ? "not_passed" : "passed");
+      const applied = await run(first, p);
+      const refused = await run(second, p);
+      expect(applied.outcome).toBe("applied");
+      expect(refused.outcome).toBe("refused");
+      expectTerminalEffects(p, winner);
+      const effects = structuredClone([...p.effects]);
+      expect(await run(first, p)).toEqual(applied);
+      expect(await run(second, p)).toEqual(refused);
+      expect([...p.effects]).toEqual(effects);
+    },
+  );
   test("unknown COMMIT acknowledgement never triggers an automatic callback or new effect; original receipt recovers", async () => {
     const p = new MemoryPorts();
     p.loseCommitAck = true;

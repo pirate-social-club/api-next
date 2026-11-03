@@ -236,7 +236,9 @@ export function makeControlPlaneModeratedDanceIntakeStore(
           terms = yield* prepareModeratedDanceTerms(
             facts,
             { sessionId: id(), reviewId: id(), attemptId: id() },
-            selectModeratedDanceCue(entropy),
+            facts.policy.version === "moderator-review-policy-v2"
+              ? "none"
+              : selectModeratedDanceCue(entropy),
           ).pipe(Effect.mapError(classify));
         }
         const receiptId = id(),

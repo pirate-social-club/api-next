@@ -22,6 +22,18 @@ import { makeControlPlaneVideoDetailStore } from "./video-detail-repository.ts";
 const contentRow = () => ({
   detail_kind: "content",
   post_id: "post-video",
+  community: {
+    id: "community",
+    object: "community_preview",
+    display_name: "Harbor Collective",
+    route_slug: "harbor-collective",
+    membership_mode: "open",
+    human_verification_lane: null,
+    moderators: [],
+    membership_gate_summaries: [],
+    rules: [],
+    created: 1,
+  },
   post_row: {
     post_id: "post-video",
     community_id: "community",
@@ -76,6 +88,11 @@ function fixture(rows: readonly Record<string, unknown>[], failure?: ControlPlan
   );
   const services: PublicPostRouteServices = {
     videoDetailStore,
+    communityStore: {
+      getPreview: () => {
+        throw new Error("video community must use the same snapshot");
+      },
+    },
     publicPostRouteStore: {
       getBySlug: () => {
         throw new Error("no fallback after video lookup");
@@ -257,4 +274,28 @@ test("owned video codec and generated result reject normalized targets and metad
       },
     }),
   ).toThrow();
+});
+
+test("video community context is validated inside the existing single snapshot", async () => {
+  const f = fixture([contentRow()]);
+  const result = await Effect.runPromise(
+    getPublicPostCanonicalRouteById({ postId: "post-video" }, f.services),
+  );
+  expect(result.kind === "content" && result.content.community?.display_name).toBe(
+    "Harbor Collective",
+  );
+  expect(result.kind === "content" && result.content.community).not.toHaveProperty(
+    "viewer_membership_status",
+  );
+  expect(f.statements).toHaveLength(1);
+  for (const community of [null, { ...contentRow().community, id: "another-community" }]) {
+    await expect(
+      Effect.runPromise(
+        getPublicPostCanonicalRouteById(
+          { postId: "post-video" },
+          fixture([{ ...contentRow(), community }]).services,
+        ),
+      ),
+    ).rejects.toBeInstanceOf(InternalError);
+  }
 });

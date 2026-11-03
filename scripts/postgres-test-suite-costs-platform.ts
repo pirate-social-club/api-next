@@ -1,6 +1,12 @@
 // Content, media, identity, community and rewards persistence measurements.
 // Provenance and public aggregate: postgres-test-suite-costs.ts.
 export const postgresPlatformSuiteCostEstimates = {
+  // Two callbacks took7.63s in the isolated PostgreSQL17.11 focused run.
+  // Rounded shard-planning estimate only; no test deadline is changed.
+  "packages/platform-cf/src/media-moderation-immutable-action.pg.test.ts": {
+    sourceCallCount: 2,
+    milliseconds: 10000,
+  },
   // Twelve source callbacks expand to17cases on one complete295-migration
   // isolated schema. Local PostgreSQL17 whole-file observation3.64s; this
   // rounded estimate affects shard planning only, never a test deadline.

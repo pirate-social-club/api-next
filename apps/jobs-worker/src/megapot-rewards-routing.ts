@@ -15,7 +15,7 @@ export function makeSongFundingRecoveryRouting(input: {
   environment: string;
   create: (deployment: SongFundingWork["source"]["deployment"]) => MegapotV2FullRpcClient;
 }) {
-  return (work: SongFundingWork) => {
+  return (work: Pick<SongFundingWork, "source" | "state">) => {
     const d = work.source.deployment,
       i = work.state.receipt.instruction;
     if (

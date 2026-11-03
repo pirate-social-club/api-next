@@ -39,6 +39,10 @@ export const reusablePostgresTestSuites = [
   "scripts/very-staging-community-fixture.pg.test.ts",
 ] as const;
 export const freshSchemaPostgresTestSuites = [
+  "packages/platform-cf/src/telegram-community-study.pg.test.ts",
+  "packages/platform-cf/src/media-moderation-immutable-action.pg.test.ts",
+  "apps/jobs-worker/src/reward-safe-study-journey.pg.test.ts",
+  "apps/jobs-worker/src/song-megapot-funding-recovery.pg.test.ts",
   "packages/platform-cf/src/video-post-removal.pg.test.ts",
   "tests/postgres/notifications-hardening.pg.test.ts",
   "packages/platform-cf/src/activity-completion-repository.pg.test.ts",
@@ -52,6 +56,7 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/reward-operations-control.pg.test.ts",
   "scripts/megapot-golden-adopted-pool.pg.test.ts",
   "scripts/register-safe-pool-custody.pg.test.ts",
+  "scripts/provision-shared-song-pot.pg.test.ts",
   "scripts/staging-hns-cutover-probe-reseed.pg.test.ts",
   "apps/http-worker/src/rewards-golden-retry.pg.test.ts",
   "apps/http-worker/src/reward-safe-pilot-routes.pg.test.ts",
@@ -65,8 +70,10 @@ export const freshSchemaPostgresTestSuites = [
   "packages/platform-cf/src/reward-safe-ticket-first.pg.test.ts",
   "packages/platform-cf/src/reward-safe-late-purchase-recovery.pg.test.ts",
   "packages/platform-cf/src/song-megapot-contributions.pg.test.ts",
+  "packages/platform-cf/src/song-funding-cancellation.pg.test.ts",
   "packages/platform-cf/src/song-contribution-refusals.pg.test.ts",
   "packages/platform-cf/src/shared-song-megapot-participation.pg.test.ts",
+  "packages/platform-cf/src/shared-song-frozen-purchase.pg.test.ts",
   "packages/platform-cf/src/reward-winner-send-palm.pg.test.ts",
   "packages/platform-cf/src/wallet-sponsored-send.pg.test.ts",
   "packages/platform-cf/src/wallet-send-palm.pg.test.ts",
@@ -81,7 +88,10 @@ export const freshSchemaPostgresTestSuites = [
   "apps/http-worker/src/hns-community-publication.pg.test.ts",
   "apps/http-worker/src/hns-community-activation.pg.test.ts",
   "apps/http-worker/src/hns-owner-recovery-production.pg.test.ts",
+  "apps/http-worker/src/hns-owner-recovery-observer-retry.pg.test.ts",
+  "packages/platform-cf/src/hns-owner-recovery-runtime-privileges.pg.test.ts",
   "apps/jobs-worker/src/hns-active-lease-renewal-production.pg.test.ts",
+  "apps/jobs-worker/src/hns-active-lease-renewal-observer-retry.pg.test.ts",
   "apps/http-worker/src/hns-community-activation-production-worker.pg.test.ts",
   "apps/http-worker/src/hns-community-joint-ceremony.pg.test.ts",
   "apps/http-worker/src/hns-lifecycle-observation-scheduling.pg.test.ts",
@@ -93,6 +103,7 @@ export const freshSchemaPostgresTestSuites = [
   "apps/http-worker/src/video-song-reference-required.pg.test.ts",
   "scripts/hns-monitor/snapshot.pg.test.ts",
   "scripts/hns-continuity/promotion.pg.test.ts",
+  "scripts/hns-staging-cookie-profile-successor.pg.test.ts",
   "packages/platform-cf/src/community-purchase-funding-repository.pg.test.ts",
   "packages/platform-cf/src/content-repository.pg.test.ts",
   "packages/platform-cf/src/dance-attempt-persistence.pg.test.ts",
@@ -169,6 +180,8 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  "apps/http-worker/src/browser-session-authentication.pg.test.ts",
+  "packages/platform-cf/src/browser-session-repository.pg.test.ts",
   "packages/platform-cf/src/dance-serving-permissions.pg.test.ts",
   "packages/platform-cf/src/study-provider-refusal.pg.test.ts",
   "apps/http-worker/src/guest-study-default-worker.pg.test.ts",

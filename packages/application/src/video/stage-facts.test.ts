@@ -94,6 +94,23 @@ for (const [index, fact] of fixtures.entries()) {
     expect(() => validateVideoStageFact({ ...fact, snapshot: {} })).toThrow();
   });
 }
+test("silent probe evidence preserves absent audio and rejects contradictory audio facts", () => {
+  const fact = fixtures[0];
+  const silent = { ...fact, snapshot: { ...fact?.snapshot, audioCodec: null, hasAudio: false } };
+  expect(validateVideoStageFact(silent) as unknown).toEqual(silent);
+  expect(() =>
+    validateVideoStageFact({ ...silent, snapshot: { ...silent.snapshot, hasAudio: true } }),
+  ).toThrow();
+  expect(() =>
+    validateVideoStageFact({ ...silent, snapshot: { ...silent.snapshot, audioCodec: "aac" } }),
+  ).toThrow();
+  expect(() =>
+    validateVideoStageFact({
+      ...silent,
+      snapshot: { ...silent.snapshot, audioCodec: "opus", hasAudio: true },
+    }),
+  ).toThrow();
+});
 test("rejects duplicate frame roles and malformed nested recognition", () => {
   const fact = fixtures[1];
   expect(() =>

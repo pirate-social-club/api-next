@@ -5,7 +5,12 @@ import {
 } from "@pirate/application";
 import { Data, Effect } from "effect";
 import type { Hex } from "viem";
+import {
+  type FrozenSongMegapotDrawing,
+  frozenSongMegapotPurchaseDeadline,
+} from "../../application/src/rewards/song-megapot-frozen-plan.ts";
 import { mapRewardReservationFailure } from "./control-plane-error-classification.ts";
+import { loadFrozenSharedSongDrawing } from "./shared-song-frozen-plan.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -104,6 +109,9 @@ type RewardSafePurchaseCandidate = Readonly<{
   observationId: string;
   drawingTime: string;
   entryCutoffAt: string;
+  entryCutoffSeconds: number;
+  frozenDrawing: FrozenSongMegapotDrawing | null;
+  purchaseDeadlineAtMs: number;
   ticketPriceAtomic: bigint;
   ballMax: number;
   bonusballMax: number;
@@ -179,6 +187,7 @@ export function makeControlPlaneRewardSafePurchaseStore() {
             label: "reward-safe-purchase.candidate.read",
             text: `SELECT leg.leg_id, observation.drawing_id, observation.observation_id,
                           observation.drawing_time, observation.ticket_price_atomic,
+                          leg.qualification_family_v2, leg.entry_cutoff_seconds,
                           observation.ball_max, observation.bonusball_max,
                           observation.drawing_time
                             - make_interval(secs => leg.entry_cutoff_seconds) AS entry_cutoff_at,
@@ -220,22 +229,53 @@ export function makeControlPlaneRewardSafePurchaseStore() {
           });
           if (result.rows.length === 0) return null;
           const row = result.rows[0] as Row;
-          return yield* Effect.try({
-            try: () =>
-              ({
-                legId: text(row, "leg_id"),
-                drawingId: bigint(row, "drawing_id"),
-                observationId: text(row, "observation_id"),
-                drawingTime: instant(row, "drawing_time"),
-                entryCutoffAt: instant(row, "entry_cutoff_at"),
-                ticketPriceAtomic: bigint(row, "ticket_price_atomic"),
-                ballMax: Number(bigint(row, "ball_max")),
-                bonusballMax: Number(bigint(row, "bonusball_max")),
-                sourceTag: text(row, "source_tag") as Hex,
-                deployment: deployment(row),
-              }) satisfies RewardSafePurchaseCandidate,
+          const candidate = yield* Effect.try({
+            try: () => ({
+              legId: text(row, "leg_id"),
+              drawingId: bigint(row, "drawing_id"),
+              observationId: text(row, "observation_id"),
+              drawingTime: instant(row, "drawing_time"),
+              entryCutoffAt: instant(row, "entry_cutoff_at"),
+              entryCutoffSeconds: Number(bigint(row, "entry_cutoff_seconds")),
+              ticketPriceAtomic: bigint(row, "ticket_price_atomic"),
+              ballMax: Number(bigint(row, "ball_max")),
+              bonusballMax: Number(bigint(row, "bonusball_max")),
+              sourceTag: text(row, "source_tag") as Hex,
+              deployment: deployment(row),
+            }),
             catch: () => failed("invalid-row"),
           });
+          const frozenDrawing =
+            row.qualification_family_v2 === "shared_song"
+              ? yield* loadFrozenSharedSongDrawing(db, candidate.legId, candidate.drawingId).pipe(
+                  Effect.catchTag("SongContributionFailure", () =>
+                    Effect.fail(failed("invalid-row")),
+                  ),
+                )
+              : null;
+          if (row.qualification_family_v2 === "shared_song" && frozenDrawing === null)
+            return yield* failed("invalid-row");
+          if (frozenDrawing !== null && Date.parse(candidate.drawingTime) % 1000 !== 0) return null;
+          const deadline =
+            frozenDrawing === null
+              ? Date.parse(candidate.entryCutoffAt) - input.minimumEntrySeconds * 1000
+              : frozenSongMegapotPurchaseDeadline(
+                  frozenDrawing,
+                  {
+                    drawingId: candidate.drawingId,
+                    drawingTime: BigInt(Date.parse(candidate.drawingTime) / 1000),
+                    ticketPrice: candidate.ticketPriceAtomic,
+                    jackpotLock: false,
+                    entryCutoffSeconds: candidate.entryCutoffSeconds,
+                  },
+                  input.minimumEntrySeconds,
+                );
+          if (deadline === null) return null;
+          return {
+            ...candidate,
+            frozenDrawing,
+            purchaseDeadlineAtMs: deadline,
+          } satisfies RewardSafePurchaseCandidate;
         }),
       ),
 
@@ -251,18 +291,29 @@ export function makeControlPlaneRewardSafePurchaseStore() {
       readonly calldata: Hex;
       readonly calldataHash: string;
       readonly headBlockNumber: bigint;
+      readonly minimumEntrySeconds: number;
+      readonly scanAllowanceMs: number;
     }) =>
       mapped(
         Effect.gen(function* () {
           const db = yield* ControlPlaneDb;
+          if (
+            !Number.isSafeInteger(input.minimumEntrySeconds) ||
+            input.minimumEntrySeconds < 60 ||
+            !Number.isSafeInteger(input.scanAllowanceMs) ||
+            input.scanAllowanceMs < 0
+          )
+            return yield* failed("invalid-row");
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
               const { candidate } = input;
               const custody = candidate.deployment.custodyAddress;
+              let frozenDeadline: number | null = null;
               const leg = yield* transaction.execute<Row>({
                 label: "reward-safe-purchase.leg.lock",
                 text: `SELECT funded_atomic-reserved_atomic-spent_atomic-fulfilled_atomic
-                              -refunded_atomic AS available_atomic
+                              -refunded_atomic AS available_atomic, qualification_family_v2,
+                              entry_cutoff_seconds
                          FROM song_reward_offer_legs
                         WHERE leg_id=$1 AND purchase_order='ticket_first_v1'
                           AND status='active' FOR UPDATE`,
@@ -272,6 +323,60 @@ export function makeControlPlaneRewardSafePurchaseStore() {
               if (leg.rows.length !== 1) return yield* failed("effect-conflict");
               if (bigint(leg.rows[0] as Row, "available_atomic") < candidate.ticketPriceAtomic) {
                 return yield* failed("insufficient-budget");
+              }
+              // The locked leg selects this path; a caller cannot omit its frozen
+              // plan. No effect, cursor or budget reservation exists before refusal.
+              if ((leg.rows[0] as Row).qualification_family_v2 === "shared_song") {
+                const plan = yield* loadFrozenSharedSongDrawing(
+                  transaction,
+                  candidate.legId,
+                  candidate.drawingId,
+                ).pipe(
+                  Effect.catchTag("SongContributionFailure", () =>
+                    Effect.fail(failed("invalid-row")),
+                  ),
+                );
+                if (plan === null) return yield* failed("invalid-row");
+                const observation = yield* transaction.execute<Row>({
+                  label: "reward-safe-purchase.frozen-observation.lock",
+                  text: `SELECT o.drawing_time, o.ticket_price_atomic,
+                           floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS now_ms
+                         FROM megapot_drawing_observations o
+                         JOIN song_reward_offer_legs l ON l.leg_id=$2 AND o.attestation_id=l.attestation_id
+                         JOIN song_reward_offers offer ON offer.offer_id=l.offer_id
+                         WHERE o.observation_id=$1 AND o.drawing_id=$3 AND NOT o.drawing_locked
+                           AND o.expires_at>clock_timestamp() AND offer.status='active'
+                         FOR SHARE OF o,offer`,
+                  values: [
+                    candidate.observationId,
+                    candidate.legId,
+                    candidate.drawingId.toString(),
+                  ],
+                  readonly: false,
+                });
+                if (observation.rows.length !== 1) return yield* failed("effect-conflict");
+                const current = observation.rows[0] as Row;
+                if (Date.parse(instant(current, "drawing_time")) % 1000 !== 0)
+                  return yield* failed("effect-conflict");
+                const deadline = frozenSongMegapotPurchaseDeadline(
+                  plan,
+                  {
+                    drawingId: candidate.drawingId,
+                    drawingTime: BigInt(Date.parse(instant(current, "drawing_time")) / 1000),
+                    ticketPrice: bigint(current, "ticket_price_atomic"),
+                    jackpotLock: false,
+                    entryCutoffSeconds: Number(bigint(leg.rows[0] as Row, "entry_cutoff_seconds")),
+                  },
+                  input.minimumEntrySeconds,
+                );
+                if (
+                  deadline === null ||
+                  bigint(current, "ticket_price_atomic") !== candidate.ticketPriceAtomic ||
+                  instant(current, "drawing_time") !== candidate.drawingTime ||
+                  Number(bigint(current, "now_ms")) + input.scanAllowanceMs >= deadline
+                )
+                  return yield* failed("effect-conflict");
+                frozenDeadline = deadline;
               }
               const authority = yield* transaction.execute<Row>({
                 label: "reward-safe-purchase.authority.read",
@@ -303,6 +408,20 @@ export function makeControlPlaneRewardSafePurchaseStore() {
                 readonly: false,
               });
               if (cursor.rows.length !== 1) return yield* failed("invalid-row");
+              if (frozenDeadline !== null) {
+                const time = yield* transaction.execute<Row>({
+                  label: "reward-safe-purchase.frozen-deadline.recheck",
+                  text: "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS now_ms",
+                  values: [],
+                  readonly: true,
+                });
+                if (
+                  time.rows.length !== 1 ||
+                  Number(bigint(time.rows[0] as Row, "now_ms")) + input.scanAllowanceMs >=
+                    frozenDeadline
+                )
+                  return yield* failed("effect-conflict");
+              }
               const cursorBlock = bigint(cursor.rows[0] as Row, "next_block_number");
               // The first block in which an execution may be this call: never the mined
               // head, which already held any identical transfer before this call existed.
@@ -357,7 +476,7 @@ export function makeControlPlaneRewardSafePurchaseStore() {
                 readonly: false,
               });
               if (prepared.rowCount !== 1) return yield* failed("effect-conflict");
-              yield* transaction.execute({
+              const drawingCreated = yield* transaction.execute({
                 label: "reward-safe-purchase.drawing.create",
                 // The cutoff comes from the stored observation, exactly as the guard
                 // recomputes it; a client timestamp would lose its sub-millisecond part.
@@ -374,15 +493,21 @@ export function makeControlPlaneRewardSafePurchaseStore() {
                          FROM song_reward_offer_legs leg
                          JOIN megapot_drawing_observations observation
                            ON observation.observation_id=$2
-                        WHERE leg.leg_id=$1`,
+                        WHERE leg.leg_id=$1
+                          AND (leg.qualification_family_v2 IS DISTINCT FROM 'shared_song'
+                            OR ($5::timestamptz IS NOT NULL AND
+                              clock_timestamp()+($6::bigint * interval '1 millisecond')<$5::timestamptz))`,
                 values: [
                   candidate.legId,
                   candidate.observationId,
                   candidate.ticketPriceAtomic.toString(),
                   input.effectId,
+                  frozenDeadline === null ? null : new Date(frozenDeadline).toISOString(),
+                  input.scanAllowanceMs,
                 ],
                 readonly: false,
               });
+              if (drawingCreated.rowCount !== 1) return yield* failed("effect-conflict");
               const [one, two, three, four, five] = input.ticket.normals;
               yield* transaction.execute({
                 label: "reward-safe-purchase.detail.create",

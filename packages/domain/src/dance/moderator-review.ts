@@ -1,7 +1,7 @@
 /** Pure moderated family. No media, clock, storage or funding I/O. */
 export const MODERATED_DANCE_REPLAY_RETIRED = "keyed-replay-retired-v1";
 export type ReviewPolicy = Readonly<{
-  version: "moderator-review-policy-v1";
+  version: "moderator-review-policy-v1" | "moderator-review-policy-v2";
   hash: string;
   qualificationVersion: string;
   qualificationHash: string;
@@ -79,9 +79,9 @@ export type SubmitReceipt = Readonly<{
   sourceDigest: string;
 }>;
 export type OwnerAttestation = Readonly<{
-  version: "dance-owner-verdict-attestation-v1";
+  version: "dance-owner-verdict-attestation-v1" | "dance-owner-verdict-attestation-v2";
   producer: "owner_verdict_attestation";
-  cue: "affirmed" | "not_attested";
+  cue: "affirmed" | "not_attested" | "not_required";
   reviewerAccountId: string;
   assignmentId: string;
   assignmentRevision: number;
@@ -209,7 +209,7 @@ export type ReviewEvent =
   | Readonly<{
       kind: "verdict";
       verdict: "passed" | "not_passed";
-      version: "dance-owner-verdict-attestation-v1";
+      version: "dance-owner-verdict-attestation-v1" | "dance-owner-verdict-attestation-v2";
     }>
   | Readonly<{ kind: "withdraw" | "screen" | "expire" | "erase" }>
   | Readonly<{ kind: "publication_failed"; generation: number }>;
@@ -315,7 +315,7 @@ function validCapture(c: SealedReviewCapture, retainedTerminal = false): boolean
   const p = c.policy;
   return (
     !!p &&
-    p.version === "moderator-review-policy-v1" &&
+    (p.version === "moderator-review-policy-v1" || p.version === "moderator-review-policy-v2") &&
     [
       c.reviewId,
       c.sessionId,
@@ -367,12 +367,18 @@ function validCapture(c: SealedReviewCapture, retainedTerminal = false): boolean
     time(c.bodyEndMs) &&
     c.bodyEndMs - c.bodyStartMs >= 6000 &&
     c.bodyEndMs - c.bodyStartMs <= 30000 &&
-    time(c.cueStartMs) &&
-    time(c.cueEndMs) &&
-    c.cueStartMs < c.cueEndMs &&
-    c.cueEndMs <= c.bodyStartMs &&
-    positive(c.cueHoldMs) &&
-    c.cueHoldMs <= c.cueEndMs - c.cueStartMs &&
+    (p.version === "moderator-review-policy-v2"
+      ? c.cueId === "none" &&
+        c.cueStartMs === 0 &&
+        c.cueEndMs === 0 &&
+        c.cueHoldMs === 0 &&
+        c.bodyStartMs === 0
+      : time(c.cueStartMs) &&
+        time(c.cueEndMs) &&
+        c.cueStartMs < c.cueEndMs &&
+        c.cueEndMs <= c.bodyStartMs &&
+        positive(c.cueHoldMs) &&
+        c.cueHoldMs <= c.cueEndMs - c.cueStartMs) &&
     ["shadow", "streak_admitted", "money_admitted"].includes(p.admission) &&
     ["practice", "reward_eligible"].includes(c.rewardMode) &&
     Array.isArray(c.objectives) &&
@@ -750,7 +756,10 @@ export function transitionModeratorReview(
       return denied(s, "not_authorized");
     if (owner.accountId === c.accountId) return denied(s, "self_review");
     if (
-      event.version !== "dance-owner-verdict-attestation-v1" ||
+      event.version !==
+        (c.policy.version === "moderator-review-policy-v2"
+          ? "dance-owner-verdict-attestation-v2"
+          : "dance-owner-verdict-attestation-v1") ||
       !boundMedia(c, f) ||
       !boundSafety(c, f) ||
       f.safety?.status !== "accepted" ||
@@ -775,7 +784,12 @@ export function transitionModeratorReview(
       attestation: {
         version: event.version,
         producer: "owner_verdict_attestation",
-        cue: event.verdict === "passed" ? "affirmed" : "not_attested",
+        cue:
+          p.version === "moderator-review-policy-v2"
+            ? "not_required"
+            : event.verdict === "passed"
+              ? "affirmed"
+              : "not_attested",
         reviewerAccountId: actor.accountId,
         assignmentId: owner.assignmentId,
         assignmentRevision: owner.revision,

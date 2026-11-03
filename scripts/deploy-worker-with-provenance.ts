@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  HNS_STAGING_DIRECT_CHECK_COMMAND,
   HNS_STAGING_MANIFEST_COMMAND,
   readHnsStagingGatewayPin,
   verifyHnsStagingGatewayManifest,
@@ -9,6 +10,7 @@ import {
 import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
 import { parseJsonc } from "./secret-drift-audit.ts";
 import { withServingFunctionPrivilegesDeployment } from "./serving-function-privileges-preflight.ts";
+import { prepareSongFundingBindingAdmission } from "./song-funding-binding-admission.ts";
 import { assertStagingRewardsPreservation } from "./staging-rewards-config.ts";
 import {
   type PrepareStagingBindingGuard,
@@ -368,11 +370,14 @@ export async function deployWorkerWithProvenance(
   stagingBindingGuard: PrepareStagingBindingGuard = prepareStagingBindingGuard,
   telegramDeploymentGuard: typeof withTelegramActivationDeployment = withTelegramActivationDeployment,
   servingFunctionGuard: typeof withServingFunctionPrivilegesDeployment = withServingFunctionPrivilegesDeployment,
+  fundingBindingGuard: typeof prepareSongFundingBindingAdmission = prepareSongFundingBindingAdmission,
+  verifySource: typeof verifyDeploymentSource = verifyDeploymentSource,
 ): Promise<WorkerDeploymentReceipt> {
-  const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
+  const { sourceSha, configPath } = await verifySource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
     configPath === "apps/http-worker/wrangler.jsonc" && input.environment === "staging";
   let solidRoot = resolve(repositoryRoot, "../pirate-web-solid");
+  let pendingCutoverTo: string | null = null;
   if (guardedHnsStagingHttp) {
     // Linked API checkouts have a different parent. The shared Git directory
     // identifies the canonical API repository and its standalone Solid sibling.
@@ -387,16 +392,33 @@ export async function deployWorkerWithProvenance(
     const manifestRead = await runner(HNS_STAGING_MANIFEST_COMMAND, repositoryRoot);
     if (manifestRead.exitCode !== 0)
       throw new Error("staging HNS gateway read failed before HTTP deploy");
-    verifyHnsStagingGatewayManifest(
+    ({ pendingCutoverTo } = verifyHnsStagingGatewayManifest(
       manifestRead.stdout,
       await readStagingGatewayPin(repositoryRoot),
-    );
+    ));
+    // Before a pinned cutover, Solid already sits at the rotation's identity
+    // and cannot pair with the live gateway, so its identity is compared instead.
     const solidCheck = await runner(
-      ["node", "scripts/hns-staging-gateway-preflight.mjs"],
+      [
+        "node",
+        pendingCutoverTo === null
+          ? "scripts/hns-staging-gateway-preflight.mjs"
+          : "scripts/hns-ingress-composition-identity.mjs",
+      ],
       solidRoot,
     );
-    if (solidCheck.exitCode !== 0)
+    if (
+      solidCheck.exitCode !== 0 ||
+      (pendingCutoverTo !== null && solidCheck.stdout.trim() !== pendingCutoverTo)
+    )
       throw new Error("staging Solid ingress preflight failed before HTTP deploy");
+    // The direct check must work before upload: a failure after it would leave
+    // a serving Worker reported as failed.
+    if (
+      pendingCutoverTo !== null &&
+      (await runner(HNS_STAGING_DIRECT_CHECK_COMMAND, solidRoot)).exitCode !== 0
+    )
+      throw new Error("staging direct-host check failed before HTTP deploy");
   }
   const message = `git:${sourceSha}`;
   const listCommand = versionsCommand(input, configPath);
@@ -419,6 +441,16 @@ export async function deployWorkerWithProvenance(
     writeDiagnostic,
   );
 
+  const fundingGuard = await fundingBindingGuard(
+    repositoryRoot,
+    configPath,
+    input.environment,
+    sourceSha,
+  );
+  if (fundingGuard)
+    writeDiagnostic(
+      `${JSON.stringify({ song_funding_binding_admission: fundingGuard.receipt })}\n`,
+    );
   const disabledRewards = bindingGuard?.disabledRewards;
   assertStagingRewardsPreservation(configPath, input.environment, disabledRewards);
   const deployed = await servingFunctionGuard(repositoryRoot, configPath, () =>
@@ -434,10 +466,13 @@ export async function deployWorkerWithProvenance(
           async (signal) => {
             if (bindingGuard !== null) {
               await bindingGuard.recheck();
-              const current = await verifyDeploymentSource(repositoryRoot, input, runner);
+            }
+            if (bindingGuard !== null || verifySource !== verifyDeploymentSource) {
+              const current = await verifySource(repositoryRoot, input, runner);
               if (current.sourceSha !== sourceSha)
                 throw Error("deployment source changed before upload");
             }
+            await fundingGuard?.recheck();
             if (signal?.aborted)
               throw Error("reward shutdown control connection lost before deploy");
             return runner(
@@ -486,14 +521,26 @@ export async function deployWorkerWithProvenance(
     await requiredOutput(runner, listCommand, repositoryRoot, "post-deploy version listing"),
   );
   const version = findDeployedVersion(before, after, message);
+  if (fundingGuard) {
+    const readback = await fundingGuard.readback(version.id);
+    if (!readback.evidence.some((row) => row.version_id === version.id))
+      throw Error("New funding Worker version is not serving");
+    writeDiagnostic(`${JSON.stringify({ song_funding_binding_readback: readback })}\n`);
+  }
   if (guardedHnsStagingHttp) {
-    const serving = await runner(["bun", "run", "check:staging:hns-route"], solidRoot);
+    const serving = await runner(
+      pendingCutoverTo === null
+        ? ["bun", "run", "check:staging:release"]
+        : HNS_STAGING_DIRECT_CHECK_COMMAND,
+      solidRoot,
+    );
+    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
+    if (serving.stderr.length > 0) writeDiagnostic(serving.stderr);
     if (serving.exitCode !== 0) {
       throw new Error(
-        `staging HNS serving check failed after HTTP deploy (exit ${serving.exitCode})`,
+        `staging direct-host release check failed after HTTP deploy (exit ${serving.exitCode})`,
       );
     }
-    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
   }
   return {
     schema_version: 1,

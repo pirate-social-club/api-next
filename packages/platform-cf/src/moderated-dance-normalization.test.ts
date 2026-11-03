@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-intake-fixture.ts";
+import {
+  moderatedDanceIntakeFacts,
+  noPoseModeratedDanceIntakeFacts,
+} from "../../testing/src/moderated-dance-intake-fixture.ts";
 import {
   decodeModeratedDanceFramehash,
   makeModeratedDanceNormalizationJob,
   moderatedDanceReplayDigests,
+  moderatedDanceSafetySampleOffsets,
   readModeratedDanceExport,
 } from "./moderated-dance-normalization.ts";
 import { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
@@ -185,4 +189,28 @@ describe("private moderated media normalization", () => {
         outcome: "uncertain",
       });
   });
+});
+
+test("prospective no-pose samples the dance without a pre-roll and preserves the body replay recipe", () => {
+  const p = noPoseModeratedDanceIntakeFacts().profile;
+  expect(moderatedDanceSafetySampleOffsets(2000, 8000, profile)).toEqual([0, 1000, 5000]);
+  expect(moderatedDanceSafetySampleOffsets(0, 6000, p)).toEqual([0, 1500, 4500]);
+  const job = makeModeratedDanceNormalizationJob({
+    tag: "no-pose",
+    sourceUrl: "https://private.example/synthetic",
+    bodyStartMs: 0,
+    bodyEndMs: 6000,
+    profile: p,
+  });
+  expect(job.tasks["body-identity"].arguments).toContain("trim=start=0.000:end=6.000");
+  expect(job.tasks["sample-1"].arguments).toContain("-ss 1.500");
+  expect(job.tasks["sample-2"].arguments).toContain("-ss 4.500");
+  const reference = makeModeratedDanceNormalizationJob({
+    tag: "reference",
+    sourceUrl: "https://private.example/synthetic",
+    bodyStartMs: 0,
+    bodyEndMs: 6000,
+    profile,
+  });
+  expect(job.tasks["body-identity"]).toEqual(reference.tasks["body-identity"]);
 });

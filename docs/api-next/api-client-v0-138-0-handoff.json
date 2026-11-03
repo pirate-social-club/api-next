@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.138.0",
+  "sourceBranch": "feat/browser-session-renewal-20261029",
+  "sourceBase": "47e9b311ab4dc443fd61c1efca7cbf8a121b25b5",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds owned cookie-only POST /auth/session/renew, returning renewed status, account identity and access expiry without exposing access or renewal credentials. Browser persistence and revocation require migration0330 and the paired Solid implementation; wallet proof and machine bearer authority remain separate.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.138.0.tgz",
+    "sha256": "c9583989ccac27a0c9c17238e77ee464c48bf15545ace493abcd1a64b9ba6740"
+  },
+  "validation": {
+    "status": "Candidate; API full qualification and independent producer acceptance remain pending. Matching the existing Solid candidate bytes does not establish producer acceptance.",
+    "operationalBoundary": "Source-only. No staging or production release, credential operation, phone action or Rewards activation is authorized by this artifact."
+  }
+}

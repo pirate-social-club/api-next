@@ -12,15 +12,18 @@ import type { Layer } from "effect";
 import { assertTelegramRuntimePrivileges } from "./telegram-activation-privileges.ts";
 import { makeTelegramApi } from "./telegram-api.ts";
 import { makeTelegramAssistantProviders } from "./telegram-assistant-providers.ts";
+import { assertTelegramCommunityCataloguePrivileges } from "./telegram-community-study-catalogue.ts";
 import {
   decodeTelegramConfiguration,
   decodeTelegramCredentials,
   type TelegramConfigurationBindings,
 } from "./telegram-configuration.ts";
 import { makeTelegramCredentialVault } from "./telegram-credential-vault.ts";
+import { makeTelegramDatabase } from "./telegram-database.ts";
 import { logTelegramSetupFailure } from "./telegram-setup-diagnostics.ts";
 import { makeControlPlaneTelegramStore } from "./telegram-store.ts";
 import {
+  makeTelegramCommunityStudyServices,
   makeTelegramStudyServices,
   type TelegramPracticeBindings,
 } from "./telegram-study-runtime.ts";
@@ -32,6 +35,8 @@ export interface TelegramBindings
       | "TELEGRAM_STUDY_PRACTICE_ENABLED"
       | "TELEGRAM_STUDY_PRACTICE_COMMUNITY_ID"
       | "TELEGRAM_STUDY_PRACTICE_POST_IDS_JSON"
+      | "TELEGRAM_COMMUNITY_STUDY_ENABLED"
+      | "TELEGRAM_COMMUNITY_STUDY_POLICY_REVISION"
     > {
   readonly TELEGRAM_QUEUE?: {
     send(
@@ -141,6 +146,8 @@ async function buildTelegramServices(
   // Credentials are validated before the database is consulted, as before.
   decodeTelegramCredentials(bindings);
   await assertTelegramRuntimePrivileges(runtime);
+  if (config.community_practice_enabled)
+    await assertTelegramCommunityCataloguePrivileges(makeTelegramDatabase(runtime));
   return composeTelegramServices({
     bindings,
     runtime,
@@ -204,6 +211,19 @@ export async function composeTelegramServices(input: {
   // Attach practice to this same object. The wake callbacks above close over it, so a copy
   // carrying the practice service would leave inline work running without practice.
   if (study !== undefined) services.study = study;
+  const communityStudy = makeTelegramCommunityStudyServices(
+    {
+      ...bindings,
+      TELEGRAM_STUDY_PRACTICE_ENABLED: String(config.practice_enabled),
+      TELEGRAM_COMMUNITY_STUDY_ENABLED: String(config.community_practice_enabled === true),
+      ...(config.community_practice_policy_revision === undefined
+        ? {}
+        : { TELEGRAM_COMMUNITY_STUDY_POLICY_REVISION: config.community_practice_policy_revision }),
+    },
+    runtime,
+    services,
+  );
+  if (communityStudy !== undefined) services.communityStudy = communityStudy;
   return services;
 }
 

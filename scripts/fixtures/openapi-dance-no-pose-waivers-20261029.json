@@ -1,0 +1,136 @@
+{
+  "breakingChangeWaivers": [
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/dance/moderated-sessions/{sessionId}: enum value added: \"none\" at cue.kind"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_communitiesCommunityIdDanceModeratedSessionsSessionId",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/dance/moderated-sessions/{sessionId}/capture-context: enum value added: \"none\" at session.cue.kind"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_communitiesCommunityIdDanceModeratedSessionsSessionIdCaptureContext",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/dance/owner-reviews/{reviewId}: enum value added: \"dance-owner-verdict-attestation-v2\" at attestation_version"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_communitiesCommunityIdDanceOwnerReviewsReviewId",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/dance/owner-reviews/{reviewId}/rubric: enum value added: \"dance-owner-verdict-attestation-v2\" at attestation_version"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_communitiesCommunityIdDanceOwnerReviewsReviewIdRubric",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/dance/reviews/{reviewId}/result: enum value added: \"moderator-review-policy-v2\" at captured_policy.version",
+        "response GET /communities/{communityId}/dance/reviews/{reviewId}/result: enum value added: \"not_required\" at cue_attestation"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_communitiesCommunityIdDanceReviewsReviewIdResult",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response GET /communities/{communityId}/posts/{postId}/dance/moderated-choreographies/{choreographyId}/revisions/{revision}/latest-review: enum value added: \"moderator-review-policy-v2\" at latest_submitted.captured_policy.version",
+        "response GET /communities/{communityId}/posts/{postId}/dance/moderated-choreographies/{choreographyId}/revisions/{revision}/latest-review: enum value added: \"not_required\" at latest_submitted.cue_attestation"
+      ],
+      "kind": "deprecation",
+      "operationId": "get_communitiesCommunityIdPostsPostIdDanceModeratedChoreographiesChoreographyIdRevisionsRevisionLatestReview",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/dance/moderated-sessions: enum value added: \"none\" at session.cue.kind"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdDanceModeratedSessions",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/dance/moderated-sessions/{sessionId}/consent: enum value added: \"none\" at session.cue.kind"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdDanceModeratedSessionsSessionIdConsent",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/dance/moderated-sessions/{sessionId}/finalize-upload: enum value added: \"none\" at session.cue.kind"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdDanceModeratedSessionsSessionIdFinalizeUpload",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/dance/moderated-sessions/{sessionId}/upload: enum value added: \"none\" at session.cue.kind"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdDanceModeratedSessionsSessionIdUpload",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/dance/reviews/{reviewId}/submit: enum value added: \"moderator-review-policy-v2\" at result.captured_policy.version",
+        "response POST /communities/{communityId}/dance/reviews/{reviewId}/submit: enum value added: \"not_required\" at result.cue_attestation"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdDanceReviewsReviewIdSubmit",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/dance/reviews/{reviewId}/verdict: enum value added: \"moderator-review-policy-v2\" at result.captured_policy.version",
+        "response POST /communities/{communityId}/dance/reviews/{reviewId}/verdict: enum value added: \"not_required\" at result.cue_attestation"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdDanceReviewsReviewIdVerdict",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/dance/reviews/{reviewId}/visibility: enum value added: \"moderator-review-policy-v2\" at result.captured_policy.version",
+        "response POST /communities/{communityId}/dance/reviews/{reviewId}/visibility: enum value added: \"not_required\" at result.cue_attestation"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdDanceReviewsReviewIdVisibility",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    },
+    {
+      "baselineSha": "165a59a67b4191beb22a1bd84bd7b26375363063",
+      "expectedViolations": [
+        "response POST /communities/{communityId}/dance/reviews/{reviewId}/withdraw: enum value added: \"moderator-review-policy-v2\" at result.captured_policy.version",
+        "response POST /communities/{communityId}/dance/reviews/{reviewId}/withdraw: enum value added: \"not_required\" at result.cue_attestation"
+      ],
+      "kind": "deprecation",
+      "operationId": "post_communitiesCommunityIdDanceReviewsReviewIdWithdraw",
+      "reason": "workspace_owner rejected the opening pose; prospective no-pose Dance task v1-dance-no-pose-policy-20261029 introduces strict v2/none/not_required responses for a paired genuine139 consumer. Retained v1 sessions remain unchanged. Admit only this exact reviewed baseline/response set; no runtime or financial activation."
+    }
+  ]
+}

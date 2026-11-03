@@ -181,6 +181,8 @@ test("guest-only controls ignore invalid ambient ordinary cookies and never veri
     "__Host-pirate_session",
     "__Host-pirate_session=%not-a-value",
     "__Host-pirate_session=bad; __Host-pirate_session=duplicate",
+    "__Host-pirate_renewal=%not-a-value",
+    "__Host-pirate_renewal=first; __Host-pirate_renewal=second",
   ]) {
     const f = fixture({ accountFailure: "invalid_token" });
     const request = f.request({ cookie: `${guestCookie}; ${csrfCookie}; ${raw}` });
@@ -188,6 +190,21 @@ test("guest-only controls ignore invalid ambient ordinary cookies and never veri
       f.auth.authenticate({ request, policy: policies.discover }),
     ).resolves.toMatchObject({ selected: { ownerId: "original-owner" } });
     expect(f.counts().accountCalls).toBe(0);
+  }
+});
+
+test("attachment refuses malformed or duplicate renewal cookies before verifying ordinary account authority", async () => {
+  for (const raw of [
+    "__Host-pirate_renewal",
+    "__Host-pirate_renewal=%not-a-value",
+    "__Host-pirate_renewal=first; __Host-pirate_renewal=second",
+  ]) {
+    const f = fixture();
+    const cookie = `${guestCookie}; ${csrfCookie}; __Host-pirate_guest_attach_${intentId.slice(4)}=${intentSecret}; __Host-pirate_session=ordinary; __Host-pirate_csrf=account-csrf; ${raw}`;
+    await expect(
+      f.auth.authenticate({ request: f.request({ cookie }), policy: policies.prepare }),
+    ).rejects.toMatchObject({ details: { reason_code: "account_proof_required" } });
+    expect(f.counts()).toEqual({ accountCalls: 0, guestCalls: 0, leaseCalls: 0 });
   }
 });
 

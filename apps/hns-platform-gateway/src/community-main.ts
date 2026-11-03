@@ -1,8 +1,8 @@
 import { isAbsolute, join, resolve } from "node:path";
 import {
-  encodeHnsCommunityAppInteractiveGatewayProfileV3,
+  encodeHnsCommunityAppInteractiveGatewayProfileV4,
   HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_SHA256,
-  verifyHnsCommunityAppInteractiveGatewayProfileV3,
+  verifyHnsCommunityAppInteractiveGatewayProfileV4,
 } from "@pirate/application/hns-community-app-gateway";
 import {
   type HnsCommunityAppGatewayPostgresAuthorityV1,
@@ -152,7 +152,7 @@ export function assembleHnsCommunityAppGatewayRuntime(input: {
     },
   );
   const composition = makeHnsCommunityAppGatewayComposition(true, {
-    profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV3(),
+    profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV4(),
     gateway_deployment_reference: input.configuration.gateway_deployment_reference,
     solid_origin: input.configuration.manifest.solid_origin,
     solid_access_client_id: input.configuration.solid_access_client_id,
@@ -197,7 +197,7 @@ function credentialReader(directory: string) {
 
 async function runHnsCommunityAppGateway(arguments_: readonly string[]): Promise<void> {
   const argumentsValue = parseHnsCommunityAppGatewayArguments(arguments_);
-  await verifyHnsCommunityAppInteractiveGatewayProfileV3();
+  await verifyHnsCommunityAppInteractiveGatewayProfileV4();
   const credentialsDirectory = process.env.CREDENTIALS_DIRECTORY;
   if (credentialsDirectory === undefined) {
     throw new Error("HNS community app gateway configuration is incomplete or invalid");

@@ -165,6 +165,18 @@
           // Staging-only Hyperdrive; never reuse the production resource.
           "id": "8cb7658a0f7143359c1becfec6a15c23",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        },
+        {
+          "binding": "SONG_FUNDING_JOBS",
+          // Staging Safe-pilot funding login only; caching disabled. Never the Dance principal.
+          "id": "0a6177f0b1304899a4c6295e84693772",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "services": [
+        {
+          "binding": "HNS_OWNER_VERIFIER",
+          "service": "pirate-hns-owner-verifier-staging"
         }
       ],
       "workflows": [
@@ -234,8 +246,10 @@
         "DATA_REGISTRATION_SIGNER_ADDRESS": "0xE128f4da57540962FF788d5462aE76671499F05E",
         "DATA_REGISTRATION_NATIVE_BALANCE_FLOOR_WEI": "200000000000000000",
         "HNS_OWNERSHIP_ENABLED": "false",
+        "HNS_ACTIVE_LEASE_RENEWAL_ENABLED": "true",
+        "HNS_ROUTE_RENEWAL_LEAD_SECONDS": "3600",
         "HNS_ROOT_HEALTH_RENEWAL_ENABLED": "true",
-        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
+        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging-mainnet-v1",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
         "SPACES_RECONCILIATION_ENABLED": "true",
         "SPACES_RECONCILIATION_OVERDUE_SECONDS": "259200",

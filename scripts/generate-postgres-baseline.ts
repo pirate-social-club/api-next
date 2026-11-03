@@ -35,6 +35,7 @@ const baselineSeedTables = [
   "platform_pirate_label_policy_revisions",
   "qualification_policy_versions",
   "recovery_inspection_cursors",
+  "reward_joint_cycle_turn_v1",
   "reward_operations_control",
   "reward_operations_control_events",
   "reward_operations_run_lease",

@@ -25,7 +25,8 @@
         "scripts/**/*.ts",
         "tests/**/*.ts",
         "infra/**/*.ts",
-        "scripts/hns-continuity/*.mjs"
+        "scripts/hns-continuity/*.mjs",
+        "scripts/hns-staging-gateway/*.mjs"
       ]
     },
     "apps/hns-observer-driver": {
