@@ -345,13 +345,18 @@ elif (( runtime_expectations )); then
   done
 
   # Every container in the project needs an explicit expectation.
+  # A failed listing is drift, never an empty project.
   if [[ -n "$compose_project" ]]; then
-    while IFS= read -r project_container; do
-      [[ -z "$project_container" ]] && continue
-      if [[ -z "${expected_release_for[$project_container]+x}" ]]; then
-        mark_drift "container $project_container in Compose project $compose_project has no recorded release expectation"
-      fi
-    done < <(docker ps -a --filter "label=com.docker.compose.project=$compose_project" --format '{{.Names}}' 2>/dev/null || true)
+    if ! project_containers="$(docker ps -a --filter "label=com.docker.compose.project=$compose_project" --format '{{.Names}}' 2>/dev/null)"; then
+      mark_drift "cannot list containers in Compose project $compose_project (docker ps failed)"
+    else
+      while IFS= read -r project_container; do
+        [[ -z "$project_container" ]] && continue
+        if [[ -z "${expected_release_for[$project_container]+x}" ]]; then
+          mark_drift "container $project_container in Compose project $compose_project has no recorded release expectation"
+        fi
+      done <<< "$project_containers"
+    fi
   fi
 
   # Exact container arguments.
@@ -402,8 +407,25 @@ elif (( runtime_expectations )); then
       mark_drift "systemctl unavailable; cannot inspect $unit"
       continue
     fi
-    dropins="$(systemctl show -p DropInPaths --value "$unit" 2>/dev/null || true)"
-    environment="$(systemctl show -p Environment --value "$unit" 2>/dev/null || true)"
+    # Any failed inspection is drift, never "no drop-ins". systemctl show
+    # succeeds with empty values for a unit that does not exist, so the unit
+    # must also be loaded.
+    if ! load_state="$(systemctl show -p LoadState --value "$unit" 2>/dev/null)"; then
+      mark_drift "cannot inspect systemd unit $unit (systemctl show LoadState failed)"
+      continue
+    fi
+    if [[ "$load_state" != loaded ]]; then
+      mark_drift "systemd unit $unit is ${load_state:-in an unknown state}, expected loaded"
+      continue
+    fi
+    if ! dropins="$(systemctl show -p DropInPaths --value "$unit" 2>/dev/null)"; then
+      mark_drift "cannot read drop-ins of systemd unit $unit (systemctl show DropInPaths failed)"
+      continue
+    fi
+    if ! environment="$(systemctl show -p Environment --value "$unit" 2>/dev/null)"; then
+      mark_drift "cannot read environment of systemd unit $unit (systemctl show Environment failed)"
+      continue
+    fi
     unit_ok=1
     if [[ -n "${dropins//[[:space:]]/}" ]]; then
       mark_drift "systemd unit $unit has drop-ins: $dropins"

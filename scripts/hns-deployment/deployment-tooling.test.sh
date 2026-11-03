@@ -476,6 +476,7 @@ elif [[ "$1" == inspect ]]; then
 elif [[ "$1 $2" == "image inspect" ]]; then
   echo "example/dnsdist@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 elif [[ "$1" == ps ]]; then
+  [[ -e "$fixtures/fail-ps" ]] && exit 1
   cat "$fixtures/ps.txt"
 else
   exit 1
@@ -485,7 +486,9 @@ cat > "$rt_shim/systemctl" <<'EOF'
 #!/usr/bin/env bash
 fixtures="${RT_FIXTURES:?}"
 [[ "$1" == show ]] || exit 1
+[[ -e "$fixtures/fail-$3" ]] && exit 1
 case "$3" in
+  LoadState) cat "$fixtures/loadstate.txt" ;;
   DropInPaths) cat "$fixtures/dropins.txt" ;;
   Environment) cat "$fixtures/environment.txt" ;;
   *) exit 1 ;;
@@ -496,6 +499,7 @@ export RT_FIXTURES="$rt_fixtures"
 PATH="$rt_shim:$PATH"
 : > "$rt_fixtures/dropins.txt"
 echo "DEPLOY_ROOT=/srv/test" > "$rt_fixtures/environment.txt"
+echo loaded > "$rt_fixtures/loadstate.txt"
 
 resolver_role="$repo/scripts/hns-deployment-fixtures/resolver-role"
 mkdir -p "$resolver_role"
@@ -643,7 +647,11 @@ pass "verify detects override arguments, extra Compose files and extra mounts"
 printf '%s\n' pirate-test-spv pirate-test-dnsdist pirate-test-stray > "$rt_fixtures/ps.txt"
 rt_drifts "unexpected project container" "container pirate-test-stray in Compose project hnsdoh-test has no recorded release expectation"
 printf '%s\n' pirate-test-spv pirate-test-dnsdist > "$rt_fixtures/ps.txt"
-pass "verify flags project containers without an expectation"
+touch "$rt_fixtures/fail-ps"
+rt_drifts "failed container listing" "cannot list containers in Compose project hnsdoh-test (docker ps failed)"
+rm "$rt_fixtures/fail-ps"
+rt_status --verify >/dev/null || fail "restored container listing still drifting"
+pass "verify flags project containers without an expectation and fails closed if listing fails"
 
 echo "/etc/systemd/system/test-resolver.service.d/override.conf" > "$rt_fixtures/dropins.txt"
 rt_drifts "systemd drop-in" "systemd unit test-resolver.service has drop-ins"
@@ -652,7 +660,16 @@ echo "DEPLOY_ROOT=/srv/test COMPOSE_FILE=compose.yaml:/srv/overrides/spv-overrid
 rt_drifts "COMPOSE_FILE in unit environment" "systemd unit test-resolver.service sets a Compose override in its environment"
 echo "DEPLOY_ROOT=/srv/test" > "$rt_fixtures/environment.txt"
 rt_status --verify >/dev/null || fail "restored systemd state still drifting"
-pass "verify detects systemd drop-ins and Compose environment overrides"
+for property in LoadState DropInPaths Environment; do
+  touch "$rt_fixtures/fail-$property"
+  rt_drifts "failed systemctl show $property" "systemctl show $property failed"
+  rm "$rt_fixtures/fail-$property"
+done
+echo not-found > "$rt_fixtures/loadstate.txt"
+rt_drifts "unit that is not loaded" "systemd unit test-resolver.service is not-found, expected loaded"
+echo loaded > "$rt_fixtures/loadstate.txt"
+rt_status --verify >/dev/null || fail "restored systemd inspection still drifting"
+pass "verify detects systemd drop-ins and Compose environment overrides, and fails closed on inspection failures"
 
 sed -i "s/^CONTAINER_RELEASE_1=.*/CONTAINER_RELEASE_1=pirate-test-spv=not-a-commit/" "$rt_meta"
 (cd "$rt/releases/$new_commit" && find . -type f ! -path './SHA256SUMS' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
