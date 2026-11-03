@@ -218,9 +218,9 @@ export function assertTelegramOrdinaryService(review: TelegramReview) {
       value.api_source === policy.source &&
       value.http_module_sha256 === policy.workers.http.module &&
       value.jobs_module_sha256 === policy.workers.jobs.module &&
-      value.website_source === "78ab15f93ff7e12cdd88277c2b9fa22a186323a2" &&
+      value.website_source === "a16d5055d481717670ff4528905bf75a105022fd" &&
       value.website_artifact ===
-        "cd6a0045f711a3f3cea18c6fea33cf98e3d6134f4cf4efc740b897befb2cca85" &&
+        "31a16d3212abfd559814315f18dd36f8b766e9bee33c7636a94852c171604e70" &&
       value.disabled_backend_verified === true &&
       value.website_deployed_verified === true &&
       value.ordinary_flows_verified === true &&
