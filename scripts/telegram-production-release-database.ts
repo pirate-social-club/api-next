@@ -169,27 +169,107 @@ export async function telegramRowLocks(db: pg.Client, requireAllowed = true) {
   // Observe that authority read-only; acquiring a row lock is a separate effect.
   const rows = (
     await db.query(
-      `SELECT c.relname AS table_name,
-    has_table_privilege(current_user,c.oid,'SELECT') AS can_select,
-    has_any_column_privilege(current_user,c.oid,'UPDATE') AS any_update
-    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='api_next'
-    AND c.relname=ANY($1::text[]) ORDER BY c.relname`,
-      [
-        [
-          "posts",
-          "study_session_items_v2",
-          "telegram_account_associations",
-          "telegram_study_conversations",
-        ],
-      ],
+      `SELECT required.table_name, COALESCE(c.relkind IN ('r','p'),false) AS table_exists,
+      COALESCE(has_table_privilege(current_user,c.oid,'SELECT'),false) AS can_select,
+      COALESCE(has_any_column_privilege(current_user,c.oid,'UPDATE'),false) AS any_update
+      FROM unnest($1::text[]) required(table_name) LEFT JOIN pg_namespace n ON n.nspname='api_next'
+      LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=required.table_name ORDER BY required.table_name`,
+      [TELEGRAM_ROW_LOCK_TABLES],
     )
   ).rows;
   requireTelegram(
-    rows.length === 4 &&
-      (!requireAllowed || rows.every((r) => r.can_select === true && r.any_update === true)),
+    rows.length === TELEGRAM_ROW_LOCK_TABLES.length && rows.every((r) => r.table_exists === true),
     "telegram-row-lock-authority-refused",
   );
+  if (requireAllowed) assertTelegramRowLockAuthority(rows);
   return rows;
+}
+export const TELEGRAM_ROW_LOCK_TABLES = [
+  "account_streak_clocks",
+  "communities",
+  "community_role_assignments",
+  "community_telegram_deliveries",
+  "community_telegram_integrations",
+  "community_telegram_setups",
+  "community_telegram_usage",
+  "media_post_submissions",
+  "media_publication_projections",
+  "persona_community_bindings",
+  "personas",
+  "posts",
+  "study_session_items_v2",
+  "study_sessions_v2",
+  "study_spoken_answer_commands",
+  "telegram_account_associations",
+  "telegram_bot_grants",
+  "telegram_link_navigation",
+  "telegram_link_transactions",
+  "telegram_study_conversations",
+  "users",
+] as const;
+export function assertTelegramRowLockAuthority(rows: readonly Record<string, unknown>[]) {
+  requireTelegram(
+    rows.length === TELEGRAM_ROW_LOCK_TABLES.length &&
+      TELEGRAM_ROW_LOCK_TABLES.every((table) => {
+        const matches = rows.filter((r) => r.table_name === table),
+          row = matches[0];
+        return (
+          matches.length === 1 &&
+          row?.table_exists === true &&
+          row.can_select === true &&
+          row.any_update === true
+        );
+      }),
+    "telegram-complete-row-lock-authority-refused",
+  );
+}
+export function assertTelegramGlobalInventory(
+  integrations: readonly Record<string, unknown>[],
+  work: readonly Record<string, unknown>[],
+  allowed: readonly { bot_id: string; bot_epoch: string }[],
+) {
+  requireTelegram(
+    allowed.length <= 1 &&
+      integrations.length <= 1 &&
+      work.length < 21 &&
+      integrations.every(
+        (r) =>
+          r.community_id === policy.canary.community &&
+          r.assistant_enabled === false &&
+          r.automatic_since === null &&
+          r.record_revision === r.revision &&
+          r.record_bot_epoch === r.bot_epoch &&
+          allowed.some((a) => a.bot_id === r.bot_id && a.bot_epoch === r.bot_epoch),
+      ) &&
+      work.every(
+        (r) =>
+          r.community_id === policy.canary.community &&
+          allowed.some((a) => a.bot_epoch === r.bot_epoch) &&
+          integrations.some((i) => i.bot_epoch === r.bot_epoch),
+      ),
+    "global-telegram-bot-or-work-inventory-unreviewed",
+  );
+}
+export async function telegramGlobalInventory(
+  db: pg.Client,
+  allowed: readonly { bot_id: string; bot_epoch: string }[],
+) {
+  const integrations = (
+    await db.query(`SELECT community_id,revision::text AS revision,bot_id,bot_epoch,
+    record->>'revision' AS record_revision,record->>'botEpoch' AS record_bot_epoch,record->>'status' AS status,
+    COALESCE((record->'study'->>'enabled')::boolean,false) AS study_enabled,
+    COALESCE((record->'policy'->>'enabled')::boolean,false) AS assistant_enabled,
+    record->>'automaticSince' AS automatic_since FROM api_next.community_telegram_integrations ORDER BY community_id LIMIT 2`)
+  ).rows;
+  const work = (
+    await db.query(`SELECT 'inbox' AS kind,community_id,bot_epoch,state,count(*)::integer AS count
+    FROM api_next.community_telegram_inbox WHERE state IN ('pending','processing') GROUP BY community_id,bot_epoch,state
+    UNION ALL SELECT 'delivery',community_id,bot_epoch,state,count(*)::integer FROM api_next.community_telegram_deliveries
+    WHERE state IN ('pending','sending','uncertain','failed') GROUP BY community_id,bot_epoch,state
+    ORDER BY kind,community_id,bot_epoch,state LIMIT 21`)
+  ).rows;
+  assertTelegramGlobalInventory(integrations, work, allowed);
+  return { integrations, work };
 }
 export async function applyTelegramMigration(ownerUrl: string, assertBound: () => void) {
   await telegramDatabase(ownerUrl, policy.database.owner, true, (db) =>
@@ -222,4 +302,53 @@ export async function applyTelegramGrants(ownerUrl: string, assertBound: () => v
     // The caller's durable attempt already exists. A lost COMMIT reply is never replayed.
     await db.query("COMMIT");
   });
+}
+
+export async function telegramRecoveryWork(db: pg.Client) {
+  const integration = (
+    await db.query(
+      `SELECT bot_id,bot_epoch,revision,record->>'revision' AS record_revision,
+    COALESCE((record->'study'->>'enabled')::boolean,false) AS study_enabled
+    FROM api_next.community_telegram_integrations WHERE community_id=$1`,
+      [policy.canary.community],
+    )
+  ).rows;
+  const active = (
+    await db.query(
+      `SELECT 'inbox' AS kind,state,count(*)::integer AS count FROM api_next.community_telegram_inbox
+    WHERE community_id=$1 AND state IN ('pending','processing') GROUP BY state UNION ALL
+    SELECT 'delivery',state,count(*)::integer FROM api_next.community_telegram_deliveries WHERE community_id=$1
+    AND state IN ('pending','sending','uncertain','failed') GROUP BY state ORDER BY kind,state`,
+      [policy.canary.community],
+    )
+  ).rows;
+  return { integration, active };
+}
+/** One transaction, separately journaled from either Worker upload. */
+export async function pauseTelegramStudyIntent(
+  db: pg.Client,
+  attempt: (before: Awaited<ReturnType<typeof telegramRecoveryWork>>) => void,
+  assertBound: () => void,
+) {
+  await db.query("SELECT community_id FROM api_next.communities WHERE community_id=$1 FOR UPDATE", [
+    policy.canary.community,
+  ]);
+  attempt(await telegramRecoveryWork(db));
+  assertBound();
+  await db.query(
+    `UPDATE api_next.community_telegram_integrations SET revision=revision+1,
+    record=jsonb_set(jsonb_set(record,'{study,enabled}','false'::jsonb,false),'{revision}',to_jsonb(revision+1),false),
+    updated_at=clock_timestamp() WHERE community_id=$1 AND COALESCE((record->'study'->>'enabled')::boolean,false)`,
+    [policy.canary.community],
+  );
+  const after = await telegramRecoveryWork(db);
+  requireTelegram(
+    after.integration.every(
+      (r) => r.study_enabled === false && r.record_revision === String(r.revision),
+    ),
+    "study-intent-not-paused-consistently",
+  );
+  assertBound();
+  await db.query("COMMIT");
+  return after;
 }

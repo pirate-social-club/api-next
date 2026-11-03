@@ -38,6 +38,7 @@ export interface TelegramReview {
   readonly credential_contract: TelegramFile;
   readonly catalogue_acceptance: TelegramFile;
   readonly channel_readiness?: TelegramFile;
+  readonly integration_allowlist?: readonly { bot_id: string; bot_epoch: string }[];
   readonly configs: Readonly<Partial<Record<TelegramPhase, TelegramFile>>>;
   readonly recovery_targets: Readonly<Record<"http" | "jobs", TelegramFile>>;
   readonly accepted_predecessor_reviews: readonly string[];
@@ -51,6 +52,7 @@ export interface TelegramReview {
           readonly attempt_sha256: string;
           readonly observation_sha256: string;
           readonly conclusion: "effect_verified" | "not_applied";
+          readonly worker_version?: string;
         }
       >
     >
@@ -170,7 +172,8 @@ export function admitTelegram(
   for (const file of review.files) telegramFile(file);
   telegramFile(review.website_receipt);
   telegramFile(review.credential_contract);
-  if (["migration", "grants", "catalogue", "pause-http"].includes(phase)) checkBackup(review, now);
+  if (["migration", "grants", "catalogue", "pause-intent"].includes(phase))
+    checkBackup(review, now);
   return authority;
 }
 
@@ -291,6 +294,11 @@ export async function resolveTelegramPhase(
         (approved.conclusion === "effect_verified" ? review.after[phase] : review.before[phase]),
     "resolution-observation-not-the-reviewed-state",
   );
+  if (approved.conclusion === "not_applied")
+    requireTelegram(
+      observed === attempt.before_sha256,
+      "not-applied-resolution-must-match-original-before-state",
+    );
   await io.admit("observe");
   io.resolution(phase, {
     ...attempt,

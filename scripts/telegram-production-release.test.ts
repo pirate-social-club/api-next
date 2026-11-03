@@ -250,7 +250,8 @@ test("a reviewed read-only resolution closes a lost acknowledgement without repe
 test("Jobs installation and activation always precede HTTP; recovery has no candidate acceptance prerequisite", async () => {
   expect(TELEGRAM_PHASES["install-http"].predecessors).toEqual(["install-jobs"]);
   expect(TELEGRAM_PHASES["practice-http"].predecessors).toEqual(["practice-jobs"]);
-  expect(TELEGRAM_PHASES["pause-http"].predecessors).toEqual([]);
+  expect(TELEGRAM_PHASES["pause-http"].predecessors).toEqual(["pause-intent"]);
+  expect(TELEGRAM_PHASES["pause-intent"].predecessors).toEqual([]);
   const f = phaseFixture("practice-http");
   await expect(
     telegramPhase("practice-http", f.review, hash, hash, "effect", f.io),
@@ -418,4 +419,44 @@ test("live CLI refuses unreviewed modes and generic target overrides before I/O"
     ["deploy"],
   ])
     await expect(telegramProductionRelease(args)).rejects.toThrow();
+});
+
+test("intent COMMIT and a failed HTTP pause stay separately resolvable without another COMMIT", async () => {
+  const f = phaseFixture("pause-intent");
+  await telegramPhase("pause-intent", f.review, hash, hash, "effect", f.io);
+  const before = sha256(JSON.stringify("after"));
+  const review = {
+    ...f.review,
+    accepted_predecessor_reviews: [],
+    before: { "pause-http": before },
+    after: { "pause-http": sha256(JSON.stringify("paused")) },
+    resolutions: {},
+  } as TelegramReview;
+  const io = {
+    ...f.io,
+    effect: async () => {
+      throw Error("HTTP upload not applied");
+    },
+  };
+  await expect(telegramPhase("pause-http", review, hash, hash, "effect", io)).rejects.toThrow(
+    "not applied",
+  );
+  const resolved = {
+    ...review,
+    resolutions: {
+      "pause-http": {
+        accepted: true as const,
+        reviewer_role: "independent_reviewer" as const,
+        attempt_sha256: io.attemptDigest("pause-http"),
+        observation_sha256: before,
+        conclusion: "not_applied" as const,
+      },
+    },
+  };
+  expect(await resolveTelegramPhase("pause-http", resolved, hash, hash, io)).toMatchObject({
+    conclusion: "not_applied",
+  });
+  expect(io.read("pause-intent", "verified")?.state).toBe("verified");
+  expect(f.effects()).toBe(1);
+  expect(io.read("pause-http", "verified")).toBeUndefined();
 });

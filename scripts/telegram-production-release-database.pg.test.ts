@@ -5,11 +5,16 @@ import { migrationPlan } from "./postgres-migrations.ts";
 import {
   assertTelegramLedger,
   assertTelegramMatrix,
+  pauseTelegramStudyIntent,
   TELEGRAM_GRANTS,
   TELEGRAM_MATRIX_SQL,
+  telegramGlobalInventory,
   telegramMigrations,
 } from "./telegram-production-release-database.ts";
-import { requireTelegram } from "./telegram-production-release-policy.ts";
+import {
+  TELEGRAM_RELEASE as policy,
+  requireTelegram,
+} from "./telegram-production-release-policy.ts";
 
 const raw = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 if (!raw && process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1")
@@ -123,6 +128,42 @@ suite("fixed Telegram migration and exact privilege envelope on disposable Postg
       await expect(db.query("TRUNCATE study_learner_catalogue_decisions")).rejects.toThrow(
         "immutable",
       );
+      await db.query(`CREATE TABLE community_telegram_integrations(community_id text,bot_id text,bot_epoch text,revision bigint,record jsonb,updated_at timestamptz);
+        CREATE TABLE community_telegram_inbox(community_id text,bot_epoch text,state text);
+        CREATE TABLE community_telegram_deliveries(community_id text,bot_epoch text,state text)`);
+      expect(await telegramGlobalInventory(db, [])).toEqual({ integrations: [], work: [] });
+      await db.query("INSERT INTO communities VALUES($1)", [policy.canary.community]);
+      await db.query(
+        "INSERT INTO community_telegram_integrations VALUES($1,'fixture-bot','fixture-epoch',2,$2::jsonb,clock_timestamp())",
+        [
+          policy.canary.community,
+          JSON.stringify({
+            revision: 2,
+            botEpoch: "fixture-epoch",
+            status: "ready",
+            study: { enabled: true, botId: "fixture-bot" },
+          }),
+        ],
+      );
+      const allow = [{ bot_id: "fixture-bot", bot_epoch: "fixture-epoch" }];
+      await expect(telegramGlobalInventory(db, [])).rejects.toThrow("inventory-unreviewed");
+      expect((await telegramGlobalInventory(db, allow)).integrations).toHaveLength(1);
+      let attempts = 0;
+      await db.query("BEGIN");
+      await pauseTelegramStudyIntent(
+        db,
+        () => {
+          attempts++;
+        },
+        () => {},
+      );
+      const paused = await telegramGlobalInventory(db, allow);
+      expect(attempts).toBe(1);
+      expect(paused.integrations[0]).toMatchObject({
+        study_enabled: false,
+        revision: "3",
+        record_revision: "3",
+      });
       await db.query(`SET ROLE "${name}"`);
       expect(
         (await db.query("SELECT count(*)::integer AS count FROM study_learner_catalogue_decisions"))

@@ -38,6 +38,30 @@ export function catalogueAcceptance(file: TelegramFile) {
   );
   return value;
 }
+export function telegramReferenceInventory(rows: readonly Record<string, unknown>[]) {
+  const fields = ["exercise_review_key", "lyric_line_id", "reference_sha256"];
+  requireTelegram(
+    rows.every(
+      (r) =>
+        fields.every((field) => typeof r[field] === "string" && String(r[field]).length > 0) &&
+        Number(r.reference_chars) > 0 &&
+        Number(r.reference_chars) <= 2000,
+    ) && new Set(rows.map((r) => r.exercise_review_key)).size === 22,
+    "reviewed-22-exercise-corpus-changed",
+  );
+  const sorted = [...rows].sort((a, b) => {
+    for (const field of fields) {
+      const order = Buffer.compare(Buffer.from(String(a[field])), Buffer.from(String(b[field])));
+      if (order) return order;
+    }
+    return Number(a.reference_chars) - Number(b.reference_chars);
+  });
+  return {
+    exercise_count: 22,
+    reference_variant_count: sorted.length,
+    corpus_sha256: sha256(JSON.stringify(sorted)),
+  };
+}
 export async function telegramCorpus(db: pg.Client) {
   const args = [policy.canary.community, [policy.canary.post]];
   const ready = (await db.query(TELEGRAM_STUDY_READY_BASE_SQL, args)).rows;
@@ -72,13 +96,13 @@ export async function telegramCorpus(db: pg.Client) {
   );
   const exercises = (
     await db.query(
-      `SELECT DISTINCT exercise_review_key COLLATE "C" AS exercise_review_key,
+      `SELECT * FROM (SELECT DISTINCT exercise_review_key,lyric_line_id,
     encode(sha256(convert_to(presentation->>'reference_text','UTF8')),'hex') AS reference_sha256,
     char_length(presentation->>'reference_text') AS reference_chars
     FROM study_exercise_versions WHERE community_id=$1 AND post_id=$2 AND audio_revision=$3
       AND lyrics_revision=$4 AND retired_at IS NULL AND exercise_type='say_it_back'
       AND learning_language='en' AND learner_band IS NULL AND target_language IS NULL
-    ORDER BY exercise_review_key COLLATE "C"`,
+    ) variants ORDER BY exercise_review_key COLLATE "C",lyric_line_id COLLATE "C",reference_sha256 COLLATE "C",reference_chars`,
       [
         policy.canary.community,
         policy.canary.post,
@@ -87,26 +111,13 @@ export async function telegramCorpus(db: pg.Client) {
       ],
     )
   ).rows;
-  requireTelegram(
-    exercises.length === 22 &&
-      exercises.every(
-        (r) =>
-          typeof r.reference_sha256 === "string" &&
-          r.reference_chars > 0 &&
-          r.reference_chars <= 2000,
-      ),
-    "reviewed-22-exercise-corpus-changed",
-  );
-  return {
-    ...row,
-    exercise_count: exercises.length,
-    corpus_sha256: sha256(JSON.stringify(exercises)),
-  };
+  return { ...row, ...telegramReferenceInventory(exercises) };
 }
 export async function telegramPracticeReadiness(
   db: pg.Client,
   reference: TelegramFile,
   now: number,
+  requireOwnerIntent = false,
 ) {
   const proof = telegramJson<{
     kind: string;
@@ -143,11 +154,15 @@ export async function telegramPracticeReadiness(
       rows[0].bot_id === proof.bot_id &&
       rows[0].bot_epoch === proof.bot_epoch &&
       rows[0].status === "ready" &&
-      rows[0].study_enabled === "true" &&
-      rows[0].study_bot_id === proof.bot_id,
-    "current-bot-owner-study-intent-required",
+      (!requireOwnerIntent || rows[0].study_enabled === "true") &&
+      (rows[0].study_enabled !== "true" || rows[0].study_bot_id === proof.bot_id),
+    "current-bot-readiness-or-owner-study-intent-refused",
   );
-  return { bot_id: proof.bot_id, bot_epoch: proof.bot_epoch, study_enabled: true };
+  return {
+    bot_id: proof.bot_id,
+    bot_epoch: proof.bot_epoch,
+    study_enabled: rows[0].study_enabled === "true",
+  };
 }
 export async function telegramDecision(db: pg.Client) {
   return (

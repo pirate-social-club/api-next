@@ -40,7 +40,10 @@ import {
   assertTelegramFunctions,
   assertTelegramLedger,
   assertTelegramMatrix,
+  pauseTelegramStudyIntent,
+  telegramRecoveryWork as recoveryWork,
   telegramDatabase,
+  telegramGlobalInventory,
   telegramPrivileges,
   telegramRowLocks,
 } from "./telegram-production-release-database.ts";
@@ -59,10 +62,13 @@ import {
   telegramDependencyInventory,
 } from "./telegram-production-release-source.ts";
 import {
+  assertTelegramDisabledTarget,
+  assertTelegramRecoveryVersion,
   collectTelegramWorker,
   rollbackTelegramWorker,
   type TelegramWorkerSnapshot,
   telegramPhaseConfig,
+  telegramServingOrigins,
   telegramWorkerState,
   uploadTelegramWorker,
 } from "./telegram-production-release-workers.ts";
@@ -148,47 +154,14 @@ async function boundChild(
     checkBoundProcess(start, child, self, { execution_tools: tools });
   };
 }
-async function recoveryWork(db: Parameters<Parameters<typeof telegramDatabase>[3]>[0]) {
-  const integration = (
-    await db.query(
-      `SELECT bot_id,bot_epoch,revision,
-    COALESCE((record->'study'->>'enabled')::boolean,false) AS study_enabled
-    FROM api_next.community_telegram_integrations WHERE community_id=$1`,
-      [policy.canary.community],
-    )
-  ).rows;
-  const active = (
-    await db.query(
-      `SELECT 'inbox' AS kind,state,count(*)::integer AS count FROM api_next.community_telegram_inbox
-    WHERE community_id=$1 AND state IN ('pending','processing') GROUP BY state UNION ALL
-    SELECT 'delivery',state,count(*)::integer FROM api_next.community_telegram_deliveries WHERE community_id=$1
-    AND state IN ('pending','sending','uncertain','failed') GROUP BY state ORDER BY kind,state`,
-      [policy.canary.community],
-    )
-  ).rows;
-  return { integration, active };
-}
 async function restoreDisabled(
   worker: TelegramWorker,
   reference: TelegramFile,
   review: TelegramReview,
   assertBound: () => void,
 ) {
-  const target = telegramJson<TelegramWorkerSnapshot>(reference),
-    fixed = policy.workers[worker];
-  const intent = target.bindings.find((r) => r.name === "TELEGRAM_CONFIG_JSON");
-  const config = JSON.parse(String(intent?.text ?? "null"));
-  requireTelegram(
-    target.message === `git:${policy.source}` &&
-      target.module_sha256 === fixed.module &&
-      typeof target.version === "string" &&
-      /^[a-f0-9-]{36}$/u.test(target.version) &&
-      config?.enabled === false &&
-      config.linking_enabled === false &&
-      config.practice_enabled === false &&
-      !config.community_practice_enabled,
-    "compatible-retained-disabled-version-required",
-  );
+  const target = telegramJson<TelegramWorkerSnapshot>(reference);
+  assertTelegramDisabledTarget(target, worker);
   // Both pause phases must already be verified. Candidate acceptance is not required for this recovery.
   const current = await collectTelegramWorker(worker);
   for (const snapshot of [
@@ -217,7 +190,8 @@ async function restoreDisabled(
   const after = await collectTelegramWorker(worker);
   requireTelegram(
     after.version === target.version &&
-      digest(telegramWorkerState(after)) === digest(telegramWorkerState(target)),
+      after.latest === current.latest &&
+      digest(telegramWorkerState(after, true)) === digest(telegramWorkerState(target, true)),
     "recovery-serving-state-unverified",
   );
 }
@@ -227,6 +201,7 @@ async function liveIo(
   reviewSha: string,
   admission: TelegramAdmission,
   bound: () => void,
+  resolving = false,
 ) {
   const assertBound = () => {
     admitTelegram(review, reviewSha, admission, phase, admission.access, Date.now());
@@ -240,6 +215,98 @@ async function liveIo(
   const vault = () => managedTelegramVault(review.credential_contract, assertBound);
   const owner = <T>(readOnly: boolean, action: Parameters<typeof telegramDatabase<T>>[3]) =>
     telegramDatabase(urls.owner, policy.database.owner, readOnly, action);
+  const observePhase = async () => {
+    assertBound();
+    if (phase === "pause-intent") return owner(true, recoveryWork);
+    if (phase === "migration") {
+      const ledger = await owner(true, async (db) => {
+        const count = Number(
+          (await db.query("SELECT count(*) AS count FROM api_next.schema_migrations")).rows[0]
+            .count,
+        );
+        requireTelegram(count === 333 || count === 334, "migration-prefix-count-refused");
+        return assertTelegramLedger(db, count);
+      });
+      const privileges = await telegramDatabase(
+        urls.runtime,
+        policy.database.runtime,
+        true,
+        async (db) => {
+          const rows = await telegramPrivileges(db);
+          assertTelegramMatrix(rows, false, ledger.count === 333);
+          return rows;
+        },
+      );
+      const workers = [];
+      for (const worker of ["http", "jobs"] as const) {
+        const snapshot = await collectTelegramWorker(worker);
+        const binding = snapshot.bindings.find((row) => row.name === "CONTROL_PLANE");
+        requireTelegram(
+          binding?.type === "hyperdrive" &&
+            binding.id === policy.database.hyperdrive &&
+            snapshot.version === policy.workers[worker].baseline &&
+            snapshot.module_sha256 === policy.workers[worker].baselineModule,
+          "serving-consumer-origin-or-baseline-changed",
+        );
+        workers.push({ worker, version: snapshot.version, hyperdrive: binding.id });
+      }
+      return { ledger, privileges, workers };
+    }
+    if (phase === "grants")
+      return telegramDatabase(urls.runtime, policy.database.runtime, true, async (db) => ({
+        privileges: await telegramPrivileges(db),
+        functions: await assertTelegramFunctions(db),
+        row_lock_authority: await telegramRowLocks(db, false),
+      }));
+    if (phase === "vault")
+      return (await vault().list())
+        .filter((r) => r.name === policy.vault.name)
+        .map(({ name, version, operation }) => ({ name, version, operation }));
+    if (phase === "catalogue")
+      return owner(true, async (db) => ({
+        corpus: await telegramCorpus(db),
+        decisions: await telegramDecision(db),
+      }));
+    const snapshot = await collectTelegramWorker(phaseWorker(phase));
+    if (resolving) {
+      const resolution = review.resolutions[phase];
+      requireTelegram(
+        resolution?.worker_version === snapshot.version,
+        "resolution-worker-version-differs",
+      );
+      if (phase.startsWith("recover-") && resolution.conclusion === "effect_verified")
+        assertTelegramRecoveryVersion(
+          snapshot,
+          telegramJson<TelegramWorkerSnapshot>(review.recovery_targets[phaseWorker(phase)]),
+          phaseWorker(phase),
+        );
+    }
+
+    exclusiveRecord(policy.paths.operation, `observation-${phase}-${randomUUID()}.json`, snapshot);
+    const practice = phase.startsWith("practice-")
+      ? await owner(true, async (db) => {
+          requireTelegram(review.channel_readiness, "production-channel-readiness-required");
+          const accepted = catalogueAcceptance(review.catalogue_acceptance);
+          const corpus = await telegramCorpus(db),
+            decision = await telegramDecision(db);
+          requireTelegram(
+            decision.length === 1 &&
+              decision[0].policy_revision === policy.canary.policy &&
+              decision[0].review_evidence_sha256 === review.catalogue_acceptance.sha256 &&
+              decision[0].effective === true &&
+              corpus.corpus_sha256 === accepted.corpus_sha256,
+            "current-accepted-canary-decision-required",
+          );
+          return telegramPracticeReadiness(db, review.channel_readiness, Date.now());
+        })
+      : undefined;
+    return {
+      worker: telegramWorkerState(snapshot),
+      ...(phase.startsWith("recover-") ? { serving_version: snapshot.version } : {}),
+      ...(practice ? { practice } : {}),
+      ...(isRecovery(phase) ? await owner(true, recoveryWork) : {}),
+    };
+  };
   return {
     ...telegramJournal(),
     now: () => Date.now(),
@@ -248,86 +315,15 @@ async function liveIo(
       assertBound();
     },
     observe: async () => {
-      assertBound();
-      if (phase === "migration") {
-        const ledger = await owner(true, async (db) => {
-          const count = Number(
-            (await db.query("SELECT count(*) AS count FROM api_next.schema_migrations")).rows[0]
-              .count,
-          );
-          requireTelegram(count === 333 || count === 334, "migration-prefix-count-refused");
-          return assertTelegramLedger(db, count);
-        });
-        const privileges = await telegramDatabase(
-          urls.runtime,
-          policy.database.runtime,
-          true,
-          async (db) => {
-            const rows = await telegramPrivileges(db);
-            assertTelegramMatrix(rows, false, ledger.count === 333);
-            return rows;
-          },
-        );
-        const workers = [];
-        for (const worker of ["http", "jobs"] as const) {
-          const snapshot = await collectTelegramWorker(worker);
-          const binding = snapshot.bindings.find((row) => row.name === "CONTROL_PLANE");
-          requireTelegram(
-            binding?.type === "hyperdrive" &&
-              binding.id === policy.database.hyperdrive &&
-              snapshot.version === policy.workers[worker].baseline &&
-              snapshot.module_sha256 === policy.workers[worker].baselineModule,
-            "serving-consumer-origin-or-baseline-changed",
-          );
-          workers.push({ worker, version: snapshot.version, hyperdrive: binding.id });
-        }
-        return { ledger, privileges, workers };
-      }
-      if (phase === "grants")
-        return telegramDatabase(urls.runtime, policy.database.runtime, true, async (db) => ({
-          privileges: await telegramPrivileges(db),
-          functions: await assertTelegramFunctions(db),
-          row_lock_authority: await telegramRowLocks(db, false),
-        }));
-      if (phase === "vault")
-        return (await vault().list())
-          .filter((r) => r.name === policy.vault.name)
-          .map(({ name, version, operation }) => ({ name, version, operation }));
-      if (phase === "catalogue")
-        return owner(true, async (db) => ({
-          corpus: await telegramCorpus(db),
-          decisions: await telegramDecision(db),
-        }));
-      const snapshot = await collectTelegramWorker(phaseWorker(phase));
-      exclusiveRecord(
-        policy.paths.operation,
-        `observation-${phase}-${randomUUID()}.json`,
-        snapshot,
+      const origin_witness = await telegramServingOrigins();
+      const global_inventory = await owner(true, (db) =>
+        telegramGlobalInventory(db, review.integration_allowlist ?? []),
       );
-      const practice = phase.startsWith("practice-")
-        ? await owner(true, async (db) => {
-            requireTelegram(review.channel_readiness, "production-channel-readiness-required");
-            const accepted = catalogueAcceptance(review.catalogue_acceptance);
-            const corpus = await telegramCorpus(db),
-              decision = await telegramDecision(db);
-            requireTelegram(
-              decision.length === 1 &&
-                decision[0].policy_revision === policy.canary.policy &&
-                decision[0].review_evidence_sha256 === review.catalogue_acceptance.sha256 &&
-                decision[0].effective === true &&
-                corpus.corpus_sha256 === accepted.corpus_sha256,
-              "current-accepted-canary-decision-required",
-            );
-            return telegramPracticeReadiness(db, review.channel_readiness, Date.now());
-          })
-        : undefined;
-      return {
-        worker: telegramWorkerState(snapshot),
-        ...(practice ? { practice } : {}),
-        ...(isRecovery(phase) ? await owner(true, recoveryWork) : {}),
-      };
+      return { origin_witness, global_inventory, state: await observePhase() };
     },
     effect: async () => {
+      await telegramServingOrigins();
+      await owner(true, (db) => telegramGlobalInventory(db, review.integration_allowlist ?? []));
       assertBound();
       if (phase === "migration") return applyTelegramMigration(urls.owner, assertBound);
       if (phase === "grants") return applyTelegramGrants(urls.owner, assertBound);
@@ -341,28 +337,19 @@ async function liveIo(
           appendTelegramCanary(db, review.catalogue_acceptance, assertBound),
         );
       }
-      if (phase === "pause-http")
-        await owner(false, async (db) => {
-          await db.query(
-            "SELECT community_id FROM api_next.communities WHERE community_id=$1 FOR UPDATE",
-            [policy.canary.community],
-          );
-          const before = await recoveryWork(db);
-          exclusiveRecord(policy.paths.operation, "pause-http-intent-attempt.json", { before });
-          assertBound();
-          await db.query(
-            `UPDATE api_next.community_telegram_integrations SET revision=revision+1,
-          record=jsonb_set(record,'{study,enabled}','false'::jsonb,false),updated_at=clock_timestamp()
-          WHERE community_id=$1 AND COALESCE((record->'study'->>'enabled')::boolean,false)`,
-            [policy.canary.community],
-          );
-          requireTelegram(
-            (await recoveryWork(db)).integration.every((row) => row.study_enabled === false),
-            "study-intent-not-paused",
-          );
-          assertBound();
-          await db.query("COMMIT");
-        });
+      if (phase === "pause-intent") {
+        await owner(false, (db) =>
+          pauseTelegramStudyIntent(
+            db,
+            (before) =>
+              exclusiveRecord(policy.paths.operation, "pause-intent-database-attempt.json", {
+                before,
+              }),
+            assertBound,
+          ),
+        );
+        return;
+      }
       if (phase.startsWith("recover-")) {
         await owner(true, async (db) => {
           const state = await recoveryWork(db);
@@ -518,7 +505,7 @@ export async function telegramProductionRelease(args: readonly string[]) {
       review,
       reviewSha,
       admissionSha,
-      await liveIo(phase, review, reviewSha, admission, bound),
+      await liveIo(phase, review, reviewSha, admission, bound, true),
     );
   return telegramPhase(
     phase,

@@ -71,9 +71,10 @@ changing the existing website preparer's strict operator environment contract.
 ## Phases and reconciliation
 
 Apply334, verify its exact contiguous ledger, then grant only the original nine
-missing sets. Preflight the actual owner/runtime identities and fresh HTTP/Jobs
-Hyperdrive mapping. Matrix checks include restricted reservations, catalogue
-SELECT-only, function execution and delegation, and row-lock authority. A generic
+missing sets. Preflight the actual owner/runtime identities, fresh global bot and resumable-work
+inventory, and actual HTTP/Jobs Hyperdrive origin host/database/qualified role.
+Both consumers and their latest upload identities are checked again at effects. Matrix checks include restricted reservations, catalogue
+SELECT-only, function execution and delegation, and all21 reviewed lock relations. A generic
 six-table activation check is insufficient. Every SQL write requires a current
 accepted backup. Migrations0239 and0246 are unchanged.
 
@@ -92,8 +93,11 @@ order. A production bot must be connected through the community's Manage Telegra
 UI and its real webhook/channel readiness accepted before practice. The song
 needs separate owner song/policy acceptance at the pinned revisions and corpus
 hash before revision1 is appended. There is no automatic next revision or scheduled
-decision. Enable practice on Jobs before HTTP. Linking, the staging pilot and
-Rewards stay disabled throughout.
+decision. Enable global practice on Jobs before HTTP while the owner intent may still be
+false. Once the catalogue is available, the owner enables Study through the UI.
+The final native acceptance requires current-bot owner intent; global activation
+does not require that intent in advance. Linking, the staging pilot and Rewards
+stay disabled throughout.
 
 Every phase durably creates an exclusive attempt before its effect and rechecks
 admission and state immediately beforehand. A lost upload or COMMIT reply leaves
@@ -102,9 +106,20 @@ review of the exact attempt and current read-only observation, and can append
 verification without repeating the effect. A confirmed non-application never
 silently permits replay in this spent namespace.
 
-Recovery first disables current-bot Study intent, then both Workers' practice and
-runtime flags. Only after both pause phases are verified can it restore a reviewed
-compatible disabled version. It does not require successful candidate acceptance.
+Recovery has a separate pause-intent transaction before either Worker pause
+upload. It updates both integration revisions consistently, so a committed intent
+pause remains independently resolvable if a later upload fails. It then disables
+both Workers' practice and runtime flags. Only after both pause phases are verified can it restore a reviewed
+compatible disabled version. It does not require successful candidate acceptance. Retained module/config bytes
+and current control/process/admission are checked immediately before pause upload.
+Recovery resolution binds the exact serving version, and unseen newer uploads
+remain visible even when their semantic configuration equals the current one.
 Queued, in-flight or uncertain work blocks traffic restoration until it has been
 reconciled read-only. Keys, migrations, catalogue decisions and Study history are
 retained. Recovery never deletes queued or immutable history to make a check pass.
+
+The dependency preview inventories installed regular files and symlink targets
+conservatively, excluding only named build-cache directories. It also pins dynamic
+and native operator dependencies. Each bounded child qualifies that inventory once;
+its repeated source callbacks still recheck Git, execution tools, uploader and the
+application bytes. Generate the final inventory again after accepted tooling freeze.
