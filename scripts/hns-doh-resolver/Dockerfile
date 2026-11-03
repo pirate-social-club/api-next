@@ -71,9 +71,11 @@ COPY --from=build /usr/local/bin/hnsd-unbound-version /usr/local/bin/hnsd-unboun
 COPY --from=build /opt/hnsd/hnsd /usr/local/bin/hnsd
 RUN test ! -e /usr/lib/libunbound.so.8 \
     && test "$(hnsd-unbound-version)" = "1.26.2"
+COPY unbound.conf /etc/hnsd/unbound.conf
 COPY docker-entrypoint.sh /usr/local/bin/hnsd-resolver-entrypoint
 COPY healthcheck.sh /usr/local/bin/hnsd-resolver-healthcheck
-RUN chmod 0555 /usr/local/bin/hnsd-resolver-entrypoint /usr/local/bin/hnsd-resolver-healthcheck
+RUN chmod 0555 /usr/local/bin/hnsd-resolver-entrypoint /usr/local/bin/hnsd-resolver-healthcheck \
+    && chmod 0444 /etc/hnsd/unbound.conf
 
 USER hnsd
 VOLUME ["/var/lib/hnsd"]
