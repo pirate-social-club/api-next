@@ -7,6 +7,35 @@ release="${1:?release directory required}"
 [[ ! -e "$release/gateway" && ! -e "$release/provisioner" ]] || exit 2
 repo_root="$(git rev-parse --show-toplevel)"
 source "$repo_root/scripts/hns-deployment/git-provenance.sh"
+# This explicit fixed profile stages only the accepted V4 gateway. The runtime
+# copy is recovery evidence; the existing unit keeps /usr/local/bin/bun.
+profile="${HNS_STAGING_ASSET_PROFILE-historical-v3}"
+case "$profile" in
+  historical-v3) ;;
+  posting-v4)
+    [[ ! -L "$release/gateway" && ! -L "$release/provisioner" ]] || exit 2
+    assert_release_provenance 97a701a7afa1274ebb73e1e9705fba1a95e61803 "" "$repo_root"
+    gateway="${HNS_STAGING_GATEWAY_BUNDLE:?set retained V4 gateway bundle path}"
+    runtime="${HNS_STAGING_GATEWAY_RUNTIME:?set retained Bun1.3.14 runtime path}"
+    manifest="$repo_root/apps/hns-authority-provisioner/ops/staging-mainnet/deployment-manifest.gateway-v4.json"
+    [[ "$gateway" = /* && -f "$gateway" && ! -L "$gateway" ]] || exit 2
+    [[ "$runtime" = /* && -f "$runtime" && ! -L "$runtime" ]] || exit 2
+    printf '%s  %s\n' 34029a3cf81dda85a7f9fc6eed3d9655be08a930fb17db3f1497b7618fe72a24 "$gateway" | sha256sum -c -
+    printf '%s  %s\n' 9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74 "$runtime" | sha256sum -c -
+    printf '%s  %s\n' 34f51467e42481bf829e774943a63860bf8946f755fb5b73a5727f455c19204c "$manifest" | sha256sum -c -
+    mkdir -p "$release/gateway/bin"
+    cp -- "$gateway" "$release/gateway/bin/pirate-hns-community-app-handle-gateway.mjs"
+    cp -- "$runtime" "$release/gateway/bin/bun"
+    cp -- "$manifest" "$release/gateway/deployment-manifest.json"
+    printf '%s  %s\n' 34029a3cf81dda85a7f9fc6eed3d9655be08a930fb17db3f1497b7618fe72a24 "$release/gateway/bin/pirate-hns-community-app-handle-gateway.mjs" | sha256sum -c -
+    printf '%s  %s\n' 9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74 "$release/gateway/bin/bun" | sha256sum -c -
+    printf '%s  %s\n' 34f51467e42481bf829e774943a63860bf8946f755fb5b73a5727f455c19204c "$release/gateway/deployment-manifest.json" | sha256sum -c -
+    chmod 0555 "$release/gateway/bin/"*
+    chmod 0444 "$release/gateway/deployment-manifest.json"
+    exit 0
+    ;;
+  *) echo "unsupported staging asset profile" >&2; exit 2 ;;
+esac
 app_source=76cd679ead1a680bb74a47f6718d3e0e7e4e5f3f
 assert_release_provenance "$app_source" "" "$repo_root"
 gateway="${HNS_STAGING_GATEWAY_BUNDLE:?set protected-source gateway bundle path}"
