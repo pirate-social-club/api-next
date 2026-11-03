@@ -149,8 +149,11 @@ no traffic write. A lost reply remains unresolved and is never retried.
 
 Before either connect phase, `ordinary_service_acceptance` must bind the independently
 accepted `telegram-disabled-ordinary-service-acceptance-v1` for this operation,
-fixed5a modules and deployed78ab artifact, with disabled-backend, website and ordinary-flow
-proof files. A prepared website artifact alone cannot satisfy this condition.
+fixed5a modules, deployed website source
+`a16d5055d481717670ff4528905bf75a105022fd`, and artifact
+`31a16d3212abfd559814315f18dd36f8b766e9bee33c7636a94852c171604e70`. It requires
+disabled-backend, website and ordinary-flow proof files. A prepared website artifact
+alone cannot satisfy this condition.
 After any connect attempt, use the existing5a pause/feature recovery
 and a compatible independently reviewed forward repair if ordinary service needs
 one. Baseline recovery after connection would need a separate ingress/in-flight
