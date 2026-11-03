@@ -22,6 +22,9 @@ set -euo pipefail
 #  17. relative app output roots and missing-main diagnostics remain unambiguous
 #  18. locally built container IDs are recorded and verified
 #  19. stateful VPS compose roles use stable host paths, not release-relative mounts
+#  20. per-service runtime configuration: Compose provenance (mixed releases),
+#      retained-release integrity, exact args and mounts, unexpected project
+#      containers, systemd drop-ins and COMPOSE_* environment overrides
 
 tooling_dir="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d)"
@@ -450,5 +453,234 @@ grep -Fq 'required remote-tracking ref refs/remotes/origin/main is not available
   "$missing_ref_error" || fail "missing origin/main diagnostic was ambiguous"
 git -C "$repo" update-ref refs/remotes/origin/main "$multi_commit"
 pass "release provenance distinguishes a missing origin/main ref"
+
+# 20. Per-service runtime configuration. A container can run the pinned image
+# while differing from its release (extra Compose file, changed command, added
+# mount, systemd drop-in). Services may deliberately stay on a retained older
+# release, so expectations are per service. Uses its own docker/systemctl shims
+# and the real python3 (the heartbeat tests above shim python3).
+PATH="${PATH#"$shim":}"
+rt_shim="$work/rt-shim"
+rt_fixtures="$work/rt-fixtures"
+mkdir -p "$rt_shim" "$rt_fixtures"
+cat > "$rt_shim/docker" <<'EOF'
+#!/usr/bin/env bash
+fixtures="${RT_FIXTURES:?}"
+if [[ "$1" == inspect && "${2:-}" == --format ]]; then
+  # Existing digest check on the monitored container.
+  [[ -f "$fixtures/$4.json" ]] || exit 1
+  echo "running 2026-11-03T00:00:00Z img-$4"
+elif [[ "$1" == inspect ]]; then
+  [[ -f "$fixtures/$2.json" ]] || exit 1
+  cat "$fixtures/$2.json"
+elif [[ "$1 $2" == "image inspect" ]]; then
+  echo "example/dnsdist@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+elif [[ "$1" == ps ]]; then
+  [[ -e "$fixtures/fail-ps" ]] && exit 1
+  cat "$fixtures/ps.txt"
+else
+  exit 1
+fi
+EOF
+cat > "$rt_shim/systemctl" <<'EOF'
+#!/usr/bin/env bash
+fixtures="${RT_FIXTURES:?}"
+[[ "$1" == show ]] || exit 1
+[[ -e "$fixtures/fail-$3" ]] && exit 1
+case "$3" in
+  LoadState) cat "$fixtures/loadstate.txt" ;;
+  DropInPaths) cat "$fixtures/dropins.txt" ;;
+  Environment) cat "$fixtures/environment.txt" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$rt_shim/docker" "$rt_shim/systemctl"
+export RT_FIXTURES="$rt_fixtures"
+PATH="$rt_shim:$PATH"
+: > "$rt_fixtures/dropins.txt"
+echo "DEPLOY_ROOT=/srv/test" > "$rt_fixtures/environment.txt"
+echo loaded > "$rt_fixtures/loadstate.txt"
+
+resolver_role="$repo/scripts/hns-deployment-fixtures/resolver-role"
+mkdir -p "$resolver_role"
+cat > "$resolver_role/compose.yaml" <<'EOF'
+services:
+  doh:
+    image: example/dnsdist@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    container_name: pirate-test-dnsdist
+  spv:
+    image: pirate-test-hnsd:1
+    container_name: pirate-test-spv
+EOF
+echo "dnsdist v1" > "$resolver_role/dnsdist.conf"
+git -C "$repo" -c user.email=fixture@invalid.example -c user.name=fixture_role add -A
+git -C "$repo" -c user.email=fixture@invalid.example -c user.name=fixture_role commit -qm "resolver fixture v1"
+old_commit="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/main "$old_commit"
+rt="$work/rt-deploy"
+(cd "$repo" && bash scripts/hns-deployment/make-release.sh scripts/hns-deployment-fixtures/resolver-role \
+  "$rt" --expect-running true --monitored-container pirate-test-dnsdist >/dev/null)
+
+echo "aggressive-nsec: no" > "$resolver_role/unbound.conf"
+git -C "$repo" -c user.email=fixture@invalid.example -c user.name=fixture_role add -A
+git -C "$repo" -c user.email=fixture@invalid.example -c user.name=fixture_role commit -qm "resolver fixture v2"
+new_commit="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/main "$new_commit"
+
+rt_release() {
+  (cd "$repo" && bash scripts/hns-deployment/make-release.sh scripts/hns-deployment-fixtures/resolver-role \
+    "$@" --expect-running true --monitored-container pirate-test-dnsdist)
+}
+spv_mounts='pirate-test-spv=/var/lib/hnsd|${DEPLOY_ROOT}/shared/spv|rw'
+dnsdist_mounts="pirate-test-dnsdist=/etc/dnsdist/dnsdist.conf|\${RELEASE:$old_commit}/dnsdist.conf|ro"
+
+# make-release fails closed on malformed or unknown runtime expectations.
+for bad in "--container-args pirate-test-spv=not-json" \
+           "--container-args pirate-test-spv={\"a\":1}" \
+           "--container-release pirate-test-spv=main" \
+           "--container-release undeclared=self" \
+           "--container-mounts pirate-test-spv=relative|/x|rw" \
+           "--systemd-unit not-a-service"; do
+  # shellcheck disable=SC2086
+  if rt_release "$work/rt-bad" --compose-project hnsdoh-test $bad >/dev/null 2>&1; then
+    fail "make-release accepted a bad runtime expectation: $bad"
+  fi
+done
+if rt_release "$work/rt-bad" --container-release pirate-test-spv=self >/dev/null 2>&1; then
+  fail "make-release accepted --container-release without --compose-project"
+fi
+pass "make-release rejects malformed, unknown or unscoped runtime expectations"
+
+rt_release "$rt" --compose-project hnsdoh-test \
+  --container-release pirate-test-spv=self --container-release "pirate-test-dnsdist=$old_commit" \
+  --container-args 'pirate-test-spv=[ ]' \
+  --container-mounts "$spv_mounts" --container-mounts "$dnsdist_mounts" \
+  --systemd-unit test-resolver.service >/dev/null
+rt_meta="$rt/releases/$new_commit/DEPLOYMENT"
+for line in "COMPOSE_PROJECT=hnsdoh-test" "CONTAINER_RELEASE_1=pirate-test-spv=self" \
+            "CONTAINER_RELEASE_2=pirate-test-dnsdist=$old_commit" "CONTAINER_ARGS_1=pirate-test-spv=[]" \
+            "CONTAINER_MOUNTS_1=$spv_mounts" "CONTAINER_MOUNTS_2=$dnsdist_mounts" \
+            "SYSTEMD_UNIT_1=test-resolver.service"; do
+  grep -Fxq -- "$line" "$rt_meta" || fail "DEPLOYMENT is missing '$line'"
+done
+pass "make-release records per-service runtime expectations (args canonicalized)"
+ln -s "releases/$new_commit" "$rt/current"
+
+write_container() {  # name workdir config_files args_json mounts_json
+  python3 - "$rt_fixtures/$1.json" "$2" "$3" "$4" "$5" <<'PY'
+import json, sys
+out, workdir, files, args, mounts = sys.argv[1:]
+json.dump([{
+  "Args": json.loads(args),
+  "Mounts": json.loads(mounts),
+  "Config": {"Labels": {
+    "com.docker.compose.project": "hnsdoh-test",
+    "com.docker.compose.project.working_dir": workdir,
+    "com.docker.compose.project.config_files": files}},
+}], open(out, "w"))
+PY
+}
+spv_clean() {
+  write_container pirate-test-spv "$rt/releases/$new_commit" "$rt/releases/$new_commit/compose.yaml" '[]' \
+    "[{\"Type\":\"bind\",\"Source\":\"$rt/shared/spv\",\"Destination\":\"/var/lib/hnsd\",\"RW\":true}]"
+}
+dnsdist_clean() {
+  write_container pirate-test-dnsdist "$rt/releases/$old_commit" "$rt/releases/$old_commit/compose.yaml" \
+    '["--","/usr/local/bin/dnsdist-startup"]' \
+    "[{\"Type\":\"bind\",\"Source\":\"$rt/releases/$old_commit/dnsdist.conf\",\"Destination\":\"/etc/dnsdist/dnsdist.conf\",\"RW\":false}]"
+}
+spv_clean
+dnsdist_clean
+printf '%s\n' pirate-test-spv pirate-test-dnsdist > "$rt_fixtures/ps.txt"
+rt_status() { bash "$rt/current/bin/deployment-status.sh" --deploy-root "$rt" "$@"; }
+rt_drifts() {  # expectation text: verify must fail and report it
+  local out
+  out="$(rt_status --verify 2>&1)" && fail "$1 was not reported as drift"
+  grep -Fq -- "$2" <<< "$out" || fail "$1: expected drift containing '$2', got: $out"
+}
+
+mixed="$(rt_status --verify)" || fail "clean mixed-release state reported drift: $(rt_status)"
+grep -Fq "running: pirate-test-spv created from release self compose.yaml only" <<< "$mixed" \
+  || fail "status omitted the resolver's provenance: $mixed"
+grep -Fq "running: pirate-test-dnsdist created from release $old_commit compose.yaml only" <<< "$mixed" \
+  || fail "status omitted the retained dnsdist provenance: $mixed"
+grep -Fq "release: retained $old_commit checksums OK (used by pirate-test-dnsdist)" <<< "$mixed" \
+  || fail "status omitted retained release integrity: $mixed"
+grep -Fq "systemd: test-resolver.service has no drop-ins or Compose overrides" <<< "$mixed" \
+  || fail "status omitted the systemd check: $mixed"
+pass "verify passes a clean mixed-release state (resolver new, dnsdist retained)"
+
+echo "tampered" >> "$rt/releases/$old_commit/dnsdist.conf"
+rt_drifts "retained release tamper" "retained release $old_commit (used by pirate-test-dnsdist) fails its checksums"
+echo "dnsdist v1" > "$rt/releases/$old_commit/dnsdist.conf"
+mv "$rt/releases/$old_commit" "$work/rt-old-moved"
+rt_drifts "missing retained release" "retained release $old_commit (used by pirate-test-dnsdist) is missing"
+mv "$work/rt-old-moved" "$rt/releases/$old_commit"
+rt_status --verify >/dev/null || fail "restored retained release still drifting"
+pass "verify requires retained releases to exist and pass their own checksums"
+
+write_container pirate-test-dnsdist "$rt/releases/$new_commit" "$rt/releases/$new_commit/compose.yaml" \
+  '["--","/usr/local/bin/dnsdist-startup"]' \
+  "[{\"Type\":\"bind\",\"Source\":\"$rt/releases/$old_commit/dnsdist.conf\",\"Destination\":\"/etc/dnsdist/dnsdist.conf\",\"RW\":false}]"
+rt_drifts "dnsdist on an unexpected release" "container pirate-test-dnsdist was created from $rt/releases/$new_commit, expected release $old_commit"
+dnsdist_clean
+write_container pirate-test-spv "$rt/releases/$old_commit" "$rt/releases/$old_commit/compose.yaml" '[]' \
+  "[{\"Type\":\"bind\",\"Source\":\"$rt/shared/spv\",\"Destination\":\"/var/lib/hnsd\",\"RW\":true}]"
+rt_drifts "resolver left on the old release" "container pirate-test-spv was created from $rt/releases/$old_commit, expected release self"
+spv_clean
+pass "verify checks each container against its own expected release"
+
+write_container pirate-test-spv "$rt/releases/$new_commit" "$rt/releases/$new_commit/compose.yaml" \
+  '["--rs-config","/etc/hnsd/unbound.conf"]' \
+  "[{\"Type\":\"bind\",\"Source\":\"$rt/shared/spv\",\"Destination\":\"/var/lib/hnsd\",\"RW\":true}]"
+rt_drifts "override arguments" 'container pirate-test-spv args ["--rs-config","/etc/hnsd/unbound.conf"] differ from expected []'
+write_container pirate-test-spv "$rt/releases/$new_commit" \
+  "$rt/releases/$new_commit/compose.yaml,/srv/overrides/spv-override.yaml" '[]' \
+  "[{\"Type\":\"bind\",\"Source\":\"$rt/shared/spv\",\"Destination\":\"/var/lib/hnsd\",\"RW\":true}]"
+rt_drifts "extra Compose file" "was created with Compose files '$rt/releases/$new_commit/compose.yaml,/srv/overrides/spv-override.yaml'"
+write_container pirate-test-spv "$rt/releases/$new_commit" "$rt/releases/$new_commit/compose.yaml" '[]' \
+  "[{\"Type\":\"bind\",\"Source\":\"$rt/shared/spv\",\"Destination\":\"/var/lib/hnsd\",\"RW\":true},{\"Type\":\"bind\",\"Source\":\"/srv/overrides/unbound.conf\",\"Destination\":\"/etc/hnsd/unbound.conf\",\"RW\":false}]"
+rt_drifts "extra bind mount" "container pirate-test-spv mounts"
+spv_clean
+pass "verify detects override arguments, extra Compose files and extra mounts"
+
+printf '%s\n' pirate-test-spv pirate-test-dnsdist pirate-test-stray > "$rt_fixtures/ps.txt"
+rt_drifts "unexpected project container" "container pirate-test-stray in Compose project hnsdoh-test has no recorded release expectation"
+printf '%s\n' pirate-test-spv pirate-test-dnsdist > "$rt_fixtures/ps.txt"
+touch "$rt_fixtures/fail-ps"
+rt_drifts "failed container listing" "cannot list containers in Compose project hnsdoh-test (docker ps failed)"
+rm "$rt_fixtures/fail-ps"
+rt_status --verify >/dev/null || fail "restored container listing still drifting"
+pass "verify flags project containers without an expectation and fails closed if listing fails"
+
+echo "/etc/systemd/system/test-resolver.service.d/override.conf" > "$rt_fixtures/dropins.txt"
+rt_drifts "systemd drop-in" "systemd unit test-resolver.service has drop-ins"
+: > "$rt_fixtures/dropins.txt"
+echo "DEPLOY_ROOT=/srv/test COMPOSE_FILE=compose.yaml:/srv/overrides/spv-override.yaml" > "$rt_fixtures/environment.txt"
+rt_drifts "COMPOSE_FILE in unit environment" "systemd unit test-resolver.service sets a Compose override in its environment"
+echo "DEPLOY_ROOT=/srv/test" > "$rt_fixtures/environment.txt"
+rt_status --verify >/dev/null || fail "restored systemd state still drifting"
+for property in LoadState DropInPaths Environment; do
+  touch "$rt_fixtures/fail-$property"
+  rt_drifts "failed systemctl show $property" "systemctl show $property failed"
+  rm "$rt_fixtures/fail-$property"
+done
+echo not-found > "$rt_fixtures/loadstate.txt"
+rt_drifts "unit that is not loaded" "systemd unit test-resolver.service is not-found, expected loaded"
+echo loaded > "$rt_fixtures/loadstate.txt"
+rt_status --verify >/dev/null || fail "restored systemd inspection still drifting"
+pass "verify detects systemd drop-ins and Compose environment overrides, and fails closed on inspection failures"
+
+sed -i "s/^CONTAINER_RELEASE_1=.*/CONTAINER_RELEASE_1=pirate-test-spv=not-a-commit/" "$rt_meta"
+(cd "$rt/releases/$new_commit" && find . -type f ! -path './SHA256SUMS' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+rt_drifts "malformed CONTAINER_RELEASE" "CONTAINER_RELEASE_1 is malformed"
+pass "verify fails closed on malformed runtime expectation keys"
+
+# Releases without these keys keep their previous report unchanged.
+if grep -Eq '^(COMPOSE_PROJECT|CONTAINER_RELEASE_|CONTAINER_ARGS_|CONTAINER_MOUNTS_|SYSTEMD_UNIT_)' "$release/DEPLOYMENT" \
+  || grep -Eq 'compose.yaml only|^systemd:|args match|mounts match|retained .* checksums' <<< "$clean_status"; then
+  fail "a release without runtime expectations changed its report"
+fi
+pass "releases without runtime expectations are reported exactly as before"
 
 echo "all deployment-tooling checks passed"
