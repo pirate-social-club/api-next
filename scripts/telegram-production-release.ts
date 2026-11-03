@@ -16,7 +16,6 @@ import {
   admitTelegram,
   resolveTelegramPhase,
   type TelegramAdmission,
-  type TelegramFile,
   type TelegramReview,
   telegramJournal,
   telegramJson,
@@ -56,13 +55,19 @@ import {
   type TelegramWorker,
 } from "./telegram-production-release-policy.ts";
 import {
+  assertTelegramBaselineVersion,
+  assertTelegramOrdinaryService,
+  restoreTelegramBaseline,
+  restoreTelegramDisabled,
+  telegramPreconnectWork,
+} from "./telegram-production-release-recovery.ts";
+import {
   publishedTelegramSources,
   publishedTelegramTooling,
   qualifiedTelegramApplication,
   telegramDependencyInventory,
 } from "./telegram-production-release-source.ts";
 import {
-  assertTelegramDisabledTarget,
   assertTelegramRecoveryVersion,
   collectTelegramWorker,
   collectTelegramWorkerMetadata,
@@ -70,7 +75,6 @@ import {
   type TelegramWorkerSnapshot,
   telegramPhaseConfig,
   telegramServingOrigins,
-  telegramWorkerMetadataState,
   telegramWorkerState,
   uploadTelegramWorker,
 } from "./telegram-production-release-workers.ts";
@@ -165,48 +169,7 @@ export async function telegramReadinessFence(
   if (phase === "pause-intent") return { observation_scope: "fixed-canary-intent-only" };
   return { origin_witness: await origin(), global_inventory: await inventory() };
 }
-async function restoreDisabled(
-  worker: TelegramWorker,
-  reference: TelegramFile,
-  review: TelegramReview,
-  assertBound: () => void,
-) {
-  const target = telegramJson<TelegramWorkerSnapshot>(reference);
-  assertTelegramDisabledTarget(target, worker);
-  // Both pause phases must already be verified. Candidate acceptance is not required for this recovery.
-  const current = await collectTelegramWorkerMetadata(worker);
-  for (const snapshot of [
-    await collectTelegramWorkerMetadata("http"),
-    await collectTelegramWorkerMetadata("jobs"),
-  ]) {
-    const mode = JSON.parse(
-      String(snapshot.bindings.find((r) => r.name === "TELEGRAM_CONFIG_JSON")?.text),
-    );
-    requireTelegram(
-      mode.enabled === false &&
-        mode.linking_enabled === false &&
-        mode.practice_enabled === false &&
-        !mode.community_practice_enabled,
-      "both-workers-must-be-paused-before-traffic-restore",
-    );
-  }
-  assertBound();
-  exclusiveRecord(policy.paths.operation, `recover-${worker}-traffic-attempt.json`, {
-    target_version: target.version,
-    current_version: current.version,
-    target_sha256: reference.sha256,
-  });
-  const result = await rollbackTelegramWorker(worker, target.version, review, assertBound);
-  requireTelegram(result.exitCode === 0, "recovery-traffic-acknowledgement-unresolved");
-  const after = await collectTelegramWorkerMetadata(worker);
-  requireTelegram(
-    after.version === target.version &&
-      after.latest === current.latest &&
-      digest(telegramWorkerMetadataState(after, true)) ===
-        digest(telegramWorkerMetadataState(target, true)),
-    "recovery-serving-state-unverified",
-  );
-}
+
 async function liveIo(
   phase: TelegramPhase,
   review: TelegramReview,
@@ -221,6 +184,7 @@ async function liveIo(
   };
   assertBound();
   if (!isRecovery(phase)) credentialContract(review.credential_contract);
+  if (phase.startsWith("connect-")) assertTelegramOrdinaryService(review);
   if (isRecovery(phase)) publishedTelegramTooling(review);
   else publishedTelegramSources(review);
   const urls = injectedProductionUrls();
@@ -288,12 +252,19 @@ async function liveIo(
         resolution?.worker_version === snapshot.version,
         "resolution-worker-version-differs",
       );
-      if (phase.startsWith("recover-") && resolution.conclusion === "effect_verified")
-        assertTelegramRecoveryVersion(
+      if (phase.startsWith("recover-") && resolution.conclusion === "effect_verified") {
+        const worker = phaseWorker(phase),
+          baseline = phase.startsWith("recover-baseline-");
+        const reference = baseline
+          ? review.baseline_recovery_targets?.[worker]
+          : review.recovery_targets[worker];
+        requireTelegram(reference, "reviewed-recovery-target-required");
+        (baseline ? assertTelegramBaselineVersion : assertTelegramRecoveryVersion)(
           snapshot,
-          telegramJson<TelegramWorkerSnapshot>(review.recovery_targets[phaseWorker(phase)]),
-          phaseWorker(phase),
+          telegramJson<TelegramWorkerSnapshot>(reference),
+          worker,
         );
+      }
     }
 
     exclusiveRecord(policy.paths.operation, `observation-${phase}-${randomUUID()}.json`, snapshot);
@@ -372,6 +343,18 @@ async function liveIo(
         );
         return;
       }
+      if (phase.startsWith("recover-baseline-")) {
+        const worker = phaseWorker(phase);
+        return restoreTelegramBaseline(worker, review, {
+          observe: collectTelegramWorkerMetadata,
+          work: () => owner(true, telegramPreconnectWork),
+          assertBound,
+          attempt: (value) =>
+            exclusiveRecord(policy.paths.operation, `${phase}-traffic-attempt.json`, value),
+          rollback: (version, boundary) =>
+            rollbackTelegramWorker(worker, version, review, assertBound, boundary),
+        });
+      }
       if (phase.startsWith("recover-")) {
         await owner(true, async (db) => {
           const state = await recoveryWork(db);
@@ -381,7 +364,7 @@ async function liveIo(
             "recovery-inflight-or-uncertain-work-requires-read-only-reconciliation",
           );
         });
-        return restoreDisabled(
+        return restoreTelegramDisabled(
           phaseWorker(phase),
           review.recovery_targets[phaseWorker(phase)],
           review,

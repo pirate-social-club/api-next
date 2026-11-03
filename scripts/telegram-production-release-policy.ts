@@ -107,6 +107,8 @@ export const TELEGRAM_PHASES = {
   "pause-jobs": { action: "recover-disabled", predecessors: ["pause-http"] },
   "recover-http": { action: "recover-disabled", predecessors: ["pause-jobs"] },
   "recover-jobs": { action: "recover-disabled", predecessors: ["recover-http"] },
+  "recover-baseline-http": { action: "recover-disabled", predecessors: ["pause-intent"] },
+  "recover-baseline-jobs": { action: "recover-disabled", predecessors: ["recover-baseline-http"] },
 } as const;
 export type TelegramPhase = keyof typeof TELEGRAM_PHASES;
 export type TelegramAction = (typeof TELEGRAM_PHASES)[TelegramPhase]["action"];
