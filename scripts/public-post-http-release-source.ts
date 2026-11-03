@@ -253,7 +253,7 @@ export function readHttpReview(path: string, expectedHash: string): HttpReview {
   requireRelease(sha256(bytes) === expectedHash, "operation-review-file-changed");
   return JSON.parse(bytes.toString("utf8")) as HttpReview;
 }
-export function assertExecutionTools(review: HttpReview) {
+export function assertExecutionTools(review: Pick<HttpReview, "execution_tools">) {
   const tools = review.execution_tools;
   requireRelease(
     process.execPath === tools.bun_path &&

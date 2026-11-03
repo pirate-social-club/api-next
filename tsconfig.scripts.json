@@ -4,6 +4,7 @@
     "allowJs": true
   },
   "include": [
+    "scripts/telegram-production-release*.ts",
     "scripts/public-post-http-release*.ts",
     "scripts/rewards-availability-http-release*.ts",
     "scripts/production-release/**/*.ts",
