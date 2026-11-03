@@ -6,6 +6,7 @@
  * GitHub API and asserts the invariants that keep credential-bearing automation
  * from being turned into a secret exfiltration path by an unreviewed change.
  */
+import { createHash } from "node:crypto";
 
 export type ChangedFileStatus =
   | "added"
@@ -28,6 +29,8 @@ export type BoundaryViolationKind =
   | "content-unavailable"
   | "credential-workflow-trigger"
   | "guarded-file-modified"
+  | "operational-adapter-admission-invalid"
+  | "operational-adapter-changed"
   | "pull-request-secret-exposure"
   | "pull-request-target-workflow"
   | "required-file-removed"
@@ -68,9 +71,39 @@ export const REQUIRED_SECRET_REQUEST_LITERALS: readonly string[] = [
   'expandSecretReferences: "false"',
 ];
 
+const OPERATIONAL_ADAPTER_PATH = "scripts/telegram-production-release-credentials.ts";
+/** Trusted policy bytes only. This admits source, never credentials or execution. */
+const OPERATIONAL_ADAPTER_ADMISSION = Object.freeze({
+  path: OPERATIONAL_ADAPTER_PATH,
+  sha256: "de33a488b411a48e3a77c1690b20c8272c76655b1f8c03c2f2a6f41935cf365e",
+});
+
+/** Configuration validation is pure; callers cannot supply an audit exemption. */
+export function validateOperationalAdapterAdmission(value: unknown): readonly BoundaryViolation[] {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const admission = value as Record<string, unknown>;
+    if (
+      Object.keys(admission).sort().join() === "path,sha256" &&
+      admission.path === OPERATIONAL_ADAPTER_PATH &&
+      typeof admission.sha256 === "string" &&
+      /^[0-9a-f]{64}$/u.test(admission.sha256)
+    )
+      return [];
+  }
+  return [
+    {
+      kind: "operational-adapter-admission-invalid",
+      path: OPERATIONAL_ADAPTER_PATH,
+      reason:
+        "The trusted operational adapter admission must name its reserved path and full SHA256.",
+    },
+  ];
+}
+
 const REQUIRED_PATHS: readonly string[] = [
   ...CREDENTIAL_WORKFLOW_PATHS,
   ...SECRET_READING_SCRIPT_PATHS,
+  OPERATIONAL_ADAPTER_PATH,
 ];
 
 const WORKFLOW_PATH = /^\.github\/workflows\/[^/]+\.ya?ml$/;
@@ -248,6 +281,18 @@ function auditWorkflowContent(path: string, content: string): readonly BoundaryV
 }
 
 function auditScriptContent(path: string, content: string): readonly BoundaryViolation[] {
+  // This reserved path is always checked, even when every Infisical marker is removed.
+  if (path === OPERATIONAL_ADAPTER_PATH) {
+    if (createHash("sha256").update(content).digest("hex") === OPERATIONAL_ADAPTER_ADMISSION.sha256)
+      return [];
+    return [
+      {
+        kind: "operational-adapter-changed",
+        path,
+        reason: "Operational credential source differs from its exact trusted admission.",
+      },
+    ];
+  }
   const readsInfisicalSecrets =
     /viewSecretValue|expandSecretReferences|"\/secrets"|\/v\d+\/secrets/.test(content);
   if (!readsInfisicalSecrets && !SECRET_READING_SCRIPT_PATHS.includes(path)) return [];
@@ -286,6 +331,8 @@ export function auditSecretBoundary(input: {
   readonly contents: ReadonlyMap<string, string>;
   readonly truncated?: boolean;
 }): readonly BoundaryViolation[] {
+  const configuration = validateOperationalAdapterAdmission(OPERATIONAL_ADAPTER_ADMISSION);
+  if (configuration.length > 0) return configuration;
   const violations: BoundaryViolation[] = [];
 
   if (input.truncated === true) {
@@ -408,7 +455,14 @@ export async function fetchChangedFileContents(input: {
       headers: apiHeaders(input.token, "application/vnd.github.raw"),
     });
     if (!response.ok) continue;
-    contents.set(file.path, await response.text());
+    contents.set(
+      file.path,
+      file.path === OPERATIONAL_ADAPTER_PATH
+        ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+            await response.arrayBuffer(),
+          )
+        : await response.text(),
+    );
   }
   return contents;
 }

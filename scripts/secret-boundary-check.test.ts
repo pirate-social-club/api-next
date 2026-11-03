@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import {
   auditSecretBoundary,
   type ChangedFile,
+  fetchChangedFileContents,
   hasTopLevelIdTokenWrite,
   listPullRequestFiles,
   pathsRequiringContent,
   referencedSecretNames,
+  validateOperationalAdapterAdmission,
   workflowTriggers,
 } from "./secret-boundary-check";
 
@@ -200,6 +204,114 @@ describe("secret boundary audit", () => {
     expect(auditSecretBoundary({ files: [], contents: new Map(), truncated: true })[0]?.kind).toBe(
       "changed-file-list-truncated",
     );
+  });
+});
+
+describe("fixed operational credential adapter admission", () => {
+  const path = "scripts/telegram-production-release-credentials.ts";
+  const content = readFileSync(
+    new URL("./telegram-production-release-credentials.ts", import.meta.url),
+    "utf8",
+  );
+  const sha256 = "de33a488b411a48e3a77c1690b20c8272c76655b1f8c03c2f2a6f41935cf365e";
+
+  test("admits the real reviewed adapter bytes only at their exact reserved path", () => {
+    expect(createHash("sha256").update(content).digest("hex")).toBe(sha256);
+    expect(audit([changed(path, "added")], { [path]: content })).toEqual([]);
+  });
+
+  test("rejects every changed byte and complete marker removal", () => {
+    for (const candidate of [
+      `${content}\n`,
+      content.replace("https://app.infisical.com", "https://invalid.test"),
+      "export const removed = true;",
+      "",
+    ]) {
+      expect(audit([changed(path)], { [path]: candidate }).map((v) => v.kind)).toEqual([
+        "operational-adapter-changed",
+      ]);
+    }
+  });
+
+  test("rejects removal, rename and unreadable content", () => {
+    expect(audit([changed(path, "removed")]).map((v) => v.kind)).toContain("required-file-removed");
+    expect(
+      audit([{ path: "scripts/moved-adapter.ts", previousPath: path, status: "renamed" }], {
+        "scripts/moved-adapter.ts": content,
+      }).map((v) => v.kind),
+    ).toContain("required-file-removed");
+    expect(audit([changed(path)]).map((v) => v.kind)).toEqual(["content-unavailable"]);
+  });
+
+  test("raw retrieval preserves an added BOM and refuses malformed UTF8", async () => {
+    const files = [{ ...changed(path), contentsUrl: "https://api.test/adapter" }];
+    const contents = await fetchChangedFileContents({
+      files,
+      token: "test-token",
+      request: async () => new Response(`\uFEFF${content}`),
+    });
+    expect(contents.get(path)?.startsWith("\uFEFF")).toBe(true);
+    expect(auditSecretBoundary({ files, contents }).map((v) => v.kind)).toEqual([
+      "operational-adapter-changed",
+    ]);
+    await expect(
+      fetchChangedFileContents({
+        files,
+        token: "test-token",
+        request: async () => new Response(new Uint8Array([0xff])),
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("copied exact bytes elsewhere get no exemption, including beside the admitted adapter", () => {
+    const copy = "scripts/copied-adapter.ts";
+    const violations = audit([changed(path), changed(copy, "copied")], {
+      [path]: content,
+      [copy]: content,
+    });
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.every((v) => v.path === copy)).toBe(true);
+    expect(violations.map((v) => v.kind)).toContain("secret-value-exposure");
+  });
+
+  test("rejects absent, malformed or broadened trusted admission configuration", () => {
+    expect(validateOperationalAdapterAdmission({ path, sha256 })).toEqual([]);
+    for (const invalid of [
+      undefined,
+      null,
+      [],
+      {},
+      { path },
+      { sha256 },
+      { path: "scripts/other.ts", sha256 },
+      { path, sha256: "" },
+      { path, sha256: "f".repeat(63) },
+      { path, sha256: "g".repeat(64) },
+      { path, sha256, exempt: true },
+    ]) {
+      expect(validateOperationalAdapterAdmission(invalid).map((v) => v.kind)).toEqual([
+        "operational-adapter-admission-invalid",
+      ]);
+    }
+  });
+
+  test("the policy still rejects its own modification and preserves other boundaries", () => {
+    for (const guarded of [
+      "scripts/secret-boundary-check.ts",
+      "scripts/secret-boundary-check.test.ts",
+      ".github/workflows/secret-boundary.yml",
+    ]) {
+      expect(audit([changed(guarded)]).map((v) => v.kind)).toEqual(["guarded-file-modified"]);
+    }
+    const unknown = "scripts/unknown-reader.ts";
+    expect(audit([changed(unknown, "added")], { [unknown]: content }).map((v) => v.kind)).toContain(
+      "secret-value-exposure",
+    );
+    expect(
+      audit([changed("scripts/infisical-secret-drift-audit.ts")], {
+        "scripts/infisical-secret-drift-audit.ts": 'const p = { viewSecretValue: "true" };',
+      }).map((v) => v.kind),
+    ).toContain("secret-value-exposure");
   });
 });
 
