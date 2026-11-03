@@ -361,17 +361,57 @@ test("create is one POST, approval is unresolved, and metadata never retains val
     ),
   ).rejects.toThrow("approval-or-creation-unresolved");
 });
-test("an actual consumer is required; a queue producer or a staging worker is insufficient", () => {
+test("the single production Jobs consumer accepts either exact own target alias", () => {
   const queue = { queue_name: policy.queue, queue_id: "fixture-queue" };
-  expect(() =>
-    telegramQueueConsumer(queue, [{ type: "worker", script_name: policy.workers.jobs.name }]),
-  ).not.toThrow();
+  for (const target of [
+    { script_name: policy.workers.jobs.name },
+    { script: policy.workers.jobs.name },
+    { script_name: policy.workers.jobs.name, script: policy.workers.jobs.name },
+  ])
+    for (const environment of [{}, { environment: undefined }, { environment: "production" }])
+      expect(() =>
+        telegramQueueConsumer(queue, [{ type: "worker", ...target, ...environment }]),
+      ).not.toThrow();
+});
+test("target aliases cannot hide a conflicting, malformed or wrong worker", () => {
+  const queue = { queue_name: policy.queue, queue_id: "fixture-queue" };
+  for (const target of [
+    {},
+    { service: policy.workers.jobs.name },
+    { script_name: "pirate-jobs-worker-staging" },
+    { script: "pirate-jobs-worker-staging" },
+    { script_name: policy.workers.jobs.name, script: "pirate-jobs-worker-staging" },
+    { script_name: "pirate-jobs-worker-staging", script: policy.workers.jobs.name },
+    { script_name: policy.workers.jobs.name, script: undefined },
+    { script_name: undefined, script: policy.workers.jobs.name },
+    { script_name: policy.workers.jobs.name, script: null },
+    { script_name: null, script: policy.workers.jobs.name },
+    { script_name: policy.workers.jobs.name, script: 1 },
+    { script_name: {}, script: policy.workers.jobs.name },
+    { script: [policy.workers.jobs.name] },
+    { script: ` ${policy.workers.jobs.name}` },
+  ])
+    expect(() => telegramQueueConsumer(queue, [{ type: "worker", ...target }])).toThrow();
+  const inherited = Object.assign(Object.create({ script: policy.workers.jobs.name }), {
+    type: "worker",
+  });
+  expect(() => telegramQueueConsumer(queue, [inherited])).toThrow();
+});
+test("queue, exact-one, worker type and production environment fences remain required", () => {
+  const queue = { queue_name: policy.queue, queue_id: "fixture-queue" };
+  const consumer = { type: "worker", script: policy.workers.jobs.name };
   for (const rows of [
     [],
-    [{ type: "worker", script_name: "pirate-jobs-worker-staging" }],
-    [{ type: "http_pull" }],
+    [consumer, consumer],
+    [{ ...consumer, type: "http_pull" }],
+    ...["staging", "", null, false].map((environment) => [{ ...consumer, environment }]),
   ])
     expect(() => telegramQueueConsumer(queue, rows)).toThrow();
+  for (const target of [
+    { ...queue, queue_name: "pirate-community-telegram-staging" },
+    { ...queue, queue_id: undefined },
+  ])
+    expect(() => telegramQueueConsumer(target, [consumer])).toThrow();
 });
 test("phase configuration preserves unrelated flags and binding drift is refused", () => {
   const source = JSON.stringify({
