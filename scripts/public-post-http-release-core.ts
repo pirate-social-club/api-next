@@ -16,6 +16,16 @@ export const HTTP_RELEASE = {
   settings: "db3c16b5f507d2662b64cb710d4049eade59535be1f15cc6b1ed74d947c6209b",
 } as const;
 
+export type HttpReleaseTuple = { readonly [K in keyof typeof HTTP_RELEASE]: string };
+export interface HttpOperationPolicy {
+  readonly release: HttpReleaseTuple;
+  readonly reviewKind: HttpReview["kind"];
+}
+export const PUBLIC_POST_OPERATION: HttpOperationPolicy = {
+  release: HTTP_RELEASE,
+  reviewKind: "public-post-http-operation-review-v1",
+};
+
 export class PublicPostReleaseRefused extends Error {}
 export function requireRelease(condition: unknown, reason: string): asserts condition {
   if (!condition) throw new PublicPostReleaseRefused(reason);
@@ -55,7 +65,9 @@ export interface HttpSnapshot {
   readonly subdomain: unknown;
 }
 export interface HttpReview {
-  readonly kind: "public-post-http-operation-review-v1";
+  readonly kind:
+    | "public-post-http-operation-review-v1"
+    | "rewards-availability-http-operation-review-v1";
   readonly verdict: "accepted";
   readonly reviewer_role: "independent_coordinator_reviewer";
   readonly tooling_source: string;
@@ -120,34 +132,44 @@ function configuration(snapshot: HttpSnapshot) {
   };
 }
 export const configurationDigest = (snapshot: HttpSnapshot) => digest(configuration(snapshot));
-export function assertBaseline(snapshot: HttpSnapshot, latest = snapshot.version) {
+export function assertBaseline(
+  snapshot: HttpSnapshot,
+  latest = snapshot.version,
+  policy: HttpOperationPolicy = PUBLIC_POST_OPERATION,
+) {
   requireRelease(
-    snapshot.version === HTTP_RELEASE.baseline && snapshot.message === `git:${HTTP_RELEASE.base}`,
+    snapshot.version === policy.release.baseline &&
+      snapshot.message === `git:${policy.release.base}`,
     "baseline-version-or-source-changed",
   );
   requireRelease(snapshot.latest === latest, "unserved-upload-exists");
   requireRelease(
-    snapshot.binding_runtime_sha256 === HTTP_RELEASE.bindings,
+    snapshot.binding_runtime_sha256 === policy.release.bindings,
     "baseline-binding-or-runtime-drift",
   );
-  requireRelease(snapshot.settings_sha256 === HTTP_RELEASE.settings, "baseline-settings-drift");
+  requireRelease(snapshot.settings_sha256 === policy.release.settings, "baseline-settings-drift");
   requireRelease(
     snapshot.declared_comparable_sha256 === snapshot.actual_comparable_sha256,
     "candidate-configuration-differs",
   );
 }
-export function assertReview(review: HttpReview, now: number, mutating: boolean) {
+export function assertReview(
+  review: HttpReview,
+  now: number,
+  mutating: boolean,
+  policy: HttpOperationPolicy = PUBLIC_POST_OPERATION,
+) {
   requireRelease(
-    review.kind === "public-post-http-operation-review-v1" &&
+    review.kind === policy.reviewKind &&
       review.verdict === "accepted" &&
       review.reviewer_role === "independent_coordinator_reviewer",
     "independent-review-required",
   );
   requireRelease(
-    review.source === HTTP_RELEASE.source &&
-      review.module_sha256 === HTTP_RELEASE.module &&
-      review.packet_sha256 === HTTP_RELEASE.packet &&
-      review.baseline === HTTP_RELEASE.baseline,
+    review.source === policy.release.source &&
+      review.module_sha256 === policy.release.module &&
+      review.packet_sha256 === policy.release.packet &&
+      review.baseline === policy.release.baseline,
     "review-tuple-differs",
   );
   requireRelease(/^[a-f0-9]{40}$/.test(review.tooling_source), "invalid-tooling-source");
@@ -164,17 +186,17 @@ export function assertReview(review: HttpReview, now: number, mutating: boolean)
     );
   }
 }
-function attempt(io: HttpReleaseIo): HttpAttempt {
+function attempt(io: HttpReleaseIo, policy: HttpOperationPolicy): HttpAttempt {
   const value = io.read("upload-attempt.json") as HttpAttempt | undefined;
   requireRelease(
     value &&
-      value.source === HTTP_RELEASE.source &&
-      value.module_sha256 === HTTP_RELEASE.module &&
-      value.candidate.source === HTTP_RELEASE.source &&
-      value.candidate.tree === HTTP_RELEASE.tree,
+      value.source === policy.release.source &&
+      value.module_sha256 === policy.release.module &&
+      value.candidate.source === policy.release.source &&
+      value.candidate.tree === policy.release.tree,
     "valid-upload-attempt-required",
   );
-  assertBaseline(value.before);
+  assertBaseline(value.before, value.before.version, policy);
   return value;
 }
 function redact(result: UploadResult) {
@@ -184,11 +206,11 @@ function redact(result: UploadResult) {
     stderr_sha256: sha256(result.stderr),
   };
 }
-async function verify(io: HttpReleaseIo, before: HttpSnapshot) {
+async function verify(io: HttpReleaseIo, before: HttpSnapshot, policy: HttpOperationPolicy) {
   const after = await io.observe();
   requireRelease(
     after.version !== before.version &&
-      after.message === `git:${HTTP_RELEASE.source}` &&
+      after.message === `git:${policy.release.source}` &&
       after.latest === after.version,
     "candidate-not-serving",
   );
@@ -208,18 +230,19 @@ export async function publicPostHttpRelease(
   reviewSha256: string,
   io: HttpReleaseIo,
   from?: string,
+  policy: HttpOperationPolicy = PUBLIC_POST_OPERATION,
 ) {
   const candidate = await io.candidate();
   requireRelease(
-    candidate.source === HTTP_RELEASE.source &&
-      candidate.tree === HTTP_RELEASE.tree &&
-      candidate.module_sha256 === HTTP_RELEASE.module,
+    candidate.source === policy.release.source &&
+      candidate.tree === policy.release.tree &&
+      candidate.module_sha256 === policy.release.module,
     "candidate-differs",
   );
   if (mode === "snapshot") {
     const spent = io.read("upload-attempt.json");
     const before = spent ? await io.observe() : await io.collect();
-    if (!spent) assertBaseline(before);
+    if (!spent) assertBaseline(before, before.version, policy);
     return {
       read_only: true,
       qualified: !spent,
@@ -230,10 +253,10 @@ export async function publicPostHttpRelease(
     };
   }
   requireRelease(review, "independent-review-required");
-  assertReview(review, io.now(), mode === "apply" || mode === "rollback");
+  assertReview(review, io.now(), mode === "apply" || mode === "rollback", policy);
   requireRelease(candidate.tooling_source === review.tooling_source, "tooling-source-differs");
   if (mode === "verify") {
-    const started = attempt(io),
+    const started = attempt(io, policy),
       current = await io.observe();
     if (current.version === started.before.version) {
       const acknowledgement = io.read("upload-acknowledgement.json") as
@@ -250,7 +273,7 @@ export async function publicPostHttpRelease(
         current.latest === current.version || known.includes(current.latest),
         "unresolved-latest-upload",
       );
-      assertBaseline(current, current.latest);
+      assertBaseline(current, current.latest, policy);
       requireRelease(
         isDeepStrictEqual(configuration(current), configuration(started.before)),
         "baseline-configuration-changed",
@@ -266,7 +289,7 @@ export async function publicPostHttpRelease(
           acknowledgement.version === current.version,
         "acknowledged-version-not-serving",
       );
-    const after = await verify(io, started.before);
+    const after = await verify(io, started.before, policy);
     io.record(`verify-${io.now()}.json`, {
       source: candidate.source,
       version: after.version,
@@ -276,7 +299,7 @@ export async function publicPostHttpRelease(
     return { read_only: true, state: "candidate", version: after.version, modules: 1 };
   }
   if (mode === "rollback") {
-    const started = attempt(io);
+    const started = attempt(io, policy);
     const recovery = review.recovery;
     requireRelease(
       recovery?.attempt_sha256 === digest(started),
@@ -288,8 +311,8 @@ export async function publicPostHttpRelease(
       "rollback-from-version-differs",
     );
     requireRelease(
-      current.version !== HTTP_RELEASE.baseline &&
-        current.message === `git:${HTTP_RELEASE.source}` &&
+      current.version !== policy.release.baseline &&
+        current.message === `git:${policy.release.source}` &&
         current.latest === current.version,
       "rollback-candidate-ownership-unresolved",
     );
@@ -312,12 +335,12 @@ export async function publicPostHttpRelease(
       from,
       observed: current,
       configuration_sha256: configurationDigest(current),
-      to: HTTP_RELEASE.baseline,
+      to: policy.release.baseline,
       attempt_sha256: digest(started),
       review_sha256: reviewSha256,
     });
-    const result = await io.rollback(HTTP_RELEASE.baseline, async () => {
-      assertReview(review, io.now(), true);
+    const result = await io.rollback(policy.release.baseline, async () => {
+      assertReview(review, io.now(), true, policy);
       requireRelease(
         isDeepStrictEqual(await io.observe(), current),
         "serving-version-moved-before-rollback",
@@ -330,7 +353,7 @@ export async function publicPostHttpRelease(
     io.record("rollback-command-result.json", redact(result));
     requireRelease(result.exitCode === 0, "rollback-unresolved-use-read-only-verify");
     const restored = await io.collect();
-    assertBaseline(restored, current.version);
+    assertBaseline(restored, current.version, policy);
     requireRelease(
       isDeepStrictEqual(configuration(restored), configuration(started.before)),
       "rollback-configuration-differs",
@@ -340,10 +363,10 @@ export async function publicPostHttpRelease(
   }
   requireRelease(!io.read("upload-attempt.json"), "upload-attempt-spent-use-read-only-verify");
   const before = await io.collect();
-  assertBaseline(before);
+  assertBaseline(before, before.version, policy);
   requireRelease(digest(before) === review.snapshot_sha256, "reviewed-snapshot-differs");
   const acknowledgement = await io.guardedUpload(async (send) => {
-    assertReview(review, io.now(), true);
+    assertReview(review, io.now(), true, policy);
     requireRelease(
       isDeepStrictEqual(await io.candidate(), candidate),
       "candidate-moved-before-upload",
@@ -351,8 +374,8 @@ export async function publicPostHttpRelease(
     requireRelease(isDeepStrictEqual(await io.collect(), before), "baseline-moved-before-upload");
     io.record("upload-attempt.json", {
       at: new Date(io.now()).toISOString(),
-      source: HTTP_RELEASE.source,
-      module_sha256: HTTP_RELEASE.module,
+      source: policy.release.source,
+      module_sha256: policy.release.module,
       review_sha256: reviewSha256,
       candidate,
       before,
@@ -376,9 +399,9 @@ export async function publicPostHttpRelease(
   );
   io.record("upload-acknowledgement.json", {
     version: acknowledgement.version,
-    attempt_sha256: digest(attempt(io)),
+    attempt_sha256: digest(attempt(io, policy)),
   });
-  const after = await verify(io, before);
+  const after = await verify(io, before, policy);
   requireRelease(after.version === acknowledgement.version, "acknowledged-version-not-serving");
   requireRelease(
     isDeepStrictEqual(await io.candidate(), candidate),
@@ -389,7 +412,7 @@ export async function publicPostHttpRelease(
     source: candidate.source,
     version: after.version,
     deployment: after.deployment,
-    module_sha256: HTTP_RELEASE.module,
+    module_sha256: policy.release.module,
     rollback_target: before.version,
   });
   return { uploaded: true, version: after.version, modules: 1, rollback_target: before.version };
