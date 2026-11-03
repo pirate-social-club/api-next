@@ -6,6 +6,7 @@ import {
   AssetBonusFundingV1,
   GetMegapotPoolStanding,
   GetRewardQualificationPolicies,
+  GetRewardServiceAvailability,
   GetSongMegapotPool,
   ListMyRewardCredits,
   MegapotFundingV1,
@@ -21,6 +22,16 @@ const strict = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) =>
   Schema.decodeUnknownSync(schema, { onExcessProperty: "error" });
 
 describe("song reward offer contracts", () => {
+  test("exposes an authenticated boolean capability without invented policies", () => {
+    expect(GetRewardServiceAvailability.path).toBe("/rewards/availability");
+    expect(GetRewardServiceAvailability.auth.policy.kind).toBe("user");
+    const decode = strict(GetRewardServiceAvailability.response);
+    expect(decode({ enabled: false })).toEqual({ enabled: false });
+    expect(decode({ enabled: true })).toEqual({ enabled: true });
+    expect(() => decode({ enabled: "false" })).toThrow();
+    expect(() => decode({})).toThrow();
+  });
+
   test("discloses activity-specific policies without accepting arbitrary sponsor thresholds", () => {
     const study = {
       activity: "study",
