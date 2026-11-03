@@ -73,7 +73,7 @@ changing the existing website preparer's strict operator environment contract.
 Apply334, verify its exact contiguous ledger, then grant only the original nine
 missing sets. Preflight the actual owner/runtime identities, fresh global bot and resumable-work
 inventory, and actual HTTP/Jobs Hyperdrive origin host/database/qualified role.
-Both consumers and their latest upload identities are checked again at effects. Matrix checks include restricted reservations, catalogue
+Both consumers and their latest upload identities are checked again at effects. Each forward phase requires fresh independently hashed full serving readbacks in `serving_workers`. Their exact versions, deployments, preceding modes and safe metadata must still match immediately before an effect, including its counterpart. Safe observation hashes retain mode and binding/runtime identity rather than treating a same-source latest-serving upload as equivalent. Matrix checks include restricted reservations, catalogue
 SELECT-only, function execution and delegation, and all21 reviewed lock relations. A generic
 six-table activation check is insufficient. Every SQL write requires a current
 accepted backup. Migrations0239 and0246 are unchanged.
@@ -106,13 +106,15 @@ review of the exact attempt and current read-only observation, and can append
 verification without repeating the effect. A confirmed non-application never
 silently permits replay in this spent namespace.
 
+The narrow pause-intent phase requires its exact owner database identity, canary, revision and history checks, and skips provider-origin and global-inventory readiness. This permits disabling that intent when forward readiness fails. Later Worker phases still require their applicable fresh provider and inventory checks.
+
 Recovery has a separate pause-intent transaction before either Worker pause
 upload. It updates both integration revisions consistently, so a committed intent
 pause remains independently resolvable if a later upload fails. It then disables
 both Workers' practice and runtime flags. Only after both pause phases are verified can it restore a reviewed
 compatible disabled version. It does not require successful candidate acceptance. Retained module/config bytes
 and current control/process/admission are checked immediately before pause upload.
-Recovery resolution binds the exact serving version, and unseen newer uploads
+Recovery observations use metadata only and never fabricate a live module hash or claim full readiness. Retained recovery targets keep their independently reviewed compiled-byte proof. Forward acceptance still fetches actual compiled bytes through the maintained managed API transport, without a PATH-selected credential recipient. Recovery resolution binds the exact serving version, and unseen newer uploads
 remain visible even when their semantic configuration equals the current one.
 Queued, in-flight or uncertain work blocks traffic restoration until it has been
 reconciled read-only. Keys, migrations, catalogue decisions and Study history are

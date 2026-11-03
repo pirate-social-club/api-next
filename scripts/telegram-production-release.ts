@@ -65,10 +65,12 @@ import {
   assertTelegramDisabledTarget,
   assertTelegramRecoveryVersion,
   collectTelegramWorker,
+  collectTelegramWorkerMetadata,
   rollbackTelegramWorker,
   type TelegramWorkerSnapshot,
   telegramPhaseConfig,
   telegramServingOrigins,
+  telegramWorkerMetadataState,
   telegramWorkerState,
   uploadTelegramWorker,
 } from "./telegram-production-release-workers.ts";
@@ -154,6 +156,15 @@ async function boundChild(
     checkBoundProcess(start, child, self, { execution_tools: tools });
   };
 }
+/** The reviewed canary intent disable remains available without forward/provider readiness. */
+export async function telegramReadinessFence(
+  phase: TelegramPhase,
+  origin: () => Promise<unknown>,
+  inventory: () => Promise<unknown>,
+) {
+  if (phase === "pause-intent") return { observation_scope: "fixed-canary-intent-only" };
+  return { origin_witness: await origin(), global_inventory: await inventory() };
+}
 async function restoreDisabled(
   worker: TelegramWorker,
   reference: TelegramFile,
@@ -163,10 +174,10 @@ async function restoreDisabled(
   const target = telegramJson<TelegramWorkerSnapshot>(reference);
   assertTelegramDisabledTarget(target, worker);
   // Both pause phases must already be verified. Candidate acceptance is not required for this recovery.
-  const current = await collectTelegramWorker(worker);
+  const current = await collectTelegramWorkerMetadata(worker);
   for (const snapshot of [
-    await collectTelegramWorker("http"),
-    await collectTelegramWorker("jobs"),
+    await collectTelegramWorkerMetadata("http"),
+    await collectTelegramWorkerMetadata("jobs"),
   ]) {
     const mode = JSON.parse(
       String(snapshot.bindings.find((r) => r.name === "TELEGRAM_CONFIG_JSON")?.text),
@@ -187,11 +198,12 @@ async function restoreDisabled(
   });
   const result = await rollbackTelegramWorker(worker, target.version, review, assertBound);
   requireTelegram(result.exitCode === 0, "recovery-traffic-acknowledgement-unresolved");
-  const after = await collectTelegramWorker(worker);
+  const after = await collectTelegramWorkerMetadata(worker);
   requireTelegram(
     after.version === target.version &&
       after.latest === current.latest &&
-      digest(telegramWorkerState(after, true)) === digest(telegramWorkerState(target, true)),
+      digest(telegramWorkerMetadataState(after, true)) ===
+        digest(telegramWorkerMetadataState(target, true)),
     "recovery-serving-state-unverified",
   );
 }
@@ -267,7 +279,9 @@ async function liveIo(
         corpus: await telegramCorpus(db),
         decisions: await telegramDecision(db),
       }));
-    const snapshot = await collectTelegramWorker(phaseWorker(phase));
+    const snapshot = await (isRecovery(phase)
+      ? collectTelegramWorkerMetadata
+      : collectTelegramWorker)(phaseWorker(phase));
     if (resolving) {
       const resolution = review.resolutions[phase];
       requireTelegram(
@@ -314,16 +328,24 @@ async function liveIo(
       requireTelegram(access === admission.access, "access-mode-differs");
       assertBound();
     },
-    observe: async () => {
-      const origin_witness = await telegramServingOrigins();
-      const global_inventory = await owner(true, (db) =>
-        telegramGlobalInventory(db, review.integration_allowlist ?? []),
-      );
-      return { origin_witness, global_inventory, state: await observePhase() };
-    },
+    observe: async () => ({
+      ...(await telegramReadinessFence(
+        phase,
+        () => telegramServingOrigins(),
+        () => owner(true, (db) => telegramGlobalInventory(db, review.integration_allowlist ?? [])),
+      )),
+      state: await observePhase(),
+    }),
     effect: async () => {
-      await telegramServingOrigins();
-      await owner(true, (db) => telegramGlobalInventory(db, review.integration_allowlist ?? []));
+      await telegramReadinessFence(
+        phase,
+        () =>
+          telegramServingOrigins(
+            isRecovery(phase) ? undefined : review,
+            isRecovery(phase) ? undefined : phase,
+          ),
+        () => owner(true, (db) => telegramGlobalInventory(db, review.integration_allowlist ?? [])),
+      );
       assertBound();
       if (phase === "migration") return applyTelegramMigration(urls.owner, assertBound);
       if (phase === "grants") return applyTelegramGrants(urls.owner, assertBound);

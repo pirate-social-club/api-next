@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type pg from "pg";
 import { sha256 } from "./public-post-http-release-core.ts";
+import { telegramReadinessFence } from "./telegram-production-release.ts";
 import {
   telegramPracticeReadiness,
   telegramReferenceInventory,
@@ -15,8 +16,11 @@ import {
 } from "./telegram-production-release-database.ts";
 import { TELEGRAM_RELEASE as policy, telegramMode } from "./telegram-production-release-policy.ts";
 import {
+  assertTelegramForwardWorker,
   assertTelegramHyperdriveOrigin,
   assertTelegramRecoveryVersion,
+  collectTelegramWorker,
+  collectTelegramWorkerMetadata,
   type TelegramWorkerSnapshot,
   telegramUploadBoundary,
   telegramWorkerState,
@@ -212,6 +216,123 @@ test("equal disabled semantics cannot resolve recovery at the wrong version", ()
   expect(telegramWorkerState({ ...target, latest: wrong.version })).not.toEqual(
     telegramWorkerState(target),
   );
+});
+test("recovery metadata remains available when compiled module observation fails", async () => {
+  const version = "11111111-1111-1111-1111-111111111111",
+    calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("?include=modules")) throw Error("module-endpoint-unavailable");
+    if (path.endsWith("/deployments"))
+      return {
+        deployments: [{ id: "deployment", versions: [{ version_id: version, percentage: 100 }] }],
+      };
+    if (path.endsWith("/versions")) return { items: [{ id: version }] };
+    if (path.endsWith(`/versions/${version}`))
+      return {
+        resources: {
+          bindings: [],
+          script_runtime: {
+            compatibility_date: "2026-08-11",
+            compatibility_flags: [],
+            usage_model: "standard",
+          },
+        },
+        annotations: {},
+      };
+    if (path.endsWith("/settings") || path.endsWith("/subdomain")) return {};
+    if (path.includes("/workers/domains")) return [];
+    if (path.startsWith("/queues?"))
+      return [{ queue_name: policy.queue, queue_id: "fixture-queue" }];
+    if (path.endsWith("/consumers"))
+      return [{ type: "worker", script_name: policy.workers.jobs.name }];
+    throw Error("unexpected-read");
+  };
+  const metadata = await collectTelegramWorkerMetadata("http", api);
+  expect(metadata.version).toBe(version);
+  expect(metadata.module_sha256).toBeUndefined();
+  expect(telegramWorkerState(metadata)).toHaveProperty("module_observation", "not_requested");
+  expect(calls.some((path) => path.includes("include=modules"))).toBe(false);
+  await expect(collectTelegramWorker("http", api)).rejects.toThrow("module-endpoint-unavailable");
+  expect(calls.at(-1)).toBe(
+    `/workers/workers/${policy.workers.http.name}/versions/${version}?include=modules`,
+  );
+  let deployments = 0;
+  await expect(
+    collectTelegramWorkerMetadata("http", async (path) => {
+      const result = await api(path);
+      if (path.endsWith("/deployments") && ++deployments > 1)
+        return {
+          deployments: [
+            { id: "changed-deployment", versions: [{ version_id: version, percentage: 100 }] },
+          ],
+        };
+      return result;
+    }),
+  ).rejects.toThrow("worker-traffic-moved-during-observation");
+});
+test("metadata-only recovery proves the reviewed exact version without claiming byte observation", () => {
+  const target = disabledSnapshot("11111111-1111-1111-1111-111111111111");
+  const { module_sha256: _module, ...metadata } = target;
+  expect(() => assertTelegramRecoveryVersion(metadata, target, "http")).not.toThrow();
+  expect(telegramWorkerState(metadata)).not.toEqual(telegramWorkerState(target));
+});
+test("same-source latest-serving wrong-mode counterpart and equal-mode version swap refuse", () => {
+  const expected = {
+    ...disabledSnapshot("11111111-1111-1111-1111-111111111111"),
+    module_sha256: policy.workers.jobs.module,
+    bindings: [
+      {
+        name: "TELEGRAM_CONFIG_JSON",
+        type: "plain_text",
+        text: JSON.stringify(telegramMode("practice-jobs")),
+      },
+    ],
+  };
+  expect(() =>
+    assertTelegramForwardWorker("practice-http", "jobs", expected, expected),
+  ).not.toThrow();
+  const wrongMode = {
+    ...expected,
+    bindings: [
+      {
+        name: "TELEGRAM_CONFIG_JSON",
+        type: "plain_text",
+        text: JSON.stringify(telegramMode("connect-jobs")),
+      },
+    ],
+  };
+  expect(telegramWorkerState(wrongMode)).not.toEqual(telegramWorkerState(expected));
+  expect(() => assertTelegramForwardWorker("practice-http", "jobs", wrongMode, expected)).toThrow(
+    "current-worker-version-or-mode-drift",
+  );
+  expect(() => assertTelegramForwardWorker("practice-http", "jobs", wrongMode, wrongMode)).toThrow(
+    "reviewed-current-worker-mode-differs",
+  );
+  const version = "22222222-2222-2222-2222-222222222222";
+  expect(() =>
+    assertTelegramForwardWorker(
+      "practice-http",
+      "jobs",
+      { ...expected, version, latest: version },
+      expected,
+    ),
+  ).toThrow("current-worker-version-or-mode-drift");
+});
+test("the canary intent disable skips unavailable provider and rejecting global readiness", async () => {
+  let calls = 0;
+  const fail = async () => {
+    calls++;
+    throw Error("forward-readiness-unavailable");
+  };
+  expect(await telegramReadinessFence("pause-intent", fail, fail)).toEqual({
+    observation_scope: "fixed-canary-intent-only",
+  });
+  expect(calls).toBe(0);
+  await expect(telegramReadinessFence("practice-http", fail, fail)).rejects.toThrow(
+    "forward-readiness-unavailable",
+  );
+  expect(calls).toBe(1);
 });
 test("global practice can become available before the owner UI enables current-bot Study", async () => {
   const directory = mkdtempSync(join(tmpdir(), "telegram-readiness-fixture-"));

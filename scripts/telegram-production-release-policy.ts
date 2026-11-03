@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { parseJsonc } from "./secret-drift-audit.ts";
 import { type Binding, bindings, digest } from "./worker-binding-drift.ts";
 
@@ -245,4 +246,137 @@ export function assertTelegramHyperdriveOrigin(value: unknown) {
     user: String(origin.user),
     hyperdrive: TELEGRAM_RELEASE.database.hyperdrive,
   };
+}
+
+export interface TelegramWorkerMetadata {
+  readonly version: string;
+  readonly latest: string;
+  readonly deployment: string;
+  readonly bindings: readonly Binding[];
+  readonly runtime: Record<string, unknown>;
+  readonly settings: Record<string, unknown>;
+  readonly domains: readonly unknown[];
+  readonly subdomain: unknown;
+  readonly queue: ReturnType<typeof telegramQueueConsumer>;
+  readonly message: string;
+  readonly module_sha256?: string;
+}
+export interface TelegramWorkerSnapshot extends TelegramWorkerMetadata {
+  readonly module_sha256: string;
+}
+
+/** Version/deployment identities stay in raw readbacks and are checked separately at effects. */
+export function telegramWorkerMetadataState(
+  snapshot: TelegramWorkerMetadata,
+  ignoreLatest = false,
+) {
+  return {
+    ...(ignoreLatest
+      ? {}
+      : { latest_upload: snapshot.latest === snapshot.version ? "serving" : snapshot.latest }),
+    bindings_sha256: digest(snapshot.bindings),
+    runtime_sha256: digest(snapshot.runtime),
+    settings_sha256: digest(snapshot.settings),
+    domains_sha256: digest(snapshot.domains),
+    subdomain_sha256: digest(snapshot.subdomain),
+    queue_sha256: digest(snapshot.queue),
+    message: snapshot.message,
+  };
+}
+export function telegramWorkerState(snapshot: TelegramWorkerMetadata, ignoreLatest = false) {
+  return {
+    ...telegramWorkerMetadataState(snapshot, ignoreLatest),
+    ...(snapshot.module_sha256 === undefined
+      ? { module_observation: "not_requested" }
+      : { module_sha256: snapshot.module_sha256 }),
+  };
+}
+export function assertTelegramDisabledTarget(
+  target: TelegramWorkerSnapshot,
+  worker: TelegramWorker,
+) {
+  const intent = target.bindings.find((r) => r.name === "TELEGRAM_CONFIG_JSON");
+  requireTelegram(
+    target.message === `git:${TELEGRAM_RELEASE.source}` &&
+      target.module_sha256 === TELEGRAM_RELEASE.workers[worker].module &&
+      /^[a-f0-9-]{36}$/u.test(target.version) &&
+      intent?.type === "plain_text" &&
+      isDeepStrictEqual(
+        JSON.parse(String(intent.text)),
+        telegramMode(worker === "http" ? "install-http" : "install-jobs"),
+      ),
+    "compatible-retained-disabled-version-required",
+  );
+}
+/** Recovery proves exact reviewed traffic identity/metadata; live compiled bytes remain unobserved. */
+export function assertTelegramRecoveryVersion(
+  observed: TelegramWorkerMetadata,
+  target: TelegramWorkerSnapshot,
+  worker: TelegramWorker,
+) {
+  assertTelegramDisabledTarget(target, worker);
+  requireTelegram(
+    observed.version === target.version &&
+      digest(telegramWorkerMetadataState(observed, true)) ===
+        digest(telegramWorkerMetadataState(target, true)),
+    "exact-recovery-target-version-not-serving",
+  );
+}
+export function telegramPriorWorkerPhase(
+  phase: TelegramPhase,
+  worker: TelegramWorker,
+): TelegramPhase | undefined {
+  const stages = [
+    "migration",
+    "grants",
+    "vault",
+    "install-jobs",
+    "install-http",
+    "connect-jobs",
+    "connect-http",
+    "catalogue",
+    "practice-jobs",
+    "practice-http",
+  ];
+  const index = stages.indexOf(phase);
+  requireTelegram(index >= 0, "forward-phase-required");
+  return stages
+    .slice(0, index)
+    .reverse()
+    .find((value) => value.endsWith(`-${worker}`)) as TelegramPhase | undefined;
+}
+/** A historical receipt cannot stand in for the counterpart's current mode or exact version. */
+export function assertTelegramForwardWorker(
+  phase: TelegramPhase,
+  worker: TelegramWorker,
+  observed: TelegramWorkerMetadata,
+  expected: TelegramWorkerSnapshot,
+) {
+  const prior = telegramPriorWorkerPhase(phase, worker),
+    fixed = TELEGRAM_RELEASE.workers[worker];
+  if (prior) {
+    const intent = expected.bindings.find((row) => row.name === "TELEGRAM_CONFIG_JSON");
+    requireTelegram(
+      expected.message === `git:${TELEGRAM_RELEASE.source}` &&
+        expected.module_sha256 === fixed.module &&
+        intent?.type === "plain_text" &&
+        isDeepStrictEqual(JSON.parse(String(intent.text)), telegramMode(prior)),
+      "reviewed-current-worker-mode-differs",
+    );
+  } else
+    requireTelegram(
+      expected.version === fixed.baseline &&
+        expected.message === `git:${fixed.source}` &&
+        expected.module_sha256 === fixed.baselineModule,
+      "reviewed-distinct-worker-baseline-differs",
+    );
+  requireTelegram(
+    observed.version === expected.version &&
+      observed.deployment === expected.deployment &&
+      observed.latest === observed.version &&
+      expected.latest === expected.version &&
+      digest(telegramWorkerMetadataState(observed)) ===
+        digest(telegramWorkerMetadataState(expected)),
+    "current-worker-version-or-mode-drift",
+  );
 }

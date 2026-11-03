@@ -9,8 +9,6 @@ import { linuxProcess } from "./production-release/production-linux-process-boun
 import {
   injectedProductionUrls,
   managedProviderApi,
-  managedProviderToken,
-  providerReadEnvironment,
   wranglerEnvironment,
 } from "./production-release/production-managed-environment.ts";
 import { exclusiveRecord } from "./production-release/production-operation-evidence.ts";
@@ -24,6 +22,7 @@ import {
   type TelegramFile,
   type TelegramReview,
   telegramFile,
+  telegramJson,
 } from "./telegram-production-release-admission.ts";
 import {
   assertTelegramFunctions,
@@ -34,21 +33,28 @@ import {
   telegramRowLocks,
 } from "./telegram-production-release-database.ts";
 import {
+  assertTelegramDisabledTarget,
+  assertTelegramForwardWorker,
   assertTelegramHyperdriveOrigin,
+  assertTelegramRecoveryVersion,
   TELEGRAM_RELEASE as policy,
   requireTelegram,
   type TelegramPhase,
   type TelegramWorker,
+  type TelegramWorkerMetadata,
+  type TelegramWorkerSnapshot,
   telegramBindingDelta,
   telegramMode,
   telegramPhaseConfig,
   telegramQueueConsumer,
+  telegramWorkerMetadataState,
+  telegramWorkerState,
 } from "./telegram-production-release-policy.ts";
 import {
   publishedTelegramSources,
   publishedTelegramTooling,
 } from "./telegram-production-release-source.ts";
-import { type Binding, bindings, digest, runtime } from "./worker-binding-drift.ts";
+import { bindings, digest, runtime } from "./worker-binding-drift.ts";
 
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => {
@@ -74,91 +80,51 @@ export async function telegramUploadBoundary<T>(input: {
   input.assertBound();
   return input.upload();
 }
-export async function telegramServingOrigins() {
-  const config = object(
-    await managedProviderApi(`/hyperdrive/configs/${policy.database.hyperdrive}`),
+type ProviderRead = (path: string) => Promise<unknown>;
+async function allocation(worker: TelegramWorker, api: ProviderRead) {
+  const result = object(await api(`/workers/scripts/${policy.workers[worker].name}/deployments`));
+  requireTelegram(Array.isArray(result.deployments), "worker-deployments-missing");
+  const row = object(result.deployments[0]);
+  requireTelegram(
+    Array.isArray(row.versions) && row.versions.length === 1,
+    "single-full-traffic-version-required",
   );
-  const origin = assertTelegramHyperdriveOrigin(config.origin),
-    consumers = [];
-  for (const worker of ["http", "jobs"] as const) {
-    const target = `/workers/scripts/${policy.workers[worker].name}`;
-    const deployed = object(await managedProviderApi(`${target}/deployments`));
-    requireTelegram(Array.isArray(deployed.deployments), "serving-consumer-deployment-missing");
-    const deployment = object(deployed.deployments[0]);
-    requireTelegram(
-      Array.isArray(deployment.versions) && deployment.versions.length === 1,
-      "single-serving-consumer-required",
-    );
-    const allocation = object(deployment.versions[0]);
-    requireTelegram(allocation.percentage === 100, "single-serving-consumer-required");
-    const version = object(await managedProviderApi(`${target}/versions/${allocation.version_id}`));
-    const uploads = object(await managedProviderApi(`${target}/versions`));
-    requireTelegram(Array.isArray(uploads.items), "consumer-latest-upload-missing");
-    const latest = object(uploads.items[0]);
-    requireTelegram(typeof latest.id === "string", "consumer-latest-upload-missing");
-    const binding = bindings(object(version.resources).bindings).find(
-      (row) => row.name === "CONTROL_PLANE",
-    );
-    requireTelegram(
-      binding?.type === "hyperdrive" && binding.id === policy.database.hyperdrive,
-      "serving-consumer-hyperdrive-differs",
-    );
-    consumers.push({
-      worker,
-      hyperdrive: binding.id,
-      message: String(object(version.annotations)["workers/message"] ?? ""),
-      latest_upload: latest.id === allocation.version_id ? "serving" : latest.id,
-    });
-  }
-  return { origin, consumers };
+  const version = object(row.versions[0]);
+  requireTelegram(
+    version.percentage === 100 &&
+      typeof version.version_id === "string" &&
+      typeof row.id === "string",
+    "single-full-traffic-version-required",
+  );
+  return { version: version.version_id, deployment: row.id };
 }
-export interface TelegramWorkerSnapshot {
-  readonly version: string;
-  readonly latest: string;
-  readonly deployment: string;
-  readonly bindings: readonly Binding[];
-  readonly runtime: Json;
-  readonly settings: Json;
-  readonly domains: readonly unknown[];
-  readonly subdomain: unknown;
-  readonly queue: ReturnType<typeof telegramQueueConsumer>;
-  readonly message: string;
-  readonly module_sha256: string;
-}
-export async function collectTelegramWorker(
-  worker: TelegramWorker,
-): Promise<TelegramWorkerSnapshot> {
-  const name = policy.workers[worker].name,
-    target = `/workers/scripts/${name}`;
-  const allocation = async () => {
-    const result = object(await managedProviderApi(`${target}/deployments`));
-    requireTelegram(Array.isArray(result.deployments), "worker-deployments-missing");
-    const row = object(result.deployments[0]);
-    requireTelegram(
-      Array.isArray(row.versions) && row.versions.length === 1,
-      "single-full-traffic-version-required",
-    );
-    const version = object(row.versions[0]);
-    requireTelegram(
-      version.percentage === 100 &&
-        typeof version.version_id === "string" &&
-        typeof row.id === "string",
-      "single-full-traffic-version-required",
-    );
-    return { version: version.version_id, deployment: row.id };
-  };
-  const before = await allocation(),
-    version = object(await managedProviderApi(`${target}/versions/${before.version}`));
-  const uploaded = object(await managedProviderApi(`${target}/versions`));
+async function latest(worker: TelegramWorker, api: ProviderRead) {
+  const uploaded = object(await api(`/workers/scripts/${policy.workers[worker].name}/versions`));
   requireTelegram(
     Array.isArray(uploaded.items) && typeof object(uploaded.items[0]).id === "string",
     "latest-worker-upload-missing",
   );
-  const latest = String(object(uploaded.items[0]).id);
-  const resources = object(version.resources);
-  const settings = object(await managedProviderApi(`${target}/settings`));
-  // Remove volatile placement analysis, while keeping every other setting for exact review.
-  const safeSettings = { ...settings };
+  return String(object(uploaded.items[0]).id);
+}
+/** Recovery metadata does not request modules, invent a hash or prove native readiness. */
+export async function collectTelegramWorkerMetadata(
+  worker: TelegramWorker,
+  api: ProviderRead = managedProviderApi,
+): Promise<TelegramWorkerMetadata> {
+  const name = policy.workers[worker].name,
+    target = `/workers/scripts/${name}`;
+  const before = await allocation(worker, api);
+  const [rawVersion, rawSettings, allDomains, queueRows, subdomain, uploaded] = await Promise.all([
+    api(`${target}/versions/${before.version}`),
+    api(`${target}/settings`),
+    api("/workers/domains?per_page=100"),
+    api(`/queues?name=${policy.queue}`),
+    api(`${target}/subdomain`),
+    latest(worker, api),
+  ]);
+  const version = object(rawVersion),
+    resources = object(version.resources),
+    safeSettings = { ...object(rawSettings) };
   delete safeSettings.annotations;
   delete safeSettings.bindings;
   if (safeSettings.placement) {
@@ -167,7 +133,6 @@ export async function collectTelegramWorker(
     delete placement.status;
     safeSettings.placement = placement;
   }
-  const allDomains = await managedProviderApi("/workers/domains?per_page=100");
   requireTelegram(
     Array.isArray(allDomains) && allDomains.length < 100,
     "worker-domain-pagination-unmodelled",
@@ -175,40 +140,44 @@ export async function collectTelegramWorker(
   const domains = allDomains
     .map(object)
     .filter((row) => row.service === name)
-    .map((row) => ({
-      hostname: row.hostname,
-      service: row.service,
-      environment: row.environment,
-    }))
+    .map((row) => ({ hostname: row.hostname, service: row.service, environment: row.environment }))
     .sort((a, b) => String(a.hostname).localeCompare(String(b.hostname)));
-  const queueRows = await managedProviderApi(`/queues?name=${policy.queue}`);
   requireTelegram(
     Array.isArray(queueRows) && queueRows.length === 1,
     "exact-production-queue-required",
   );
   const queue = object(queueRows[0]),
-    consumers = await managedProviderApi(`/queues/${queue.queue_id}/consumers`);
-  const token = await managedProviderToken();
-  const result = await runDeploymentCommand(
-    [
-      "cf",
-      "workers",
-      "versions",
-      "get",
-      before.version,
-      "--worker-id",
-      name,
-      "--include",
-      "modules",
-    ],
-    policy.paths.application,
-    AbortSignal.timeout(30_000),
-    providerReadEnvironment(token),
-  );
-  requireTelegram(result.exitCode === 0, "compiled-worker-observation-refused");
-  const module = object(JSON.parse(result.stdout));
+    consumers = await api(`/queues/${queue.queue_id}/consumers`);
+  const [after, newest] = await Promise.all([allocation(worker, api), latest(worker, api)]);
   requireTelegram(
-    module.id === before.version &&
+    isDeepStrictEqual(after, before) && newest === uploaded,
+    "worker-traffic-moved-during-observation",
+  );
+  return {
+    ...before,
+    latest: uploaded,
+    bindings: bindings(resources.bindings),
+    runtime: runtime(resources.script_runtime),
+    settings: safeSettings,
+    domains,
+    subdomain,
+    queue: telegramQueueConsumer(queue, consumers),
+    message: String(object(version.annotations)["workers/message"] ?? ""),
+  };
+}
+export async function collectTelegramWorker(
+  worker: TelegramWorker,
+  api: ProviderRead = managedProviderApi,
+): Promise<TelegramWorkerSnapshot> {
+  const metadata = await collectTelegramWorkerMetadata(worker, api);
+  // Same documented endpoint as the installed CLI, through the maintained managed-token transport.
+  const module = object(
+    await api(
+      `/workers/workers/${policy.workers[worker].name}/versions/${metadata.version}?include=modules`,
+    ),
+  );
+  requireTelegram(
+    module.id === metadata.version &&
       module.main_module === "index.js" &&
       Array.isArray(module.modules) &&
       module.modules.length === 1,
@@ -224,72 +193,54 @@ export async function collectTelegramWorker(
     bytes.toString("base64") === entry.content_base64,
     "worker-module-encoding-refused",
   );
+  const [after, uploaded] = await Promise.all([allocation(worker, api), latest(worker, api)]);
   requireTelegram(
-    isDeepStrictEqual(await allocation(), before),
+    after.version === metadata.version &&
+      after.deployment === metadata.deployment &&
+      uploaded === metadata.latest,
     "worker-traffic-moved-during-observation",
   );
-  return {
-    ...before,
-    latest,
-    bindings: bindings(resources.bindings),
-    runtime: runtime(resources.script_runtime),
-    settings: safeSettings,
-    domains,
-    subdomain: await managedProviderApi(`${target}/subdomain`),
-    queue: telegramQueueConsumer(queue, consumers),
-    message: String(object(version.annotations)["workers/message"] ?? ""),
-    module_sha256: digestBytes(bytes),
-  };
+  return { ...metadata, module_sha256: digestBytes(bytes) };
+}
+export async function telegramServingOrigins(review?: TelegramReview, phase?: TelegramPhase) {
+  const [config, http, jobs]: [unknown, TelegramWorkerMetadata, TelegramWorkerMetadata] =
+    await Promise.all([
+      managedProviderApi(`/hyperdrive/configs/${policy.database.hyperdrive}`),
+      collectTelegramWorkerMetadata("http"),
+      collectTelegramWorkerMetadata("jobs"),
+    ]);
+  const origin = assertTelegramHyperdriveOrigin(object(config).origin),
+    consumers = [];
+  for (const [worker, snapshot] of [
+    ["http", http],
+    ["jobs", jobs],
+  ] as const) {
+    const binding = snapshot.bindings.find((row) => row.name === "CONTROL_PLANE");
+    requireTelegram(
+      binding?.type === "hyperdrive" && binding.id === policy.database.hyperdrive,
+      "serving-consumer-hyperdrive-differs",
+    );
+    if (review && phase) {
+      requireTelegram(review.serving_workers, "reviewed-current-worker-readbacks-required");
+      assertTelegramForwardWorker(
+        phase,
+        worker,
+        snapshot,
+        telegramJson<TelegramWorkerSnapshot>(review.serving_workers[worker]),
+      );
+    }
+    const after = await allocation(worker, managedProviderApi);
+    requireTelegram(
+      after.version === snapshot.version && after.deployment === snapshot.deployment,
+      "counterpart-traffic-moved-during-observation",
+    );
+    consumers.push({ worker, hyperdrive: binding.id, ...telegramWorkerMetadataState(snapshot) });
+  }
+  return { origin, consumers };
 }
 
 import { sha256 as digestBytes } from "./public-post-http-release-core.ts";
 
-/** Dynamic provider IDs are retained in receipts; the reviewed semantic state excludes them. */
-export function telegramWorkerState(snapshot: TelegramWorkerSnapshot, ignoreLatest = false) {
-  return {
-    ...(ignoreLatest
-      ? {}
-      : { latest_upload: snapshot.latest === snapshot.version ? "serving" : snapshot.latest }),
-    bindings_sha256: digest(snapshot.bindings),
-    runtime_sha256: digest(snapshot.runtime),
-    settings_sha256: digest(snapshot.settings),
-    domains_sha256: digest(snapshot.domains),
-    subdomain_sha256: digest(snapshot.subdomain),
-    queue_sha256: digest(snapshot.queue),
-    message: snapshot.message,
-    module_sha256: snapshot.module_sha256,
-  };
-}
-export function assertTelegramDisabledTarget(
-  target: TelegramWorkerSnapshot,
-  worker: TelegramWorker,
-) {
-  const fixed = policy.workers[worker],
-    intent = target.bindings.find((r) => r.name === "TELEGRAM_CONFIG_JSON");
-  requireTelegram(
-    target.message === `git:${policy.source}` &&
-      target.module_sha256 === fixed.module &&
-      /^[a-f0-9-]{36}$/u.test(target.version) &&
-      intent?.type === "plain_text" &&
-      isDeepStrictEqual(
-        JSON.parse(String(intent.text)),
-        telegramMode(worker === "http" ? "install-http" : "install-jobs"),
-      ),
-    "compatible-retained-disabled-version-required",
-  );
-}
-export function assertTelegramRecoveryVersion(
-  observed: TelegramWorkerSnapshot,
-  target: TelegramWorkerSnapshot,
-  worker: TelegramWorker,
-) {
-  assertTelegramDisabledTarget(target, worker);
-  requireTelegram(
-    observed.version === target.version &&
-      digest(telegramWorkerState(observed, true)) === digest(telegramWorkerState(target, true)),
-    "exact-recovery-target-version-not-serving",
-  );
-}
 export async function uploadTelegramWorker(
   worker: TelegramWorker,
   phase: TelegramPhase,
@@ -315,7 +266,10 @@ export async function uploadTelegramWorker(
     ),
     "unexpected-upload-secret-input",
   );
-  const before = await collectTelegramWorker(worker);
+  const recovery = phase.startsWith("pause-");
+  const collect = () =>
+    recovery ? collectTelegramWorkerMetadata(worker) : collectTelegramWorker(worker);
+  const before = await collect();
   const initial = phase.startsWith("install-");
   requireTelegram(
     phase.startsWith("pause-") || before.latest === before.version,
@@ -352,11 +306,13 @@ export async function uploadTelegramWorker(
           assertBound,
           preflight: async () => {
             requireTelegram(
-              digest(telegramWorkerState(await collectTelegramWorker(worker))) ===
-                digest(telegramWorkerState(before)),
+              digest(telegramWorkerState(await collect())) === digest(telegramWorkerState(before)),
               "worker-state-moved-immediately-before-upload",
             );
-            await telegramServingOrigins();
+            await telegramServingOrigins(
+              recovery ? undefined : review,
+              recovery ? undefined : phase,
+            );
             telegramFile(configuration);
             requireTelegram(
               fileHash(resolve(policy.paths.artifacts, worker, "bundle/index.js")) ===
@@ -490,11 +446,11 @@ export async function uploadTelegramWorker(
         return { sourceSha: policy.source, configPath: target.config };
       },
     );
-    const after = await collectTelegramWorker(worker);
+    const after = await collect();
     requireTelegram(
       after.version === result.worker_version_id &&
         after.latest === after.version &&
-        after.module_sha256 === target.module &&
+        (recovery || after.module_sha256 === target.module) &&
         after.message === `git:${policy.source}` &&
         digest(after.runtime) === digest(before.runtime) &&
         digest(after.settings) === digest(before.settings) &&
@@ -511,6 +467,7 @@ export async function uploadTelegramWorker(
       module_sha256: target.module,
       configuration_sha256: configuration.sha256,
       snapshot: after,
+      compiled_module_observed: !recovery,
     });
     return result;
   });
@@ -581,8 +538,15 @@ export async function rollbackTelegramWorker(
 }
 
 export {
+  assertTelegramDisabledTarget,
+  assertTelegramForwardWorker,
   assertTelegramHyperdriveOrigin,
+  assertTelegramRecoveryVersion,
+  type TelegramWorkerMetadata,
+  type TelegramWorkerSnapshot,
   telegramBindingDelta,
   telegramPhaseConfig,
   telegramQueueConsumer,
+  telegramWorkerMetadataState,
+  telegramWorkerState,
 };
