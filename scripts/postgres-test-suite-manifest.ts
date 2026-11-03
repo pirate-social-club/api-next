@@ -180,6 +180,7 @@ export const freshSchemaPostgresTestSuites = [
 ] as const;
 
 export const noBaselinePostgresTestSuites = [
+  "scripts/telegram-production-release-database.pg.test.ts",
   "apps/http-worker/src/browser-session-authentication.pg.test.ts",
   "packages/platform-cf/src/browser-session-repository.pg.test.ts",
   "packages/platform-cf/src/dance-serving-permissions.pg.test.ts",

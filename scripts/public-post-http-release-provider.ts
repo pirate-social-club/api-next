@@ -301,7 +301,7 @@ function read(name: string, policy: HttpSourcePolicy): unknown {
   const path = resolve(policy.paths.evidence, name);
   return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
 }
-async function managedGuards<T>(action: (runtimeUrl: string) => Promise<T>) {
+export async function managedGuards<T>(action: (runtimeUrl: string) => Promise<T>) {
   const urls = injectedProductionUrls();
   const selected = {
     RUNTIME_POSTGRES_URL: urls.runtime,

@@ -111,3 +111,34 @@ unclaimed421, DNSSEC/DANE, natural renewal and scheduled health acceptance
 must pass before declaring staging recovered. The original public wallet-host
 services stay retired. New signing/TLS state must enter scheduled encrypted
 recovery on .209 before the old recovery state can be retired.
+
+
+## Frozen posting V4 gateway package
+
+The explicit `HNS_STAGING_ASSET_PROFILE=posting-v4` profile of the same asset
+stager packages only the retained native gateway97a/34029, canonical staging
+manifest34f and exact Bun1.3.14 runtime9fd3. Set `HNS_STAGING_GATEWAY_BUNDLE`
+and `HNS_STAGING_GATEWAY_RUNTIME` to the retained files and invoke the same
+`make-release.sh` command above from accepted clean tooling. The manifest is
+tracked here as `deployment-manifest.gateway-v4.json`; its exact canonical bytes
+are preserved. Source ancestry and all three file hashes must pass before any
+asset output is created. This profile neither requires nor reads the provisioner
+bundle, stages a provisioner package, or creates a probe attempt. Omitting the
+profile retains the historical V3 behavior; unsupported profiles refuse.
+
+Standard release checksums seal the result. Install only its `gateway`
+subdirectory through the independently reviewed matched cutover procedure.
+The bundled `bin/bun` is recovery evidence; the unchanged public service unit
+continues to use `/usr/local/bin/bun`, whose actual hash must match9fd3.
+Do not apply the role's Compose files, other unit templates or provisioner
+configuration as part of this gateway-only package. Preserve currentV3,
+credentials, certificate/SPKI, listener settings and every previous release.
+
+Packaging establishes no runtime readiness or authority. The matched operation
+must independently qualify actual database and protected Solid reachability,
+listener ownership, exact API/Solid/native/provisioner identities and recovery.
+The gateway and authority move together under bounded exclusive custody.
+Before any cookie-capable admission, recovery may restore the verified old
+package only with the old authority and matching API/Solid state confirmed.
+After admission is possible, retain compatible V4 transports and use a reviewed
+advancing authority successor; do not assume a V3 rollback or rewind history.
