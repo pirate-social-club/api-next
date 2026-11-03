@@ -103,6 +103,7 @@ jobs:
           python3 scripts/hns-deployment/ping-healthcheck.test.py
           bash scripts/hns-deployment/deployment-tooling.test.sh
           bash scripts/hns-doh-resolver/doh-health.test.sh
+          bash scripts/hns-doh-resolver/resolver-config.test.sh
           bash apps/hns-authority-provisioner/ops/primary-dns/rrsig-health.test.sh
           bash apps/hns-authority-provisioner/ops/primary-dns/dane-health.test.sh
           bash apps/hns-authority-provisioner/ops/state-backup/hns-state-backup.test.sh
