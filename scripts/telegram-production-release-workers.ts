@@ -479,6 +479,7 @@ export async function rollbackTelegramWorker(
   version: string,
   review: TelegramReview,
   assertBound: () => void,
+  beforeTraffic?: () => Promise<void>,
 ) {
   const target = policy.workers[worker],
     app = policy.paths.application;
@@ -505,6 +506,9 @@ export async function rollbackTelegramWorker(
             const abort = () => process.kill(-group, "SIGTERM");
             signal?.addEventListener("abort", abort, { once: true });
             try {
+              await beforeTraffic?.();
+              assertBound();
+              requireTelegram(!signal?.aborted, "recovery-control-connection-lost");
               return await runDeploymentCommand(
                 [
                   review.execution_tools.node_path,

@@ -41,6 +41,10 @@ export interface TelegramReview {
   readonly integration_allowlist?: readonly { bot_id: string; bot_epoch: string }[];
   readonly configs: Readonly<Partial<Record<TelegramPhase, TelegramFile>>>;
   readonly recovery_targets: Readonly<Record<"http" | "jobs", TelegramFile>>;
+  /** Exact original pair, usable only before any connect attempt or Telegram work. */
+  readonly baseline_recovery_targets?: Readonly<Record<"http" | "jobs", TelegramFile>>;
+  readonly baseline_compatibility?: TelegramFile;
+  readonly ordinary_service_acceptance?: TelegramFile;
   /** Fresh full readbacks independently bound before each forward phase. */
   readonly serving_workers?: Readonly<Record<"http" | "jobs", TelegramFile>>;
   readonly accepted_predecessor_reviews: readonly string[];

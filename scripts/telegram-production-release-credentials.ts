@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { safeToolEnvironment } from "./production-release/production-managed-environment.ts";
 import { fileHash } from "./public-post-http-release-source.ts";
 import {
@@ -13,12 +13,12 @@ import {
 } from "./telegram-production-release-policy.ts";
 
 interface CredentialContract {
-  readonly kind: "telegram-managed-create-only-contract-v1";
+  readonly kind: "telegram-managed-create-only-contract-v2";
   readonly accepted: true;
   readonly reviewer_role: "independent_reviewer";
   readonly findings: readonly never[];
   readonly origin: "https://app.infisical.com";
-  readonly profile: string;
+  readonly profile_sha256: string;
   readonly organization: string;
   readonly cli: TelegramFile;
   readonly evidence: readonly TelegramFile[];
@@ -43,12 +43,13 @@ function object(input: unknown): Json {
 export function credentialContract(reference: TelegramFile) {
   const c = telegramJson<CredentialContract>(reference);
   requireTelegram(
-    c.kind === "telegram-managed-create-only-contract-v1" &&
+    c.kind === "telegram-managed-create-only-contract-v2" &&
       c.accepted === true &&
       c.reviewer_role === "independent_reviewer" &&
       c.findings.length === 0 &&
       c.origin === "https://app.infisical.com" &&
-      c.profile.length > 0 &&
+      !Object.hasOwn(c, "profile") &&
+      /^[a-f0-9]{64}$/u.test(c.profile_sha256) &&
       c.organization.length > 0 &&
       c.atomic_create_only === true &&
       c.duplicate_refuses_without_update === true &&
@@ -59,6 +60,32 @@ export function credentialContract(reference: TelegramFile) {
   telegramFile(c.cli);
   for (const source of c.evidence) telegramFile(source);
   return c;
+}
+/** Only a digest leaves the reviewed contract. The actual selector stays in memory. */
+export function telegramManagedProfile(
+  input: unknown,
+  contract: Pick<CredentialContract, "origin" | "organization" | "profile_sha256">,
+  now: number,
+) {
+  const status = object(input);
+  requireTelegram(
+    Array.isArray(status.sessions) && status.sessions.length === 1,
+    "single-managed-user-session-required",
+  );
+  const session = object(status.sessions[0]);
+  requireTelegram(
+    session.principalType === "user" &&
+      session.status === "authenticated" &&
+      session.domain === contract.origin &&
+      typeof session.profile === "string" &&
+      session.profile.length > 0 &&
+      createHash("sha256").update(session.profile).digest("hex") === contract.profile_sha256 &&
+      session.organization === contract.organization &&
+      object(session.verification).state === "verified" &&
+      Number(object(session.token).exp) * 1000 > now + 300_000,
+    "fresh-existing-managed-session-required",
+  );
+  return session.profile;
 }
 /** Whitelist only non-secret metadata. Raw API errors and secret response bodies never escape. */
 export function telegramSecretMetadata(input: unknown): TelegramSecretMetadata {
@@ -146,25 +173,12 @@ export function managedTelegramVault(reference: TelegramFile, assertBound: () =>
       throw Error("managed-vault-command-refused");
     }
   };
-  const status = object(
-    JSON.parse(command("login", "status", "--json", "--profile", c.profile, "--silent")),
+  const profile = telegramManagedProfile(
+    JSON.parse(command("login", "status", "--json", "--silent")),
+    c,
+    Date.now(),
   );
-  requireTelegram(
-    Array.isArray(status.sessions) && status.sessions.length === 1,
-    "single-managed-user-session-required",
-  );
-  const session = object(status.sessions[0]);
-  requireTelegram(
-    session.principalType === "user" &&
-      session.status === "authenticated" &&
-      session.domain === c.origin &&
-      session.profile === c.profile &&
-      session.organization === c.organization &&
-      object(session.verification).state === "verified" &&
-      Number(object(session.token).exp) * 1000 > Date.now() + 300_000,
-    "fresh-existing-managed-session-required",
-  );
-  const token = command("user", "get", "token", "--plain", "--silent", "--profile", c.profile);
+  const token = command("user", "get", "token", "--plain", "--silent", "--profile", profile);
   requireTelegram(token.split(".").length === 3, "managed-token-unavailable");
   const claims = object(JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString()));
   requireTelegram(

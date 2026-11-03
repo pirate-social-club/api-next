@@ -75,7 +75,7 @@ const OPERATIONAL_ADAPTER_PATH = "scripts/telegram-production-release-credential
 /** Trusted policy bytes only. This admits source, never credentials or execution. */
 const OPERATIONAL_ADAPTER_ADMISSION = Object.freeze({
   path: OPERATIONAL_ADAPTER_PATH,
-  sha256: "de33a488b411a48e3a77c1690b20c8272c76655b1f8c03c2f2a6f41935cf365e",
+  sha256: "38a2b437d0e1c8871f17d47bac413e97aca332cbc5bcae668bd30a899e3d3d83",
 });
 
 /** Configuration validation is pure; callers cannot supply an audit exemption. */

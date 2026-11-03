@@ -82,6 +82,12 @@ Create a new32-byte wrapping key at versionv1 only through the separately review
 managed create-only contract. The installed CLI `secrets set` is an upsert and is
 excluded. The v4 POST endpoint, duplicate refusal, shared-secret unique index,
 managed login and actual service applicability require explicit contract evidence.
+The create-only contract uses `telegram-managed-create-only-contract-v2` with
+`profile_sha256`; literal-profile contracts are rejected. The hash-qualified CLI
+returns the sole existing session metadata only in memory. Its profile digest,
+user status, verified origin/organization and expiry must match before its actual
+selector is passed explicitly to the token command. Never put the selector or raw
+login output in a contract, log or evidence file. No alias or new profile is created.
 An approval response is not successful creation. Read back the same ID/version and
 operation metadata. Never copy staging material, update an unexpected key or print
 raw creation/error responses. Runtime secret values travel only in memory and the
@@ -119,6 +125,37 @@ remain visible even when their semantic configuration equals the current one.
 Queued, in-flight or uncertain work blocks traffic restoration until it has been
 reconciled read-only. Keys, migrations, catalogue decisions and Study history are
 retained. Recovery never deletes queued or immutable history to make a check pass.
+
+The separate `recover-baseline-http` and `recover-baseline-jobs` route restores only
+the fixed preincrement HTTP8ad/Jobs6862 versions. It is available before connection
+only and does not require a5a pause upload. HTTP requires the verified pause-intent
+phase; Jobs requires verified baseline HTTP recovery. Any connect attempt,
+verification, upload marker or resolution, including a resolved non-application,
+permanently excludes this route. Every durable global Telegram integration, setup,
+ingress, delivery, usage, identity, conversation or practice-session count must be
+zero. An empty active-work snapshot or approximate queue metric cannot override
+that requirement.
+
+This route additionally requires independently hashed `baseline_recovery_targets`
+and current `serving_workers` for both Workers plus `baseline_compatibility`.
+The `telegram-preconnect-baseline-compatibility-v1` review binds the exact original
+source pair, candidate5a, migration334 digest and nine-grant proposal digest. It
+must affirm additive schema/grants, ordinary website compatibility and immutable
+history preservation, with independently reviewed evidence. Current version,
+deployment, latest upload, disabled modes and all unrelated resources must match.
+The same checks run again after awaited managed guard preflights, immediately
+before the exclusive traffic marker and rollback. An already serving target needs
+no traffic write. A lost reply remains unresolved and is never retried.
+
+Before either connect phase, `ordinary_service_acceptance` must bind the independently
+accepted `telegram-disabled-ordinary-service-acceptance-v1` for this operation,
+fixed5a modules and deployed78ab artifact, with disabled-backend, website and ordinary-flow
+proof files. A prepared website artifact alone cannot satisfy this condition.
+After any connect attempt, use the existing5a pause/feature recovery
+and a compatible independently reviewed forward repair if ordinary service needs
+one. Baseline recovery after connection would need a separate ingress/in-flight
+fencing design and is outside this first practice increment. Keys, schema, catalogue
+decisions and history remain retained by either recovery route.
 
 The dependency preview inventories installed regular files and symlink targets
 conservatively, excluding only named build-cache directories. It also pins dynamic

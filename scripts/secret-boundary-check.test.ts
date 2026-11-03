@@ -213,7 +213,7 @@ describe("fixed operational credential adapter admission", () => {
     new URL("./telegram-production-release-credentials.ts", import.meta.url),
     "utf8",
   );
-  const sha256 = "de33a488b411a48e3a77c1690b20c8272c76655b1f8c03c2f2a6f41935cf365e";
+  const sha256 = "38a2b437d0e1c8871f17d47bac413e97aca332cbc5bcae668bd30a899e3d3d83";
 
   test("admits the real reviewed adapter bytes only at their exact reserved path", () => {
     expect(createHash("sha256").update(content).digest("hex")).toBe(sha256);
