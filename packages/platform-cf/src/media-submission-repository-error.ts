@@ -21,7 +21,8 @@ type MediaSubmissionRepositoryOperation =
   | "attempt"
   | "failure"
   | "workflow"
-  | "abandon";
+  | "abandon"
+  | "stems";
 type MediaSubmissionRepositoryReason =
   | "invalid-input"
   | "not-found"

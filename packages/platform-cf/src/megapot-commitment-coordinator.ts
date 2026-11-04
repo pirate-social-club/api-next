@@ -7,6 +7,7 @@ import {
 import type { MegapotPublishedSnapshot } from "@pirate/domain";
 import { Effect } from "effect";
 import { sha256, toBytes } from "viem";
+import type { RewardRunAuthority } from "./reward-operations-control.ts";
 
 const rejected = (reason: MegapotCommitmentRejected["reason"]) =>
   new MegapotCommitmentRejected({ reason });
@@ -56,6 +57,7 @@ export function makeMegapotCommitmentCoordinator(input: {
   readonly store: MegapotCommitmentStore;
   readonly signer: MegapotCommitmentSigner;
   readonly publisher: MegapotCommitmentPublisher;
+  readonly authority: RewardRunAuthority;
   readonly now?: () => number;
 }): MegapotCommitmentCoordinator {
   const now = input.now ?? Date.now;
@@ -71,6 +73,9 @@ export function makeMegapotCommitmentCoordinator(input: {
       let progress = existing;
       if (progress === null) {
         if (!candidate.canPrepare) return yield* rejected("drawing-not-frozen");
+        // Signing needs authority. A commitment has no chain effect row, so this
+        // check and the one before publication are its only enforcement.
+        yield* input.authority.ensure();
         const signature = yield* Effect.tryPromise({
           try: () => input.signer.sign(toBytes(payload)),
           catch: () => rejected("signer-unavailable"),
@@ -88,6 +93,9 @@ export function makeMegapotCommitmentCoordinator(input: {
         });
       }
       if (progress.payloadHash !== payloadHash) return yield* rejected("payload-conflict");
+      // Publishing needs authority too, on a resumed commitment as much as a new
+      // one, and outside the handling that reports the publisher as unavailable.
+      yield* input.authority.ensure();
       const publication = yield* Effect.tryPromise({
         try: () =>
           input.publisher.publish({

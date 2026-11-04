@@ -51,6 +51,7 @@ export type MediaUploadHandlerServices = Readonly<{
     input: Readonly<{ submissionId: string; actor: MediaHandlerActor }> & MediaRequestLifetime,
   ) => unknown | Promise<unknown>;
   readonly bindReference: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
+  readonly attachStem: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly retry: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly retryPoster: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
   readonly cancel: (input: MediaHandlerCommand) => unknown | Promise<unknown>;
@@ -68,6 +69,7 @@ export type MediaUploadHandlers = Readonly<{
   readonly RenewVideoUploadParts: EndpointHandler;
   readonly GetMediaPostSubmission: EndpointHandler;
   readonly BindMediaPostSubmissionReference: EndpointHandler;
+  readonly AttachMediaPostSubmissionStem: EndpointHandler;
   readonly RetryMediaPostSubmission: EndpointHandler;
   readonly RetryVideoPostSubmissionPoster: EndpointHandler;
   readonly CancelMediaPostSubmission: EndpointHandler;
@@ -179,6 +181,15 @@ export function makeMediaUploadHandlers(services: MediaUploadHandlerServices): M
     BindMediaPostSubmissionReference: (request) => {
       const path = request.params as { readonly submissionId: string };
       return services.bindReference({
+        submissionId: path.submissionId,
+        actor: actor(request.principal),
+        body: request.body,
+        ...requestLifetime(request),
+      });
+    },
+    AttachMediaPostSubmissionStem: (request) => {
+      const path = request.params as { readonly submissionId: string };
+      return services.attachStem({
         submissionId: path.submissionId,
         actor: actor(request.principal),
         body: request.body,

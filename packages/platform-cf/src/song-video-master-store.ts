@@ -28,14 +28,17 @@ const discard = async (body: ReadableStream<Uint8Array>): Promise<void> => {
   await body.cancel().catch(() => undefined);
 };
 
-export function makeR2SongVideoOutputStore(bucket: R2Bucket): SongVideoOutputStore {
+export function makeR2SongVideoOutputStore(
+  bucket: R2Bucket,
+  maxReadBytes: number = SONG_VIDEO_MASTER_POLICY_V1.maxBytes,
+): SongVideoOutputStore {
   return {
     read: async (objectKey) => {
       const object = await bucket.get(mediaProcessingPhysicalObjectKey(objectKey));
       if (object === null) return null;
       // Refuse an oversized object before allocating, so a wrong key cannot buy
       // an allocation past the ratified ceiling.
-      if (!withinReadBound(object.size)) {
+      if (!withinReadBound(object.size) || object.size > maxReadBytes) {
         await discard(object.body);
         return null;
       }
@@ -50,7 +53,11 @@ export function makeR2SongVideoOutputStore(bucket: R2Bucket): SongVideoOutputSto
       if (object === null) return null;
       // A stale or oversized object is refused before a byte is buffered. The
       // identity compared is the normalized ETag, the one both APIs expose.
-      if (normalizeObjectEtag(object.etag) !== objectVersion || !withinReadBound(object.size)) {
+      if (
+        normalizeObjectEtag(object.etag) !== objectVersion ||
+        !withinReadBound(object.size) ||
+        object.size > maxReadBytes
+      ) {
         await discard(object.body);
         return null;
       }

@@ -333,7 +333,9 @@ export function decideHnsRootImportLifecycleV1(
             next_check_at_epoch_ms: event.occurred_at_epoch_ms + cadenceMs,
           },
           "plan_exposed",
-          [],
+          // A real chain fact outranks the acknowledgement ceremony, so the
+          // lifecycle observes from exposure on, at the checking cadence.
+          [{ kind: "observe_current", due_at_epoch_ms: event.occurred_at_epoch_ms + cadenceMs }],
         );
       }
       if (state.phase === "activated") return pending(state, "activated_root", null);
@@ -345,7 +347,15 @@ export function decideHnsRootImportLifecycleV1(
     case "publication_acknowledged": {
       if (state.phase === "preparing") return rejection("acknowledgement_without_plan");
       if (state.phase === "awaiting_publication") {
-        return withState(state, { phase: "checking_publication" }, "acknowledged", []);
+        // The owner asked for a check: the scheduled current observation
+        // becomes due now. The decision writer reschedules the queued job
+        // rather than adding a second one.
+        return withState(
+          state,
+          { phase: "checking_publication", next_check_at_epoch_ms: event.occurred_at_epoch_ms },
+          "acknowledged",
+          [{ kind: "observe_current", due_at_epoch_ms: event.occurred_at_epoch_ms }],
+        );
       }
       if (state.phase === "recovery_required") return pending(state, "recovery_hold", null);
       return replay("acknowledgement_replay");

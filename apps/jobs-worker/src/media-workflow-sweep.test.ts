@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import type { AlignmentRecoveryLookupDiagnostic } from "../../../packages/application/src/media/alignment-recovery-diagnostics.ts";
 import type {
   MediaProcessingAuthority,
   MediaProcessingCommit,
@@ -8,6 +9,7 @@ import type {
 } from "../../../packages/application/src/media/processing-contracts.ts";
 import { consumeMediaProcessingQueueMessage } from "../../../packages/application/src/media/processing-queue.ts";
 import { dispatchEligibleMediaOutbox } from "./media-outbox-dispatch.ts";
+import { observeMediaWorkflowRecovery } from "./media-runtime.ts";
 import { sweepMissingMediaWorkflows } from "./media-workflow-sweep.ts";
 
 const candidate = (
@@ -47,6 +49,129 @@ const candidate = (
 });
 
 describe("media Workflow missing-instance sweep", () => {
+  test.each(["stored", "workflow-lookup", "recovery-lookup", "storage"] as const)(
+    "downgrades only a known stored failure while preserving %s failure logging",
+    async (failure) => {
+      const warnings: string[] = [];
+      const errors: string[] = [];
+      const warn = spyOn(console, "warn").mockImplementation((message) => {
+        warnings.push(String(message));
+      });
+      const error = spyOn(console, "error").mockImplementation((message) => {
+        errors.push(String(message));
+      });
+      const current = candidate({ status: "published" });
+      const unavailable = async () => {
+        throw new Error("private storage detail");
+      };
+      try {
+        const result = await sweepMissingMediaWorkflows({
+          store: {
+            listWorkflowCandidates: async () => [current],
+            loadAuthority: unavailable,
+            reconcileTerminalWorkflow: unavailable,
+            replaceMissingWorkflow: unavailable,
+          },
+          workflow: {
+            get: failure === "workflow-lookup" ? unavailable : async () => "finished",
+            getRecoveryFailure:
+              failure === "recovery-lookup"
+                ? unavailable
+                : async () =>
+                    failure === "stored"
+                      ? {
+                          outcome: "alignment_recovery_lookup_stale",
+                          reason: "malformed_recovery_identifiers",
+                        }
+                      : null,
+          },
+          observe: observeMediaWorkflowRecovery,
+        });
+        expect(result.replaced).toBe(0);
+        expect(warnings).toHaveLength(failure === "stored" ? 1 : 0);
+        expect(errors).toHaveLength(failure === "stored" ? 0 : 1);
+        expect([...warnings, ...errors].join()).not.toContain("private storage detail");
+        const logged = [...warnings, ...errors][0];
+        if (logged === undefined) throw new Error("Expected a recovery diagnostic");
+        const diagnostic = JSON.parse(logged);
+        expect(diagnostic.failure_class).toBe(
+          failure === "workflow-lookup"
+            ? "workflow_lookup_failed"
+            : "workflow_terminal_recovery_failed",
+        );
+        if (failure === "stored")
+          expect(diagnostic.recovery_failure.reason).toBe("malformed_recovery_identifiers");
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  test.each([
+    { outcome: "alignment_recovery_lookup_stale", reason: "malformed_artifact" },
+    {
+      outcome: "alignment_recovery_lookup_failed",
+      reason: {
+        errorClass: "ControlPlaneAcquireFailed",
+        code: null,
+        query: "media-processing.alignment-recovery-authorization",
+      },
+    },
+  ] satisfies AlignmentRecoveryLookupDiagnostic[])(
+    "preserves terminal recovery diagnostic $outcome without replacing or consuming recovery",
+    async (diagnostic) => {
+      const current = candidate({
+        status: "published",
+        postId: "post-1",
+        publishedLyricsRevision: 1,
+      });
+      const observations: unknown[] = [];
+      const refuse = async () => {
+        throw new Error("terminal lookup must preserve authority");
+      };
+      const result = await sweepMissingMediaWorkflows({
+        store: {
+          listWorkflowCandidates: async () => [current],
+          loadAuthority: refuse,
+          reconcileTerminalWorkflow: refuse,
+          replaceMissingWorkflow: refuse,
+        },
+        workflow: { get: async () => "finished", getRecoveryFailure: async () => diagnostic },
+        observe: (entry) => observations.push(entry),
+      });
+      expect(result).toMatchObject({ finished: 1, recoveryFailed: 1, reconciled: 0, replaced: 0 });
+      expect(observations).toEqual([
+        {
+          event: "workflow_terminal_recovery_failed",
+          operationId: current.operationId,
+          submissionId: current.submissionId,
+          workflowRevision: current.workflowRevision,
+          recoveryFailure: diagnostic,
+        },
+      ]);
+    },
+  );
+  test("does not reconcile when terminal-error observation is unavailable", async () => {
+    const current = candidate({ status: "published" });
+    const refuse = async () => {
+      throw new Error("must preserve authority");
+    };
+    const observations: unknown[] = [];
+    expect(
+      await sweepMissingMediaWorkflows({
+        store: {
+          listWorkflowCandidates: async () => [current],
+          loadAuthority: refuse,
+          reconcileTerminalWorkflow: refuse,
+          replaceMissingWorkflow: refuse,
+        },
+        workflow: { get: async () => "finished", getRecoveryFailure: refuse },
+        observe: (entry) => observations.push(entry),
+      }),
+    ).toMatchObject({ recoveryFailed: 1, reconciled: 0, replaced: 0 });
+    expect(JSON.stringify(observations)).not.toContain("must preserve authority");
+  });
   test.each(["action_required", "manual_review"] as const)(
     "restores the event target for a finished %s wait",
     async (status) => {
@@ -65,7 +190,7 @@ describe("media Workflow missing-instance sweep", () => {
             return "committed";
           },
         },
-        workflow: { get: async () => "finished" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "finished" },
       });
       expect(result).toMatchObject({ finished: 1, replaced: 1, recoveryFailed: 0 });
       expect(replacements).toBe(1);
@@ -87,7 +212,7 @@ describe("media Workflow missing-instance sweep", () => {
             throw new Error("must preserve replacement ceiling");
           },
         },
-        workflow: { get: async () => "finished" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "finished" },
       });
       expect(result).toMatchObject({
         finished: 1,
@@ -119,7 +244,7 @@ describe("media Workflow missing-instance sweep", () => {
           return "committed";
         },
       },
-      workflow: { get: async () => "finished" },
+      workflow: { getRecoveryFailure: async () => null, get: async () => "finished" },
       observe: (observation) => observations.push(observation),
     });
     expect(result).toMatchObject({ recoveryFailed: 1, replaced: 1 });
@@ -187,7 +312,7 @@ describe("media Workflow missing-instance sweep", () => {
     expect(
       await sweepMissingMediaWorkflows({
         store,
-        workflow: { get: async () => "missing" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "missing" },
       }),
     ).toMatchObject({ replaced: 1 });
 
@@ -203,6 +328,7 @@ describe("media Workflow missing-instance sweep", () => {
             store: store as unknown as MediaProcessingStore,
             workerId: "replacement-consumer-1",
             workflow: {
+              getRecoveryFailure: async () => null,
               get: async () => "missing",
               create: async (instanceId, payload) => {
                 launches.push({ instanceId, payload });
@@ -253,7 +379,7 @@ describe("media Workflow missing-instance sweep", () => {
           return "committed";
         },
       },
-      workflow: { get: async () => "missing" as const },
+      workflow: { getRecoveryFailure: async () => null, get: async () => "missing" as const },
       observe: (event: { workflowRevision?: number }) => {
         if (event.workflowRevision !== undefined) observed.push(event.workflowRevision);
       },
@@ -290,7 +416,7 @@ describe("media Workflow missing-instance sweep", () => {
           return "committed";
         },
       },
-      workflow: { get: async () => "missing" },
+      workflow: { getRecoveryFailure: async () => null, get: async () => "missing" },
     });
     expect(result).toEqual({
       inspected: 1,
@@ -317,7 +443,7 @@ describe("media Workflow missing-instance sweep", () => {
           return "committed";
         },
       },
-      workflow: { get: async () => "present" },
+      workflow: { getRecoveryFailure: async () => null, get: async () => "present" },
     });
     expect(present).toEqual({
       inspected: 1,
@@ -345,7 +471,7 @@ describe("media Workflow missing-instance sweep", () => {
           loadAuthority: async () => active,
           replaceMissingWorkflow: async () => "replay",
         },
-        workflow: { get: async () => "missing" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "missing" },
       }),
     ).toEqual({
       inspected: 1,
@@ -377,7 +503,7 @@ describe("media Workflow missing-instance sweep", () => {
             return "committed";
           },
         },
-        workflow: { get: async () => "missing" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "missing" },
       }),
     ).toEqual({
       inspected: 1,
@@ -422,7 +548,7 @@ describe("media Workflow missing-instance sweep", () => {
             return "committed";
           },
         },
-        workflow: { get: async () => "missing" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "missing" },
       }),
     ).toEqual({
       inspected: 1,
@@ -462,7 +588,7 @@ describe("media Workflow missing-instance sweep", () => {
             return "committed";
           },
         },
-        workflow: { get: async () => "missing" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "missing" },
       }),
     ).toEqual({
       inspected: 1,
@@ -497,6 +623,7 @@ describe("media Workflow missing-instance sweep", () => {
           },
         },
         workflow: {
+          getRecoveryFailure: async () => null,
           get: async (instanceId: string) => {
             if (instanceId.includes("operation-failing")) throw new Error("workflow api down");
             return "missing" as const;
@@ -542,6 +669,7 @@ describe("media Workflow missing-instance sweep", () => {
           },
         },
         workflow: {
+          getRecoveryFailure: async () => null,
           get: async (instanceId: string) =>
             instanceId.includes("operation-failing") ? "finished" : "missing",
         },
@@ -577,7 +705,7 @@ describe("media Workflow missing-instance sweep", () => {
             return "committed";
           },
         },
-        workflow: { get: async () => "finished" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "finished" },
         observe: (event: { event: string }) => observed.push(event.event),
       }),
     ).toEqual({
@@ -612,7 +740,7 @@ describe("media Workflow missing-instance sweep", () => {
             return "committed";
           },
         },
-        workflow: { get: async () => "finished" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "finished" },
         observe: (event: { event: string }) => observed.push(event.event),
       }),
     ).toEqual({
@@ -647,7 +775,7 @@ describe("media Workflow missing-instance sweep", () => {
           return "committed" as const;
         },
       },
-      workflow: { get: async () => "missing" as const },
+      workflow: { getRecoveryFailure: async () => null, get: async () => "missing" as const },
     };
     const [first, second] = await Promise.all([
       sweepMissingMediaWorkflows(dependencies),
@@ -672,7 +800,7 @@ describe("media Workflow missing-instance sweep", () => {
             return "committed";
           },
         },
-        workflow: { get: async () => "indeterminate" },
+        workflow: { getRecoveryFailure: async () => null, get: async () => "indeterminate" },
       }),
     ).toEqual({
       inspected: 1,

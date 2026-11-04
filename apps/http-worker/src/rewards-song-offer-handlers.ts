@@ -10,8 +10,12 @@ import {
   type RewardFundingIntent,
   type RewardFundingPlanner,
   type RewardFundingStore,
+  type RewardGasTopupFailure,
+  type RewardGasTopupRequester,
   type RewardProjectionFailure,
   type RewardProjectionStore,
+  type RewardWinnerSendRecord,
+  type RewardWinnerSendService,
   type SongRewardOffer,
   type SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
@@ -23,12 +27,14 @@ import {
   NotFound,
   ProviderUnavailable,
   RetryableConflict,
+  RewardsPaused,
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";
 import { withEndpointResult } from "./transport.ts";
 
 export type SongRewardOfferHandlerServices = Readonly<{
+  requireRewardOperationsRunning: () => Promise<void>;
   rewardCatalogAuthority: Readonly<{
     environment: "test" | "staging";
     attestationId: string;
@@ -39,6 +45,10 @@ export type SongRewardOfferHandlerServices = Readonly<{
   funding: RewardFundingPlanner;
   fundingStore: RewardFundingStore;
   projections: RewardProjectionStore;
+  /** Null when the gas top-up limits or gas wallet are not configured. */
+  gasTopups?: RewardGasTopupRequester | null;
+  /** Null when the chain client cannot serve winner sends. */
+  winnerSends?: RewardWinnerSendService | null;
   requiredConfirmations: number;
   externalFallbackPolicy: Readonly<{
     referralAllocationVersion: string;
@@ -60,6 +70,15 @@ export type SongRewardOfferHandlers = Readonly<{
   ListSongAssetBonuses: EndpointHandler;
   GetMegapotPoolStanding: EndpointHandler;
   ListMyRewardCredits: EndpointHandler;
+  ClaimRewardCredit: EndpointHandler;
+  IssueRewardClaimVerificationIntent: EndpointHandler;
+  RequestRewardGasTopup: EndpointHandler;
+  GetRewardGasTopup: EndpointHandler;
+  CreateRewardWinnerSend: EndpointHandler;
+  GetRewardCreditWinnerSend: EndpointHandler;
+  AttachRewardWinnerSendTransaction: EndpointHandler;
+  CancelRewardWinnerSend: EndpointHandler;
+  GetRewardWinnerSend: EndpointHandler;
 }>;
 
 const rewardUnavailable = (): never => {
@@ -87,6 +106,15 @@ export function makeUnavailableSongRewardOfferHandlers(): SongRewardOfferHandler
     ListSongAssetBonuses: rewardUnavailable,
     GetMegapotPoolStanding: rewardUnavailable,
     ListMyRewardCredits: rewardUnavailable,
+    ClaimRewardCredit: rewardUnavailable,
+    IssueRewardClaimVerificationIntent: rewardUnavailable,
+    RequestRewardGasTopup: rewardUnavailable,
+    GetRewardGasTopup: rewardUnavailable,
+    CreateRewardWinnerSend: rewardUnavailable,
+    GetRewardCreditWinnerSend: rewardUnavailable,
+    AttachRewardWinnerSendTransaction: rewardUnavailable,
+    CancelRewardWinnerSend: rewardUnavailable,
+    GetRewardWinnerSend: rewardUnavailable,
   };
 }
 
@@ -135,6 +163,15 @@ export function makeLazySongRewardOfferHandlers(
     ListSongAssetBonuses: handler("ListSongAssetBonuses"),
     GetMegapotPoolStanding: handler("GetMegapotPoolStanding"),
     ListMyRewardCredits: handler("ListMyRewardCredits"),
+    ClaimRewardCredit: handler("ClaimRewardCredit"),
+    IssueRewardClaimVerificationIntent: handler("IssueRewardClaimVerificationIntent"),
+    RequestRewardGasTopup: handler("RequestRewardGasTopup"),
+    GetRewardGasTopup: handler("GetRewardGasTopup"),
+    CreateRewardWinnerSend: handler("CreateRewardWinnerSend"),
+    GetRewardCreditWinnerSend: handler("GetRewardCreditWinnerSend"),
+    AttachRewardWinnerSendTransaction: handler("AttachRewardWinnerSendTransaction"),
+    CancelRewardWinnerSend: handler("CancelRewardWinnerSend"),
+    GetRewardWinnerSend: handler("GetRewardWinnerSend"),
   };
 }
 
@@ -156,6 +193,8 @@ function optionalAccountId(principal: Principal | null): string | null {
 
 function wireFailure(error: unknown): Error {
   const tagged = error as { readonly _tag?: string; readonly reason?: string };
+  if (tagged._tag === "RewardOperationsPaused")
+    return new RewardsPaused({ message: "Rewards are paused" });
   if (tagged._tag === "SongRewardOfferRejected") {
     if (tagged.reason === "qualification-policy-changed")
       return new Conflict({ message: "Qualification policy changed; refresh reward terms" });
@@ -204,6 +243,53 @@ function wireFailure(error: unknown): Error {
     return tagged.reason === "not-found"
       ? new NotFound({ message: "Reward projection is unavailable" })
       : new BadRequest({ message: "Reward projection cursor is invalid" });
+  }
+  if (tagged._tag === "RewardGasTopupRejected") {
+    if (tagged.reason === "not-found") {
+      return new NotFound({ message: "Gas top-up target is unavailable" });
+    }
+    if (tagged.reason === "gas-wallet-unavailable") {
+      return new ProviderUnavailable({ message: "Gas top-ups are unavailable" });
+    }
+    return new Conflict({ message: "Gas top-up conflicts with durable state" });
+  }
+  if (tagged._tag === "RewardGasTopupStorageFailed") {
+    return tagged.reason === "unavailable" || tagged.reason === "outcome-unknown"
+      ? new ProviderUnavailable({ message: "Gas top-up storage is unavailable" })
+      : new InternalError({ message: "Gas top-up failed" });
+  }
+  if (tagged._tag === "RewardGasTopupBalanceUnavailable") {
+    return new ProviderUnavailable({ message: "Gas top-up balance is unavailable" });
+  }
+  if (tagged._tag === "RewardWinnerSendRejected") {
+    if (tagged.reason === "not-found") {
+      return new NotFound({ message: "Winner send target is unavailable" });
+    }
+    if (tagged.reason === "invalid-recipient" || tagged.reason === "invalid-amount") {
+      return new BadRequest({ message: "Winner send recipient or amount is invalid" });
+    }
+    if (tagged.reason === "sender-busy") {
+      return new Conflict({ message: "Another send from this wallet is in progress" });
+    }
+    if (
+      tagged.reason === "transaction-not-found" ||
+      tagged.reason === "nonce-not-consumed" ||
+      tagged.reason === "status-contended"
+    ) {
+      return new RetryableConflict({ message: "Winner send chain state is not yet visible" });
+    }
+    return new Conflict({ message: "Winner send conflicts with durable state" });
+  }
+  if (tagged._tag === "RewardWinnerSendStorageFailed") {
+    if (tagged.reason === "conflict") {
+      return new Conflict({ message: "Winner send conflicts with durable state" });
+    }
+    return tagged.reason === "unavailable" || tagged.reason === "outcome-unknown"
+      ? new ProviderUnavailable({ message: "Winner send storage is unavailable" })
+      : new InternalError({ message: "Winner send failed" });
+  }
+  if (tagged._tag === "RewardWinnerSendChainUnavailable") {
+    return new ProviderUnavailable({ message: "Winner send chain reads are unavailable" });
   }
   if (tagged._tag === "RewardProjectionStorageFailed") {
     return new InternalError({ message: "Reward projection failed" });
@@ -263,12 +349,20 @@ const assetLeg = (value: AssetBonusLeg) => ({
   leg_terms_hash: value.legTermsHash,
 });
 
+// An ended, unbound instruction has no mined revert. Preserve ambiguity if a hash exists.
+const fundingStatus = (value: RewardFundingIntent) =>
+  value.state === "reclaimable_failed"
+    ? value.transactionHash === null
+      ? ("expired_unfunded" as const)
+      : ("reconciliation_required" as const)
+    : value.state;
+
 const funding = (value: RewardFundingIntent) => ({
   object: "megapot_pool_funding" as const,
   action: "fund_with_usdc" as const,
   funding_effect_id: value.fundingEffectId,
   leg_id: value.legId,
-  status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
+  status: fundingStatus(value),
   chain_id: value.chainId as 84_532,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals as 6,
@@ -285,7 +379,7 @@ const assetFunding = (value: RewardFundingIntent) => ({
   action: "fund_with_asset" as const,
   funding_effect_id: value.fundingEffectId,
   leg_id: value.legId,
-  status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
+  status: fundingStatus(value),
   chain_id: value.chainId as 84_532,
   token_address: value.tokenAddress,
   token_decimals: value.tokenDecimals,
@@ -389,7 +483,41 @@ const rewardCredit = (value: RewardCredit) => ({
   created_at: value.createdAt,
   updated_at: value.updatedAt,
   settled_at: value.settledAt,
+  claim:
+    value.claim === null
+      ? null
+      : { status: value.claim.status, payout_status: value.claim.payoutStatus },
+  send: value.send === null ? null : { send_id: value.send.sendId, status: value.send.status },
 });
+
+const winnerSend = (value: RewardWinnerSendRecord) => {
+  if (value.nonce > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new InternalError({ message: "Winner send failed" });
+  }
+  return {
+    object: "reward_winner_send" as const,
+    send_id: value.sendId,
+    credit_id: value.creditId,
+    status: value.status,
+    chain_id: value.chainId as 84_532,
+    sender: value.senderAddress,
+    recipient: value.recipientAddress,
+    token_address: value.tokenAddress,
+    amount_atomic: value.amountAtomic.toString(),
+    nonce: Number(value.nonce),
+    attempt: value.attempt,
+    transaction_hashes: value.transactionHashes,
+    cancellation_hashes: value.cancellationHashes,
+  };
+};
+
+/** The account is the signed-in user, never a request field. */
+function sessionUser(principal: Principal | null): string {
+  if (principal === null || principal.kind !== "user") {
+    throw new AuthError({ message: "Authentication required" });
+  }
+  return principal.subject;
+}
 
 export function makeSongRewardOfferHandlers(
   services: SongRewardOfferHandlerServices,
@@ -400,6 +528,13 @@ export function makeSongRewardOfferHandlers(
     requiredConfirmations: services.requiredConfirmations,
     externalFallbackPolicy: services.externalFallbackPolicy,
   });
+  const requireWinnerSends = (): RewardWinnerSendService => {
+    const winnerSends = services.winnerSends ?? null;
+    if (winnerSends === null) {
+      throw new ProviderUnavailable({ message: "Winner sends are unavailable" });
+    }
+    return winnerSends;
+  };
   const run = <A, E>(effect: Effect.Effect<A, E, Clock | IdGen>) =>
     Effect.runPromise(
       effect.pipe(
@@ -433,6 +568,7 @@ export function makeSongRewardOfferHandlers(
     },
     OpenSongRewardOffer: async (request) => {
       const principal = user(request.principal);
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly communityId: string; readonly postId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -458,7 +594,7 @@ export function makeSongRewardOfferHandlers(
     },
     AddMegapotPoolLeg: async (request) => {
       const principal = user(request.principal);
-      if (principal.wallet === null) throw new AuthError({ message: "Wallet session required" });
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -475,6 +611,14 @@ export function makeSongRewardOfferHandlers(
         readonly fallback_payout_persona_id: string | null;
         readonly fallback_disclosure_acknowledged: boolean;
       };
+      // The sender is never read from the request or the session: it is the
+      // chosen persona's single active wallet, owned by this account.
+      const senderAddress = await run(
+        services.store.fundingSender({
+          accountId: principal.accountId,
+          personaId: body.persona_id,
+        }),
+      );
       const result = await run(
         rewards.addMegapotPoolLeg({
           accountId: principal.accountId,
@@ -484,7 +628,7 @@ export function makeSongRewardOfferHandlers(
           ...(body.expected_qualification_policy_versions === undefined
             ? {}
             : { expectedQualificationPolicyVersions: body.expected_qualification_policy_versions }),
-          senderAddress: principal.wallet,
+          senderAddress,
           fundingAmountAtomic: BigInt(body.funding_amount_atomic),
           maxTicketPriceAtomic: BigInt(body.max_ticket_price_atomic),
           entryCutoffSeconds: body.entry_cutoff_seconds,
@@ -506,7 +650,7 @@ export function makeSongRewardOfferHandlers(
     },
     AddAssetBonusLeg: async (request) => {
       const principal = user(request.principal);
-      if (principal.wallet === null) throw new AuthError({ message: "Wallet session required" });
+      await services.requireRewardOperationsRunning();
       const path = request.params as { readonly offerId: string };
       const body = request.body as {
         readonly idempotency_key: string;
@@ -523,6 +667,14 @@ export function makeSongRewardOfferHandlers(
         readonly amount_per_claim_atomic: string;
         readonly max_claims: number;
       };
+      // The sender is never read from the request or the session: it is the
+      // chosen persona's single active wallet, owned by this account.
+      const senderAddress = await run(
+        services.store.fundingSender({
+          accountId: principal.accountId,
+          personaId: body.persona_id,
+        }),
+      );
       const result = await run(
         rewards.addAssetBonusLeg({
           accountId: principal.accountId,
@@ -532,7 +684,7 @@ export function makeSongRewardOfferHandlers(
           ...(body.expected_qualification_policy_versions === undefined
             ? {}
             : { expectedQualificationPolicyVersions: body.expected_qualification_policy_versions }),
-          senderAddress: principal.wallet,
+          senderAddress,
           fundingAmountAtomic: BigInt(body.funding_amount_atomic),
           chainId: body.chain_id,
           tokenAddress: body.token_address,
@@ -590,6 +742,7 @@ export function makeSongRewardOfferHandlers(
       ) {
         throw new NotFound({ message: "Reward funding target is unavailable" });
       }
+      if (intent.transactionHash === null) await services.requireRewardOperationsRunning();
       return { funding: funding(intent) };
     },
     ObserveAssetBonusFunding: async (request) => {
@@ -630,6 +783,7 @@ export function makeSongRewardOfferHandlers(
       ) {
         throw new NotFound({ message: "Reward funding target is unavailable" });
       }
+      if (intent.transactionHash === null) await services.requireRewardOperationsRunning();
       return { funding: assetFunding(intent) };
     },
     GetSongMegapotPool: async (request) => {
@@ -698,6 +852,153 @@ export function makeSongRewardOfferHandlers(
         object: "reward_credit_list" as const,
         items: result.items.map(rewardCredit),
         next_cursor: result.nextCursor,
+      };
+    },
+    ClaimRewardCredit: async (request) => {
+      // Spec 015 §5.2a: the claiming account is the signed-in user, never a
+      // request field, because the database routine trusts its account.
+      const principal = request.principal;
+      if (principal === null || principal.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const path = request.params as { readonly creditId: string };
+      const result = await Effect.runPromise(
+        services.projections
+          .claimCredit({ accountId: principal.subject, creditId: path.creditId })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
+      );
+      return { outcome: result.outcome, credit: rewardCredit(result.credit) };
+    },
+    IssueRewardClaimVerificationIntent: async (request) => {
+      const principal = request.principal;
+      if (principal === null || principal.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const result = await Effect.runPromise(
+        services.projections
+          .issueClaimVerificationIntent({ accountId: principal.subject })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
+      );
+      return { intent_id: result.intentId, provider_id: "very.web" as const };
+    },
+    RequestRewardGasTopup: async (request) => {
+      // The account is the signed-in user, never a request field.
+      const principal = request.principal;
+      if (principal === null || principal.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const gasTopups = services.gasTopups ?? null;
+      if (gasTopups === null) {
+        throw new ProviderUnavailable({ message: "Gas top-ups are unavailable" });
+      }
+      const body = request.body as {
+        readonly credit_id: string;
+        readonly idempotency_key: string;
+      };
+      const result = await Effect.runPromise(
+        gasTopups
+          .request({
+            accountId: principal.subject,
+            creditId: body.credit_id,
+            idempotencyKey: body.idempotency_key,
+          })
+          .pipe(Effect.mapError((error) => wireFailure(error))),
+      );
+      return {
+        status: result.status,
+        topup_id: result.topupId,
+        amount_wei: result.amountWei?.toString() ?? null,
+      };
+    },
+    CreateRewardWinnerSend: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly creditId: string };
+      const body = request.body as {
+        readonly recipient: string;
+        readonly amount_atomic: string;
+        readonly idempotency_key: string;
+      };
+      const record = await Effect.runPromise(
+        winnerSends
+          .request({
+            accountId,
+            creditId: path.creditId,
+            recipientAddress: body.recipient,
+            amountAtomic: BigInt(body.amount_atomic),
+            idempotencyKey: body.idempotency_key,
+          })
+          .pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    GetRewardCreditWinnerSend: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly creditId: string };
+      const record = await Effect.runPromise(
+        winnerSends
+          .getByCredit({ accountId, creditId: path.creditId })
+          .pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    AttachRewardWinnerSendTransaction: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly sendId: string };
+      const body = request.body as { readonly transaction_hash: string };
+      const record = await Effect.runPromise(
+        winnerSends
+          .attachTransaction({
+            accountId,
+            sendId: path.sendId,
+            transactionHash: body.transaction_hash,
+          })
+          .pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    CancelRewardWinnerSend: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly sendId: string };
+      const body = request.body as { readonly transaction_hash: string };
+      const record = await Effect.runPromise(
+        winnerSends
+          .cancel({ accountId, sendId: path.sendId, transactionHash: body.transaction_hash })
+          .pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    GetRewardWinnerSend: async (request) => {
+      const accountId = sessionUser(request.principal);
+      const winnerSends = requireWinnerSends();
+      const path = request.params as { readonly sendId: string };
+      const record = await Effect.runPromise(
+        winnerSends.get({ accountId, sendId: path.sendId }).pipe(Effect.mapError(wireFailure)),
+      );
+      return winnerSend(record);
+    },
+    GetRewardGasTopup: async (request) => {
+      const principal = request.principal;
+      if (principal === null || principal.kind !== "user") {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      const gasTopups = services.gasTopups ?? null;
+      if (gasTopups === null) {
+        throw new ProviderUnavailable({ message: "Gas top-ups are unavailable" });
+      }
+      const path = request.params as { readonly topupId: string };
+      const topup = await Effect.runPromise(
+        gasTopups
+          .get({ accountId: principal.subject, topupId: path.topupId })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardGasTopupFailure))),
+      );
+      return {
+        status: topup.status,
+        amount_wei: topup.amountWei.toString(),
+        transaction_hash: topup.transactionHash,
       };
     },
   };

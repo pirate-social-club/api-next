@@ -1,10 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import {
+  assessStudySpokenRerecord,
+  gradeTranscriptV2,
+  STUDY_TRANSCRIPT_GRADER_POLICY_V2,
+  type StudyTranscriptGradeV2,
+} from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { type ControlPlaneDb, makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 import { makeControlPlaneStudyV2Repository } from "./study-v2-repository.ts";
+import { defaultStudySpokenEvidence } from "./study-v2-spoken-test-evidence.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -28,7 +37,8 @@ const digest = async (value: string): Promise<string> =>
  * persona, one published song and four say-it-back exercises. Copied from the
  * lifecycle suite so both review the same database shape.
  */
-async function seedRetryFixture(admin: Client): Promise<void> {
+async function seedRetryFixture(admin: Client, runtime: Runtime): Promise<void> {
+  await makeOwnedOrdinaryAccountBirthFixture(runtime)("study-account");
   const lines = [
     "I can love you",
     "We keep moving forward",
@@ -39,7 +49,6 @@ async function seedRetryFixture(admin: Client): Promise<void> {
   const lineHashes = await Promise.all(lines.map(digest));
   await admin.query("SET session_replication_role = replica");
   try {
-    await admin.query("INSERT INTO users (user_id) VALUES ('study-account')");
     await admin.query(
       `INSERT INTO communities (
                community_id, display_name, status, created_by_user_id, created_at, updated_at
@@ -118,6 +127,13 @@ async function seedRetryFixture(admin: Client): Promise<void> {
              'ready','registered','not_required',clock_timestamp(),'study-persona','ready',1,$2)`,
       ["2".repeat(64), lyrics],
     );
+    await insertSongStemPairFixture(admin, {
+      submissionId: "study-submission",
+      communityId: "study-community",
+      actorUserId: "study-account",
+      operationId: "study-operation",
+      personaId: "study-persona",
+    });
     for (const [index, line] of lines.entries()) {
       const ordinal = index + 1;
       await admin.query(
@@ -202,7 +218,6 @@ async function seedRetryFixture(admin: Client): Promise<void> {
 
 type Runtime = ReturnType<typeof makeDirectPostgresControlPlaneLayer>;
 type StudyRepository = ReturnType<typeof makeControlPlaneStudyV2Repository>;
-type Reservation = Awaited<ReturnType<StudyRepository["reserveSpokenAnswer"]>>;
 
 const hex = (seed: string): string =>
   Buffer.from(seed, "utf8").toString("hex").padEnd(64, "0").slice(0, 64);
@@ -223,6 +238,314 @@ const payload = (
   audioDurationMs: 1000,
   requestHash: hex(`${seed}-request`),
   ...overrides,
+});
+
+suite("Study v2 ungraded spoken receipt", () => {
+  test("one receipt preserves the presentation and its next graded first attempt", async () => {
+    await withSchema("rerecord", async ({ admin, driver }) => {
+      const session = await driver.start("study-session-rerecord");
+      const sessionItemId = session.items[0]?.session_item_id ?? "";
+      expect(await driver.loadContext(session.session_id, sessionItemId)).toMatchObject({
+        dominantLanguage: null,
+        languageProvenance: { kind: "no_authoritative_evidence" },
+      });
+      const grade = gradeTranscriptV2(
+        "I can love you",
+        "I can let love you",
+        null,
+        STUDY_TRANSCRIPT_GRADER_POLICY_V2,
+      );
+      expect(grade).toMatchObject({ correct: false, extra: ["let"], missing: [] });
+      const firstPayload = payload("rerecord-first");
+      const first = reservedOnly(
+        await driver.reserve({
+          attemptNumber: 1,
+          idempotencyKey: "rerecord-first",
+          leaseToken: "rerecord-first-lease",
+          sessionId: session.session_id,
+          sessionItemId,
+          ...firstPayload,
+        }),
+      );
+      const initialReview = await admin.query(
+        `SELECT difficulty, lapses, repetitions, stability FROM study_review_items
+          WHERE review_item_id=(SELECT review_item_id FROM study_session_items_v2
+                                WHERE session_item_id=$1)`,
+        [sessionItemId],
+      );
+      const receipt = await driver.complete(first, {
+        acceptedAt: "2026-09-12T12:01:00.000Z",
+        attemptNumber: 1,
+        audioDigest: firstPayload.audioDigest,
+        correct: false,
+        grade,
+        rerecordEnabled: true,
+        requestHash: firstPayload.requestHash,
+        sessionId: session.session_id,
+        sessionItemId,
+      });
+      expect(receipt).toMatchObject({
+        outcome: "ungraded_rerecord",
+        attempt_number: 1,
+        attempt_state: "retryable",
+        first_pass: true,
+        spoken: {
+          language_provenance: { kind: "no_authoritative_evidence" },
+          rerecord_decision: { kind: "ungraded_rerecord", reason: "single_insertion" },
+        },
+        session: { lesson: { presentation_count: 0 } },
+      });
+      expect(receipt.session.lesson.current).toEqual(session.lesson.current);
+      expect(receipt.session.progress).toMatchObject({
+        answered_exercise_count: 0,
+        first_pass_correct: 0,
+        score_bps: null,
+      });
+      expect(await attemptRows(admin, sessionItemId)).toHaveLength(0);
+      const presentationsBefore = await admin.query(
+        "SELECT count(*)::int AS n FROM study_presentations_v2 WHERE session_item_id=$1",
+        [sessionItemId],
+      );
+      expect(presentationsBefore.rows[0]?.n).toBe(0);
+      const reviewAfterReceipt = await admin.query(
+        `SELECT difficulty, lapses, repetitions, stability FROM study_review_items
+          WHERE review_item_id=(SELECT review_item_id FROM study_session_items_v2
+                                WHERE session_item_id=$1)`,
+        [sessionItemId],
+      );
+      expect(reviewAfterReceipt.rows).toEqual(initialReview.rows);
+      expect(
+        await driver.complete(first, {
+          acceptedAt: "2026-09-12T12:01:00.000Z",
+          attemptNumber: 1,
+          audioDigest: firstPayload.audioDigest,
+          correct: false,
+          grade,
+          rerecordEnabled: true,
+          requestHash: firstPayload.requestHash,
+          sessionId: session.session_id,
+          sessionItemId,
+        }),
+      ).toEqual(receipt);
+      expect(
+        await driver.reserve({
+          attemptNumber: 1,
+          idempotencyKey: "rerecord-first",
+          leaseToken: "rerecord-replay-lease",
+          sessionId: session.session_id,
+          sessionItemId,
+          ...firstPayload,
+        }),
+      ).toMatchObject({ state: "completed", result: receipt });
+
+      const secondPayload = payload("rerecord-second");
+      const second = reservedOnly(
+        await driver.reserve({
+          attemptNumber: 1,
+          idempotencyKey: "rerecord-second",
+          leaseToken: "rerecord-second-lease",
+          sessionId: session.session_id,
+          sessionItemId,
+          ...secondPayload,
+        }),
+      );
+      const graded = await driver.complete(second, {
+        acceptedAt: "2026-09-12T12:02:00.000Z",
+        attemptNumber: 1,
+        audioDigest: secondPayload.audioDigest,
+        correct: false,
+        grade,
+        rerecordEnabled: true,
+        requestHash: secondPayload.requestHash,
+        sessionId: session.session_id,
+        sessionItemId,
+      });
+      expect(graded).toMatchObject({
+        outcome: "incorrect",
+        attempt_number: 1,
+        attempt_state: "spent",
+        first_pass: true,
+        spoken: { rerecord_decision: { kind: "graded", reason: null } },
+        session: { lesson: { presentation_count: 1 } },
+      });
+      expect(await attemptRows(admin, sessionItemId)).toHaveLength(1);
+      expect(graded.session.lesson.current?.session_item_id).not.toBe(sessionItemId);
+      expect(graded.session.lesson.current?.presented_at).toBe("2026-09-12T12:02:00.000Z");
+      expect(graded.session.progress).toMatchObject({
+        answered_exercise_count: 1,
+        first_pass_correct: 0,
+        score_bps: null,
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM study_presentations_v2 WHERE session_item_id=$1",
+            [sessionItemId],
+          )
+        ).rows,
+      ).toEqual([{ n: 1 }]);
+      const commands = await admin.query(
+        `SELECT result_kind, count(*)::int AS n FROM study_spoken_answer_commands
+          WHERE session_item_id=$1 GROUP BY result_kind ORDER BY result_kind`,
+        [sessionItemId],
+      );
+      expect(commands.rows).toEqual([
+        { result_kind: "graded", n: 1 },
+        { result_kind: "rerecord", n: 1 },
+      ]);
+      expect(
+        await driver.reserve({
+          attemptNumber: 1,
+          idempotencyKey: "rerecord-first",
+          leaseToken: "rerecord-late-replay-lease",
+          sessionId: session.session_id,
+          sessionItemId,
+          ...firstPayload,
+        }),
+      ).toMatchObject({ state: "completed", result: receipt });
+    });
+  }, 60_000);
+
+  test("records the joined profile composite key when it authorizes English", async () => {
+    await withSchema("profile-provenance", async ({ admin, driver }) => {
+      await admin.query(
+        `INSERT INTO study_language_profiles (
+           community_id, post_id, lyrics_revision, language_profile_revision,
+           source_hash, provider_id, provider_model, prompt_revision,
+           validator_revision, request_hash, accepted_at
+         ) VALUES ('study-community','study-post',1,1,$1,
+                   'profile-provider','profile-model','profile-prompt-v1',
+                   'profile-validator-v1',$2,clock_timestamp())`,
+        [hex("profile-source"), hex("profile-request")],
+      );
+      for (const ordinal of [1, 2, 3, 4]) {
+        await admin.query(
+          `INSERT INTO study_language_profile_units (
+             community_id, post_id, lyrics_revision, language_profile_revision,
+             study_unit_id, detected_languages, dominant_language, mixed,
+             vocable_only, confidence
+           ) VALUES ('study-community','study-post',1,1,$1,
+                     '["en"]'::jsonb,'en',false,false,0.95)`,
+          [`unit-${ordinal}`],
+        );
+      }
+      const session = await driver.start("study-session-profile");
+      const current = session.lesson.current?.session_item_id ?? "";
+      const context = await driver.loadContext(session.session_id, current);
+      const item = session.items.find(({ session_item_id }) => session_item_id === current);
+      expect(context).toMatchObject({
+        dominantLanguage: "en",
+        languageProvenance: {
+          kind: "unit_profile",
+          community_id: "study-community",
+          post_id: "study-post",
+          lyrics_revision: 1,
+          language_profile_revision: 1,
+          study_unit_id: item?.line.study_unit_id,
+          confidence: 0.95,
+          dominant_language: "en",
+        },
+      });
+    });
+  }, 60_000);
+
+  test("a rerecord after a graded miss does not restore first-pass eligibility", async () => {
+    await withSchema("rerecord-after-miss", async ({ admin, driver }) => {
+      const session = await driver.start("study-session-after-miss");
+      const sessionItemId = session.lesson.current?.session_item_id ?? "";
+      let current = session;
+      for (let ordinal = 0; ordinal < 8; ordinal += 1) {
+        const currentItemId = current.lesson.current?.session_item_id;
+        if (currentItemId === undefined) throw new Error("expected a current lesson item");
+        if (ordinal > 0 && currentItemId === sessionItemId) break;
+        const answerPayload = payload(`after-miss-grade-${ordinal}`);
+        const reservation = reservedOnly(
+          await driver.reserve({
+            attemptNumber: 1,
+            idempotencyKey: `after-miss-grade-${ordinal}`,
+            leaseToken: `after-miss-grade-${ordinal}-lease`,
+            sessionId: session.session_id,
+            sessionItemId: currentItemId,
+            ...answerPayload,
+          }),
+        );
+        const graded = await driver.complete(reservation, {
+          acceptedAt: "2026-09-12T12:01:00.000Z",
+          attemptNumber: 1,
+          audioDigest: answerPayload.audioDigest,
+          correct: ordinal !== 0,
+          requestHash: answerPayload.requestHash,
+          sessionId: session.session_id,
+          sessionItemId: currentItemId,
+        });
+        current = graded.session;
+      }
+      expect(current.lesson.current?.session_item_id).toBe(sessionItemId);
+      expect(await attemptRows(admin, sessionItemId)).toHaveLength(1);
+
+      const grade = gradeTranscriptV2(
+        "I can love you",
+        "I can let love you",
+        null,
+        STUDY_TRANSCRIPT_GRADER_POLICY_V2,
+      );
+      const rerecordPayload = payload("after-miss-rerecord");
+      const rerecordReservation = reservedOnly(
+        await driver.reserve({
+          attemptNumber: 2,
+          idempotencyKey: "after-miss-rerecord",
+          leaseToken: "after-miss-rerecord-lease",
+          sessionId: session.session_id,
+          sessionItemId,
+          ...rerecordPayload,
+        }),
+      );
+      const receipt = await driver.complete(rerecordReservation, {
+        acceptedAt: "2026-09-12T12:02:00.000Z",
+        attemptNumber: 2,
+        audioDigest: rerecordPayload.audioDigest,
+        correct: false,
+        grade,
+        rerecordEnabled: true,
+        requestHash: rerecordPayload.requestHash,
+        sessionId: session.session_id,
+        sessionItemId,
+      });
+      expect(receipt).toMatchObject({
+        outcome: "ungraded_rerecord",
+        attempt_number: 2,
+        first_pass: false,
+      });
+      expect(await attemptRows(admin, sessionItemId)).toHaveLength(1);
+
+      const gradedPayload = payload("after-miss-second-grade");
+      const gradedReservation = reservedOnly(
+        await driver.reserve({
+          attemptNumber: 2,
+          idempotencyKey: "after-miss-second-grade",
+          leaseToken: "after-miss-second-grade-lease",
+          sessionId: session.session_id,
+          sessionItemId,
+          ...gradedPayload,
+        }),
+      );
+      const graded = await driver.complete(gradedReservation, {
+        acceptedAt: "2026-09-12T12:03:00.000Z",
+        attemptNumber: 2,
+        audioDigest: gradedPayload.audioDigest,
+        correct: true,
+        requestHash: gradedPayload.requestHash,
+        sessionId: session.session_id,
+        sessionItemId,
+      });
+      expect(graded).toMatchObject({
+        outcome: "correct",
+        attempt_number: 2,
+        first_pass: false,
+      });
+      expect(await attemptRows(admin, sessionItemId)).toHaveLength(2);
+    });
+  }, 60_000);
 });
 
 type SpokenReservation = Effect.Success<ReturnType<StudyRepository["reserveSpokenAnswer"]>>;
@@ -290,6 +613,16 @@ function makeDriver(runtime: Runtime, study: StudyRepository) {
           sessionId,
         }),
       ),
+    loadContext: (sessionId: string, sessionItemId: string) =>
+      run(
+        study.loadSpokenAnswerContext({
+          accountId: "study-account",
+          communityId: "study-community",
+          idempotencyKey: "profile-context",
+          sessionId,
+          sessionItemId,
+        }),
+      ),
     reserve: (input: {
       readonly attemptNumber: number;
       readonly audioByteSize?: number;
@@ -341,14 +674,27 @@ function makeDriver(runtime: Runtime, study: StudyRepository) {
         readonly attemptNumber: number;
         readonly audioDigest: string;
         readonly correct: boolean;
+        readonly grade?: StudyTranscriptGradeV2;
+        readonly rerecordEnabled?: boolean;
         readonly requestHash: string;
         readonly sessionId: string;
         readonly sessionItemId: string;
       },
     ) => {
       const owned = reservedOnly(reservation);
+      const grade = input.grade ?? {
+        correct: input.correct,
+        matchKind: input.correct ? ("exact" as const) : ("none" as const),
+        heardTranscript: input.correct ? "I can love you" : "unrecognized murmur",
+        matched: [],
+        missing: [],
+        extra: [],
+        substituted: [],
+        policyRevision: "script_aware_token_phonetic_v2" as const,
+      };
       return run(
         study.completeSpokenAnswer({
+          ...defaultStudySpokenEvidence,
           accountId: "study-account",
           acceptedAt: input.acceptedAt,
           archive: {
@@ -366,16 +712,14 @@ function makeDriver(runtime: Runtime, study: StudyRepository) {
           audioDurationMs: 1000,
           commandId: owned.commandId,
           communityId: "study-community",
-          grade: {
-            correct: input.correct,
-            matchKind: input.correct ? "exact" : "none",
-            heardTranscript: input.correct ? "I can love you" : "unrecognized murmur",
-            matched: [],
-            missing: [],
-            extra: [],
-            substituted: [],
-            policyRevision: "script_aware_token_phonetic_v2",
-          },
+          grade,
+          rerecordEnabled: input.rerecordEnabled === true,
+          rerecordAssessment: assessStudySpokenRerecord({
+            grade,
+            expectedLanguage: null,
+            detectedLanguage: "en",
+            detectedLanguageConfidence: 0.99,
+          }),
           leaseToken: owned.leaseToken,
           providerDetectedLanguage: "en",
           providerDetectedLanguageConfidence: 0.99,
@@ -447,16 +791,37 @@ async function withSchema(
   await admin.connect();
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+  let primaryFailure: unknown;
+  let failed = false;
   try {
     await applyPostgresTestBaselineConnection({ connectionString: scoped });
-    await seedRetryFixture(admin);
     const runtime = makeDirectPostgresControlPlaneLayer(scoped);
+    await seedRetryFixture(admin, runtime);
     const study = makeControlPlaneStudyV2Repository();
     await body({ admin, driver: makeDriver(runtime, study), scoped });
-  } finally {
-    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
-    await admin.end();
+  } catch (error) {
+    failed = true;
+    primaryFailure = error;
   }
+  const cleanupFailures: unknown[] = [];
+  try {
+    await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  try {
+    await admin.end();
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  if (failed && cleanupFailures.length > 0)
+    throw new AggregateError(
+      [primaryFailure, ...cleanupFailures],
+      "Study fixture and cleanup failed",
+    );
+  if (failed) throw primaryFailure;
+  if (cleanupFailures.length > 0)
+    throw new AggregateError(cleanupFailures, "Study fixture cleanup failed");
 }
 
 suite("Study v2 spoken reservation reclaim", () => {
@@ -791,10 +1156,22 @@ suite("Study v2 session start concurrency", () => {
         idempotencyKey: "session-race-identical",
         requestHash: hex("session-race-identical"),
       };
-      const [first, second] = await Promise.all([
+      // Own both starts through settlement before the enclosing schema can be dropped.
+      // Promise.all would reject early while its peer still holds relation locks.
+      const starts = await Promise.allSettled([
         driver.startRaw({ ...identical, sessionId: "study-session-race-a" }),
         driver.startRaw({ ...identical, sessionId: "study-session-race-b" }),
       ]);
+      const failures = starts.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Concurrent Study starts failed");
+      const [firstResult, secondResult] = starts;
+      if (firstResult.status !== "fulfilled" || secondResult.status !== "fulfilled")
+        throw new Error("Concurrent Study starts did not settle successfully");
+      const first = firstResult.value;
+      const second = secondResult.value;
       expect(first.session_id).toBe(second.session_id);
       const stored = await admin.query(
         `SELECT count(*)::int AS n, min(session_id) AS session_id FROM study_sessions_v2
@@ -809,44 +1186,14 @@ suite("Study v2 session start concurrency", () => {
     });
   }, 60_000);
 
-  test("a distinct key while the schedule is not due is refused without a session", async () => {
-    await withSchema("start-not-due", async ({ admin, driver }) => {
+  test("a completed Study session can be started again without waiting", async () => {
+    await withSchema("start-anytime", async ({ admin, driver }) => {
       const first = await driver.startRaw({
         idempotencyKey: "session-not-due-1",
         requestHash: hex("session-not-due-1"),
         sessionId: "study-session-not-due-1",
       });
       expect(first.session_id).toBe("study-session-not-due-1");
-      // A start creates the account's card schedule; while those items are not
-      // due, a different key cannot start another lesson and must not persist
-      // a second session. This is the server-side state behind the start
-      // conflicts the browser suite saw when a concurrent consumer had already
-      // started the account.
-      await expect(
-        driver.startRaw({
-          idempotencyKey: "session-not-due-2",
-          requestHash: hex("session-not-due-2"),
-          sessionId: "study-session-not-due-2",
-        }),
-      ).rejects.toMatchObject({ reason: "insufficient-exercises" });
-      const stored = await admin.query(
-        `SELECT count(*)::int AS n FROM study_sessions_v2 WHERE account_id='study-account'`,
-      );
-      expect((stored.rows[0] as { n: number }).n).toBe(1);
-    });
-  }, 60_000);
-
-  test("a distinct key creates a later session once the schedule is due again", async () => {
-    await withSchema("start-later", async ({ admin, driver }) => {
-      const first = await driver.startRaw({
-        idempotencyKey: "session-later-1",
-        requestHash: hex("session-later-1"),
-        sessionId: "study-session-later-1",
-      });
-      expect(first.session_id).toBe("study-session-later-1");
-      // A later lesson is legitimate only after the first session is terminal
-      // and the review schedule is due again; both are authoritative server
-      // state, not a client key-rotation heuristic.
       await admin.query(
         `UPDATE study_sessions_v2
             SET status='completed', completed_at=clock_timestamp(),
@@ -856,15 +1203,15 @@ suite("Study v2 session start concurrency", () => {
         [first.session_id],
       );
       await admin.query(
-        `UPDATE study_review_items SET due_at=clock_timestamp() - interval '1 hour'
+        `UPDATE study_review_items SET due_at=clock_timestamp() + interval '7 days'
           WHERE account_id='study-account'`,
       );
       const second = await driver.startRaw({
-        idempotencyKey: "session-later-2",
-        requestHash: hex("session-later-2"),
-        sessionId: "study-session-later-2",
+        idempotencyKey: "session-not-due-2",
+        requestHash: hex("session-not-due-2"),
+        sessionId: "study-session-not-due-2",
       });
-      expect(second.session_id).toBe("study-session-later-2");
+      expect(second.session_id).toBe("study-session-not-due-2");
       const stored = await admin.query(
         `SELECT count(*)::int AS n FROM study_sessions_v2 WHERE account_id='study-account'`,
       );

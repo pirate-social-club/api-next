@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { alignmentRecoveryTerminalMessage } from "../../application/src/media/alignment-recovery-diagnostics.ts";
 import type { MediaProcessingWorkflowPayload } from "../../application/src/media/processing-contracts.ts";
 import { isWorkflowInstanceMissingError } from "./cloudflare-orchestration-primitives.ts";
 import {
@@ -17,6 +18,45 @@ const isMissing = (error: unknown): boolean =>
   error instanceof Error && error.message === "missing";
 
 describe("Cloudflare media processing adapters", () => {
+  test("reads retained recovery diagnostics only from errored Workflow instances", async () => {
+    const diagnostic = {
+      outcome: "alignment_recovery_lookup_stale",
+      reason: "malformed_artifact",
+    } as const;
+    for (const status of ["running", "complete", "errored"] as const) {
+      const launcher = makeCloudflareMediaProcessingWorkflowLauncher(
+        {
+          createBatch: async () => [],
+          get: async () => ({
+            sendEvent: async () => undefined,
+            status: async () => ({
+              status,
+              error: {
+                name: "Error",
+                message: `AlignmentRecoveryLookupTerminalError: ${alignmentRecoveryTerminalMessage(diagnostic)}`,
+              },
+            }),
+          }),
+        },
+        isMissing,
+      );
+      expect(await launcher.getRecoveryFailure("media-operation-1-r1")).toEqual(
+        status === "errored" ? diagnostic : null,
+      );
+    }
+    const unavailable = makeCloudflareMediaProcessingWorkflowLauncher(
+      {
+        createBatch: async () => [],
+        get: async () => {
+          throw new Error("transport unavailable");
+        },
+      },
+      isMissing,
+    );
+    await expect(unavailable.getRecoveryFailure("media-operation-1-r1")).rejects.toThrow(
+      "transport unavailable",
+    );
+  });
   test("converges duplicate deterministic Workflow creation", async () => {
     const events: string[] = [];
     const instance = {

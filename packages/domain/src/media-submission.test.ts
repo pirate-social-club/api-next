@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import {
+  canonicalTextModerationInput,
+  normalizeTextModerationInput,
+} from "./content/text-moderation.ts";
 
 import {
   createMediaSubmissionState,
@@ -27,8 +31,16 @@ const terms: SongTerms = {
   royaltyAllocations: [{ recipientId: actorId, shareBps: 10_000 }],
   accessMode: "public",
 };
+function moderationHash(title: string, body: string | null): string {
+  const normalized = normalizeTextModerationInput({ surface: "text_post", title, body });
+  if (normalized.kind !== "accepted") return "invalid";
+  const canonical = canonicalTextModerationInput(normalized.input);
+  return canonical.kind === "accepted" ? canonical.sha256 : "invalid";
+}
 const analysis = (
   acrDecision: TrustedSongAnalysis["acr"]["decision"] = "allow",
+  title = "Author title",
+  body: string | null = null,
 ): TrustedSongAnalysis => ({
   version: "song-trusted-analysis-v1",
   operationId,
@@ -52,6 +64,17 @@ const analysis = (
   },
   mediaSafety: "allow",
   lyricsSafety: "not_applicable",
+  contentModeration: {
+    decision: "allow",
+    resultingContentRating: "general",
+    inputSha256: moderationHash(title, body),
+    matchedCategories: [],
+    policyRevision: "moderation-v1",
+    platformPolicyRevision: "platform-v1",
+    communityPolicyRevision: "community-v1",
+    evidenceRef: null,
+    providerEvidence: null,
+  },
   boundReference: null,
 });
 
@@ -141,6 +164,7 @@ describe("song media Spec 013 machine", () => {
     const decision: PublicationDecision = {
       decisionRevision: 2,
       outcome: "allow",
+      contentRating: "general",
       creationRevision: recovered.creationRevision,
       audioRevision: recovered.audioRevision,
       analysisRevision: recovered.analysisRevision,
@@ -313,7 +337,7 @@ describe("song media Spec 013 machine", () => {
       }),
     );
     const readyAnalysis: TrustedSongAnalysis = {
-      ...analysis(),
+      ...analysis("allow", withLyrics.title, lyrics.text),
       lyricsAnalysis: {
         status: "ready",
         lyricsRevision: 1,
@@ -338,6 +362,7 @@ describe("song media Spec 013 machine", () => {
     const staleDecision: PublicationDecision = {
       decisionRevision: 1,
       outcome: "allow",
+      contentRating: "general",
       creationRevision: 3,
       audioRevision: 1,
       analysisRevision: 1,
@@ -421,7 +446,7 @@ describe("song media Spec 013 machine", () => {
       }),
     ).toMatchObject({
       ok: false,
-      rejection: { _tag: "decision_evidence_invalid", reasonCode: "input_hash_mismatch" },
+      rejection: { _tag: "stale_revision" },
     });
     const safetyReview = ok(
       transitionMediaSubmission(withLyrics, {
@@ -508,7 +533,7 @@ describe("song media Spec 013 machine", () => {
         actorId,
         expectedAudioRevision: 1,
         expectedCanonicalAudioSha256: audioHash,
-        analysis: analysis("requires_reference"),
+        analysis: analysis("requires_reference", finalized.title),
       }),
     );
     const action = ok(
@@ -588,6 +613,7 @@ describe("song media Spec 013 machine", () => {
         decision: {
           decisionRevision: 2,
           outcome: "allow",
+          contentRating: "general",
           creationRevision: 2,
           audioRevision: 1,
           analysisRevision: 1,
@@ -687,6 +713,7 @@ describe("song media Spec 013 machine", () => {
           decision: {
             decisionRevision: 1,
             outcome: "allow",
+            contentRating: "general",
             creationRevision: 2,
             audioRevision: 1,
             analysisRevision: 1,
@@ -731,6 +758,7 @@ describe("song media Spec 013 machine", () => {
           decision: {
             decisionRevision: 1,
             outcome: "allow",
+            contentRating: "general",
             creationRevision: 2,
             audioRevision: 1,
             analysisRevision: 1,
@@ -793,6 +821,7 @@ describe("song media Spec 013 machine", () => {
         decision: {
           decisionRevision: 1,
           outcome: "allow",
+          contentRating: "general",
           creationRevision: 1,
           audioRevision: 1,
           analysisRevision: 0,
@@ -849,6 +878,7 @@ describe("song media Spec 013 machine", () => {
     const decision: PublicationDecision = {
       decisionRevision: 1,
       outcome: "allow",
+      contentRating: "general",
       creationRevision: 2,
       audioRevision: 1,
       analysisRevision: 1,
@@ -974,5 +1004,118 @@ describe("song media Spec 013 machine", () => {
       status: "processing_failed",
       failure: { code: "upload_seal_conflict", retryable: false },
     });
+  });
+});
+
+describe("song analysis moderation input binding", () => {
+  const current = (): MediaSubmissionState => ({
+    ...analyzed(),
+    analysis: null,
+    analysisRevision: 0,
+    phase: "analysis",
+  });
+  const complete = (state: MediaSubmissionState, value: TrustedSongAnalysis) =>
+    transitionMediaSubmission(state, {
+      event: "blocking_analysis_completed",
+      actorId,
+      expectedAudioRevision: 1,
+      expectedCanonicalAudioSha256: audioHash,
+      analysis: value,
+    });
+  const withHash = (value: TrustedSongAnalysis, hash: string): TrustedSongAnalysis => {
+    if (value.contentModeration === undefined) throw new Error("missing moderation fixture");
+    return { ...value, contentModeration: { ...value.contentModeration, inputSha256: hash } };
+  };
+
+  test("accepts unchanged title-only input and uses shared Unicode normalization", () => {
+    expect(complete(current(), analysis()).ok).toBe(true);
+    const state = { ...current(), title: "Cafe\u0301" };
+    expect(complete(state, analysis("allow", "Café")).ok).toBe(true);
+  });
+
+  test("rejects title-only evidence after the first lyrics save as stale", () => {
+    const state = ok(
+      transitionMediaSubmission(current(), {
+        event: "song_lyrics_bound",
+        actorId,
+        expectedCreationRevision: 2,
+        expectedAudioRevision: 1,
+        lyrics: {
+          lyricsRevision: 1,
+          audioRevision: 1,
+          canonicalAudioSha256: audioHash,
+          text: "New lyrics",
+          provenance: "pasted",
+        },
+      }),
+    );
+    expect(complete(state, analysis())).toMatchObject({
+      ok: false,
+      rejection: {
+        _tag: "stale_revision",
+        expected: moderationHash(state.title, "New lyrics"),
+        actual: moderationHash(state.title, null),
+      },
+    });
+  });
+
+  test("returns stale for a classifier revision mismatch even with matching moderation", () => {
+    const state = ok(
+      transitionMediaSubmission(current(), {
+        event: "song_lyrics_bound",
+        actorId,
+        expectedCreationRevision: 2,
+        expectedAudioRevision: 1,
+        lyrics: {
+          lyricsRevision: 1,
+          audioRevision: 1,
+          canonicalAudioSha256: audioHash,
+          text: "Unchanged lyrics",
+          provenance: "pasted",
+        },
+      }),
+    );
+    expect(complete(state, analysis("allow", state.title, "Unchanged lyrics"))).toMatchObject({
+      ok: false,
+      rejection: { _tag: "stale_revision", expected: 0, actual: 1 },
+    });
+  });
+
+  test("accepts invalid only when the current text also fails canonicalization", () => {
+    const state = { ...current(), title: "Invalid\ud800title" };
+    expect(complete(state, withHash(analysis(), "invalid")).ok).toBe(true);
+    expect(complete(state, analysis())).toMatchObject({
+      ok: false,
+      rejection: { _tag: "stale_revision", expected: "invalid" },
+    });
+    expect(complete(current(), withHash(analysis(), "invalid"))).toMatchObject({
+      ok: false,
+      rejection: { _tag: "stale_revision", actual: "invalid" },
+    });
+  });
+
+  test("keeps malformed moderation evidence in the existing invalid-evidence class", () => {
+    expect(complete(current(), withHash(analysis(), ""))).toMatchObject({
+      ok: false,
+      rejection: { _tag: "decision_evidence_invalid", reasonCode: "input_hash_mismatch" },
+    });
+  });
+
+  test("keeps historical reads loadable and refuses missing moderation on new commits", () => {
+    const { contentModeration: omitted, ...legacy } = analysis();
+    expect(omitted).toBeDefined();
+    expect(complete(current(), legacy)).toMatchObject({
+      ok: false,
+      rejection: { _tag: "decision_evidence_invalid", reasonCode: "required_stage_missing" },
+    });
+    const historical = { ...analyzed(), analysis: legacy };
+    expect(
+      transitionMediaSubmission(historical, {
+        event: "song_terms_bound",
+        actorId,
+        expectedCreationRevision: 2,
+        terms,
+      }).ok,
+    ).toBe(true);
   });
 });

@@ -13,12 +13,15 @@ import {
   type NamespaceOwnershipProviderOperation,
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderPlanResult,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderStartContext,
   NamespaceOwnershipProviderStartInput,
   NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
   NamespaceOwnershipProviderUnboundRejected,
+  NamespaceOwnershipProviderUnsupportedProtocol,
+  RouteAttachmentImportOwnershipProviderCompleteInput,
   RouteAttachmentOwnershipProviderCompleteInput,
   RouteAttachmentOwnershipProviderStartInput,
   RouteAttachmentOwnershipProviderStartResult,
@@ -88,7 +91,9 @@ function safeFailure(
       error instanceof NamespaceOwnershipProviderUnboundRejected ||
       error instanceof NamespaceOwnershipProviderObservationRejected ||
       error instanceof NamespaceOwnershipProviderInvalidResponse ||
-      error instanceof NamespaceOwnershipProviderMisconfigured) &&
+      error instanceof NamespaceOwnershipProviderMisconfigured ||
+      error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
+      error instanceof NamespaceOwnershipProviderPublicationClosed) &&
     error.provider_id === provider_id &&
     error.operation === operation
   ) {
@@ -148,6 +153,9 @@ function compatibleSession(
 type RouteAttachmentStart = NonNullable<NamespaceOwnershipProviderAdapter["startRouteAttachment"]>;
 type RouteAttachmentComplete = NonNullable<
   NamespaceOwnershipProviderAdapter["completeRouteAttachment"]
+>;
+type RouteAttachmentImportComplete = NonNullable<
+  NamespaceOwnershipProviderAdapter["completeRouteAttachmentImport"]
 >;
 
 function guardRouteAttachmentStart(
@@ -243,21 +251,84 @@ function guardRouteAttachmentComplete(
       Effect.mapError((error) => safeFailure(manifest.provider_id, "complete", error)),
       Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "complete"))),
       Effect.flatMap((result) => {
-        const currentTime = now();
-        const decoded = Schema.decodeUnknownOption(
-          NamespaceOwnershipProviderCompleteResult,
-          exactParseOptions,
-        )(result);
-        if (
-          Option.isNone(decoded) ||
-          (decoded.value.status === "verified" &&
-            (Date.parse(decoded.value.observed_at) > currentTime ||
-              (decoded.value.expires_at !== null &&
-                Date.parse(decoded.value.expires_at) <= currentTime)))
-        ) {
-          return Effect.fail(invalidResponse(manifest.provider_id, "complete"));
-        }
-        return Effect.succeed(decoded.value);
+        const decoded = decodedCompleteResult(result, now());
+        return decoded === null
+          ? Effect.fail(invalidResponse(manifest.provider_id, "complete"))
+          : Effect.succeed(decoded);
+      }),
+    );
+  };
+}
+
+function decodedCompleteResult(
+  result: unknown,
+  currentTime: number,
+): Schema.Schema.Type<typeof NamespaceOwnershipProviderCompleteResult> | null {
+  const decoded = Schema.decodeUnknownOption(
+    NamespaceOwnershipProviderCompleteResult,
+    exactParseOptions,
+  )(result);
+  if (
+    Option.isNone(decoded) ||
+    (decoded.value.status === "verified" &&
+      (Date.parse(decoded.value.observed_at) > currentTime ||
+        (decoded.value.expires_at !== null && Date.parse(decoded.value.expires_at) <= currentTime)))
+  ) {
+    return null;
+  }
+  return decoded.value;
+}
+
+/**
+ * hns-txt-import-v1 keeps every binding the ownership session carries except
+ * its one-hour clock. Validity comes from the database publication window in
+ * the binding, and a verified observation keeps its chain-derived expiry.
+ */
+function guardRouteAttachmentImportComplete(
+  complete: RouteAttachmentImportComplete,
+  manifest: Manifest,
+  now: () => number,
+): RouteAttachmentImportComplete {
+  return (untrustedInput, untrustedContext) => {
+    const input = Schema.decodeUnknownOption(
+      RouteAttachmentImportOwnershipProviderCompleteInput,
+      exactParseOptions,
+    )(untrustedInput);
+    const context = Schema.decodeUnknownOption(
+      NamespaceOwnershipProviderCompleteContext,
+      exactParseOptions,
+    )(untrustedContext);
+    if (
+      Option.isNone(input) ||
+      Option.isNone(context) ||
+      input.value.session.provider_id !== manifest.provider_id ||
+      !inputSupported(manifest, input.value.session) ||
+      !manifest.protocol_versions.includes(input.value.session.protocol_version) ||
+      input.value.binding.root_label !== input.value.session.route.root_label ||
+      !manifest.submission_channels.includes(input.value.submission.channel)
+    ) {
+      return Effect.fail(unboundRejected(manifest.provider_id, "complete"));
+    }
+    if (Date.parse(input.value.binding.valid_until) <= now()) {
+      return Effect.fail(
+        new NamespaceOwnershipProviderPublicationClosed({
+          provider_id: manifest.provider_id,
+          operation: "complete",
+        }),
+      );
+    }
+    return Effect.suspend(() => complete(input.value, context.value)).pipe(
+      Effect.timeout(manifest.operation_deadlines.complete_ms),
+      Effect.catchTag("TimeoutError", () =>
+        Effect.fail(unavailable(manifest.provider_id, "complete")),
+      ),
+      Effect.mapError((error) => safeFailure(manifest.provider_id, "complete", error)),
+      Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "complete"))),
+      Effect.flatMap((result) => {
+        const decoded = decodedCompleteResult(result, now());
+        return decoded === null
+          ? Effect.fail(invalidResponse(manifest.provider_id, "complete"))
+          : Effect.succeed(decoded);
       }),
     );
   };
@@ -436,6 +507,15 @@ function guardAdapter(
       : {
           completeRouteAttachment: guardRouteAttachmentComplete(
             adapter.completeRouteAttachment,
+            manifest,
+            now,
+          ),
+        }),
+    ...(adapter.completeRouteAttachmentImport === undefined
+      ? {}
+      : {
+          completeRouteAttachmentImport: guardRouteAttachmentImportComplete(
+            adapter.completeRouteAttachmentImport,
             manifest,
             now,
           ),

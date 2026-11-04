@@ -98,6 +98,9 @@ const HNS_OWNER_VERIFIER_PLATFORM_SEAMS = new Set([
   "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport",
   "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres",
   "@pirate/platform-cf/namespace-ownership-hns-private-driver-transport",
+  // The verifier reads an import's publication authorization itself rather
+  // than trusting a clock sent by the HTTP Worker.
+  "@pirate/platform-cf/hns-root-import-publication-authorization-postgres",
 ]);
 const HNS_PLATFORM_GATEWAY_PLATFORM_SEAMS = new Set([
   "@pirate/platform-cf/hns-community-app-gateway-authority-postgres",

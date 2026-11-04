@@ -20,6 +20,14 @@ and labeled containers before manually retiring that exact stale lease.
 
 The maintained PowerDNS provisioner creates the primary zone and real DNSSEC
 keys. The second authority obtains the signed zone by authenticated AXFR. The
+secondary is admitted automatically by a signed notification from the pinned
+loopback primary. Unsigned notifications and unsigned automatic admission are
+disabled. The fixture does not create secondary zones through the API or issue
+manual retrieve commands; it checks the retained transfer-key metadata too.
+PowerDNS does not propagate primary zone deletion to the secondary. This
+disposable runner removes both containers and their volumes; persistent
+staging teardown must explicitly reconcile secondary removal.
+The
 maintained DNSSEC validator verifies both authorities using the fixture's DS
 records and rejects tampered control TXT data. DNSKEY, NS, app address and TLSA
 answers must agree. The maintained inspector verifies managed records and the
@@ -45,7 +53,12 @@ bun apps/hns-authority-provisioner/ops/staging-fixture/authority.ts --execute-lo
 The additional mode checks the node network and genesis and the existing
 wallet's regtest receive-address prefix before any wallet mutation. It funds
 only a regtest wallet, auctions a generated name, registers an empty R0, then
-publishes an actual UPDATE from the maintained complete-resource plan builder.
+publishes an actual UPDATE from the maintained provision-root operation's
+returned plan. That operation reads and rechecks the live current resource and
+uses the real PowerDNS provisioner. Before publication, the returned resource
+is checked against an independently built expected plan and its wire digest.
+The receipt includes the provisioner's plan-document digest. This does not yet
+exercise authenticated admission or the database-backed provision-job queue.
 The maintained observer must see matching current records before matching safe
 records. DNSSEC anchors are extracted from that safe-chain resource; whole-wire
 resource equality and the maintained commitment selection are required. The

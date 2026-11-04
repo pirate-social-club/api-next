@@ -29,6 +29,8 @@ import { makeControlPlaneHnsCommunityRootImportRepository } from "./hns-communit
 import { verifyHnsImportedInventoryRenewal } from "./hns-imported-inventory-renewal.pg-cases.ts";
 import { verifyHnsRenewalRecovery } from "./hns-root-health-renewal.pg-cases.ts";
 import { makeControlPlaneHnsRootImportStore } from "./hns-root-import-repository.ts";
+import { verifyHnsZoneAdoption } from "./hns-zone-adoption.pg-cases.ts";
+import { hnsZoneAdoptionFixtureZone } from "./hns-zone-adoption-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -382,8 +384,12 @@ async function makeReadinessArtifact(input: {
   readonly ownershipResultHash: string;
   readonly publishPlanSha256: string;
   readonly provisionResultSha256: string;
+  /** The zone the authorities are observed to serve; the fixture's by default. */
+  readonly managedZoneBytes?: Uint8Array;
+  readonly powerdnsZoneSerial?: number;
+  readonly observedSecondsAgo?: number;
 }) {
-  const observedAt = new Date(Date.now() - 1_000).toISOString();
+  const observedAt = new Date(Date.now() - (input.observedSecondsAgo ?? 1) * 1_000).toISOString();
   const validUntil = new Date(Date.now() + (input.validForSeconds ?? 3600) * 1000).toISOString();
   const capabilities = [
     {
@@ -426,9 +432,10 @@ async function makeReadinessArtifact(input: {
     dns_write_capabilities: capabilities,
   });
   const inventory = await decodeHnsAuthorityInventoryBytes(inventoryBytes);
-  const managedZoneBytes = new TextEncoder().encode(
-    canonicalJson({ root_label: "newroot", serial: 7, managed: true }),
-  );
+  const managedZoneBytes =
+    // A canonical authority zone, so that zone adoption, which reads the
+    // retained zone, runs its real difference rule in this fixture.
+    input.managedZoneBytes ?? hnsZoneAdoptionFixtureZone("newroot", 7, false);
   const observedZoneBytesSha256 = sha256(managedZoneBytes);
   return encodeHnsRootImportReadinessResultV1({
     version: HNS_ROOT_IMPORT_READINESS_RESULT_VERSION,
@@ -439,7 +446,7 @@ async function makeReadinessArtifact(input: {
     publish_plan_sha256: input.publishPlanSha256,
     provision_result_sha256: input.provisionResultSha256,
     chain_resource_sha256: SHA_A,
-    powerdns_zone_serial: 7,
+    powerdns_zone_serial: input.powerdnsZoneSerial ?? 7,
     managed_rrset_sha256: SHA_C,
     managed_zone_bytes_hex: Buffer.from(managedZoneBytes).toString("hex"),
     observed_zone_bytes_sha256: observedZoneBytesSha256,
@@ -1175,27 +1182,35 @@ suite("Postgres 17 HNS root-import repository", () => {
                 ...(validForSeconds === undefined ? {} : { validForSeconds }),
               }),
           );
+          await verifyHnsZoneAdoption(admin, connection, (observed) =>
+            makeReadinessArtifact({
+              ownershipResultHash,
+              publishPlanSha256: sha256(provisioned.planBytes),
+              provisionResultSha256: sha256(provisioned.resultBytes),
+              inventoryVersion: `adoption-${randomUUID()}`,
+              // Long enough for the adoption fence's margin, short enough
+              // that the scheduler finds the adopted root due for renewal.
+              validForSeconds: 172_800,
+              ...(observed?.zone === undefined ? {} : { managedZoneBytes: observed.zone }),
+              ...(observed?.serial === undefined ? {} : { powerdnsZoneSerial: observed.serial }),
+              ...(observed?.observed_seconds_ago === undefined
+                ? {}
+                : { observedSecondsAgo: observed.observed_seconds_ago }),
+            }),
+          );
           return;
         }
 
-        // The retired client observation job is still queued after the real
-        // lifecycle path accepted evidence. Give it the removal migration's
-        // named disposition for an existing operation crossing the cutover;
+        // The retired client observation request is recorded in the removal
+        // migration's named disposition from the start (0204), never queued;
         // renewal must succeed without it ever reaching completed.
         const clientObservation = await admin.query<{ observation_job_id: string; state: string }>(
           `SELECT observation_job_id, state FROM hns_root_import_observation_jobs
             WHERE root_import_session_id='root-import-session'`,
         );
         expect(clientObservation.rows).toMatchObject([
-          { observation_job_id: "observation-root-import", state: "queued" },
+          { observation_job_id: "observation-root-import", state: "failed" },
         ]);
-        await admin.query(
-          `UPDATE hns_root_import_observation_jobs
-              SET state='failed', failure_code='readiness_single_owner_cutover',
-                  completed_at=clock_timestamp(), updated_at=clock_timestamp()
-            WHERE observation_job_id=$1`,
-          [clientObservation.rows[0]?.observation_job_id],
-        );
 
         const scheduled = await admin.query<{
           eligible_roots: number;
@@ -1404,7 +1419,13 @@ suite("Postgres 17 HNS root-import repository", () => {
              'community_123e4567-e89b-42d3-a456-426614174099','attachment-import',
              'attachment-ceremony','attachment-reservation',1,1,1,$1,$2,
              'namespace-provider',$3,'managed','test-provider','v1','hns-txt-v1','test',
-             'newroot','attachment-upstream','embedded_sdk','{}'::jsonb,'completed',
+             'newroot',
+             -- The challenge the session carries, so a plan exposed for this
+             -- community session has a matching ownership challenge.
+             (SELECT substr(challenge_txt_value, length('pirate-verification=') + 1)
+                FROM hns_root_import_sessions
+               WHERE root_import_session_id='root-import-session'),
+             'embedded_sdk','{}'::jsonb,'completed',
              transaction_timestamp()-interval '2 minutes',
              transaction_timestamp()-interval '1 minute',
              transaction_timestamp()-interval '1 minute',$4)`,
@@ -1533,7 +1554,7 @@ suite("Postgres 17 HNS root-import repository", () => {
       // observation job. The observation claim is not a readiness route after
       // the cutover, so this fixture leases the client job directly to
       // exercise the lock against the real session state, then returns it to
-      // the queue before the lifecycle claim runs.
+      // the cutover disposition it was recorded in before the lifecycle claim runs.
       const observationJob = await admin.query<{ observation_job_id: string }>(
         `SELECT observation_job_id FROM hns_root_import_sessions
           WHERE root_import_session_id=$1`,
@@ -1548,6 +1569,7 @@ suite("Postgres 17 HNS root-import repository", () => {
             SET state='leased', attempt_count=1, lease_fence=1,
                 leased_by='authority-executor',
                 lease_expires_at=clock_timestamp() + interval '10 minutes',
+                completed_at=NULL, failure_code=NULL,
                 updated_at=clock_timestamp()
           WHERE observation_job_id=$1`,
         [observationJobId],
@@ -1576,8 +1598,9 @@ suite("Postgres 17 HNS root-import repository", () => {
       ).toEqual([{ admitted: true }]);
       await admin.query(
         `UPDATE hns_root_import_observation_jobs
-            SET state='queued', leased_by=NULL, lease_expires_at=NULL,
-                lease_fence=0, updated_at=clock_timestamp()
+            SET state='failed', leased_by=NULL, lease_expires_at=NULL,
+                lease_fence=0, failure_code='readiness_single_owner_cutover',
+                completed_at=clock_timestamp(), updated_at=clock_timestamp()
           WHERE observation_job_id=$1`,
         [observationJobId],
       );
@@ -1969,7 +1992,11 @@ suite("Postgres 17 HNS root-import repository", () => {
       event_id: "fixture:preparation_completed",
       occurred_at_epoch_ms: Date.now(),
     });
-    await queueLifecycleFixtureJob(admin, "observe_current");
+    // Plan exposure itself scheduled the current observation at the cadence;
+    // the fixture only advances the clock for it.
+    if (!(await makeNextLifecycleFixtureJobDue(admin, "observe_current"))) {
+      throw new Error("preparation did not schedule the current observation");
+    }
     await runLifecycleFixtureObservation(admin, {
       event: {
         event: "current_observation",

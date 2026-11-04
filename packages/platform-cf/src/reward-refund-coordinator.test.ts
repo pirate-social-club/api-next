@@ -194,7 +194,8 @@ function harness() {
       sends += 1;
       return SIGNED_TRANSACTION_HASH;
     },
-    readReceipt: async () => receipt(),
+    // A receipt exists only for a transaction that was sent.
+    readReceipt: async () => (sends > 0 ? receipt() : null),
     readHead: async () => ({ blockNumber: 202n, blockHash: hash("c") }),
   } as unknown as MegapotV2RpcClient;
   const signer: MegapotV2TransactionSigner = {
@@ -211,6 +212,7 @@ describe("reward refund coordinator", () => {
   test("returns one terminal bonus-token contribution and replays the confirmed receipt", async () => {
     const state = harness();
     const coordinator = makeRewardRefundCoordinator({
+      authority: { ensure: () => Effect.void },
       store: state.store,
       rpc: state.rpc,
       signer: state.signer,
@@ -232,5 +234,74 @@ describe("reward refund coordinator", () => {
     expect(replay).toEqual(first);
     expect(state.sends()).toBe(1);
     expect(deriveRewardRefundEffectId(candidate.fundingEffectId) as string).toBe(first.effectId);
+  });
+  test("reconciles an admitted send after an absent receipt without broadcasting again", async () => {
+    const state = harness();
+    let available = false;
+    const rpc: MegapotV2RpcClient = {
+      ...state.rpc,
+      readReceipt: async () => (available ? receipt() : null),
+    };
+    const coordinator = makeRewardRefundCoordinator({
+      authority: { ensure: () => Effect.void },
+      store: state.store,
+      rpc,
+      signer: state.signer,
+      requiredConfirmations: 3,
+      gasLimitMultiplierBps: 12_000,
+      nativeGasReserveFloorWei: 1_000n,
+      now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+    });
+    const first = await Effect.runPromise(coordinator.refund(candidate.fundingEffectId));
+    expect(first.kind).toBe("submitted");
+    available = true;
+    const confirmed = await Effect.runPromise(coordinator.reconcile(first.effectId));
+    expect(confirmed).toMatchObject({
+      kind: "confirmed",
+      fundingEffectId: candidate.fundingEffectId,
+    });
+    expect(state.sends()).toBe(1);
+  });
+
+  test("holds a noncanonical receipt with the family's reconciliation reason", async () => {
+    const state = harness();
+    const reasons: string[] = [];
+    const requireReconciliation = state.store.requireReconciliation;
+    const store: RewardRefundStore = {
+      ...state.store,
+      requireReconciliation: (input) => {
+        reasons.push(input.reason);
+        return requireReconciliation(input);
+      },
+    };
+    const readBlock = state.rpc.readBlock;
+    let canonical = false;
+    const rpc: MegapotV2RpcClient = {
+      ...state.rpc,
+      readBlock: async (blockNumber) =>
+        !canonical && blockNumber === 200n
+          ? { blockNumber, blockHash: hash("d") }
+          : readBlock(blockNumber),
+    };
+    const coordinator = makeRewardRefundCoordinator({
+      authority: { ensure: () => Effect.void },
+      store,
+      rpc,
+      signer: state.signer,
+      requiredConfirmations: 3,
+      gasLimitMultiplierBps: 12_000,
+      nativeGasReserveFloorWei: 1_000n,
+      now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+    });
+    const first = await Effect.runPromise(coordinator.refund(candidate.fundingEffectId));
+    expect(first.kind).toBe("reconciliation_required");
+    expect(reasons).toEqual(["refund_receipt_reorg"]);
+    canonical = true;
+    const confirmed = await Effect.runPromise(coordinator.reconcile(first.effectId));
+    expect(confirmed).toMatchObject({
+      kind: "confirmed",
+      fundingEffectId: candidate.fundingEffectId,
+    });
+    expect(state.sends()).toBe(1);
   });
 });

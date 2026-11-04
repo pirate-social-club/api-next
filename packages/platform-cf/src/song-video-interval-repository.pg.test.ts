@@ -352,6 +352,26 @@ suite("song video interval persistence", () => {
     expect(original?.intent).toBe("original_audio");
   });
 
+  test("a plan keeps the interval policy revision it was frozen under", async () => {
+    // Revision 2 (3-15 s) for a new reservation; revision 1 (up to 180 s) for one
+    // issued before the 2026-09-24 length amendment. Both read back unchanged.
+    expect(
+      await reserve(
+        "media-reservation-song-r2",
+        plan({ clipDurationSamples: 15 * SECOND, intervalPolicyRevision: 2 }),
+      ),
+    ).toEqual({ kind: "none" });
+    expect(await reserve("media-reservation-song-r1", plan())).toEqual({ kind: "none" });
+    const current = await reservations.getReservationSongPlan({
+      reservationId: "media-reservation-song-r2",
+    });
+    expect(current).toMatchObject({ clipDurationSamples: 15 * SECOND, intervalPolicyRevision: 2 });
+    const earlier = await reservations.getReservationSongPlan({
+      reservationId: "media-reservation-song-r1",
+    });
+    expect(earlier).toMatchObject({ clipDurationSamples: 45 * SECOND, intervalPolicyRevision: 1 });
+  });
+
   test("the plan must match the measured duration exactly", async () => {
     // A plan claiming a different song length than was measured has no timing
     // fact to bind to, even if its interval would fit.

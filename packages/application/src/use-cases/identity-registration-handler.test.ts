@@ -15,11 +15,6 @@ import {
 
 const registrationBody = (privy_access_token: string) => ({
   privy_access_token,
-  minimum_age_attestation: {
-    version: "minimum-age-attestation-v1" as const,
-    minimum_age: 16 as const,
-    affirmed: true as const,
-  },
 });
 
 const candidate: IdentityRegistrationCandidate = {
@@ -122,7 +117,7 @@ describe("identity registration HTTP use case", () => {
     expect(JSON.stringify(result.response)).not.toContain("generated-1.pirate");
   });
 
-  test("creates an account and mints the browser session", async () => {
+  test("creates an account from proof alone and mints the browser session", async () => {
     const result = await Effect.runPromise(
       registerIdentityRequest(
         { body: registrationBody("access-token"), edgeClientIp: "203.0.113.8" },
@@ -130,6 +125,42 @@ describe("identity registration HTTP use case", () => {
       ),
     );
     expect(result.sessionToken).toBe("session-token");
+  });
+
+  test("validates the optional published age field without passing it to registration", async () => {
+    const configured = services();
+    const seen: unknown[] = [];
+    const age = {
+      version: "minimum-age-attestation-v1",
+      minimum_age: 16,
+      affirmed: true,
+    };
+    const run = (minimum_age_attestation: unknown) =>
+      Effect.runPromiseExit(
+        registerIdentityRequest(
+          {
+            body: { ...registrationBody("access-token"), minimum_age_attestation },
+            edgeClientIp: "203.0.113.8",
+          },
+          services({
+            registration: {
+              ...configured.registration,
+              store: {
+                ...configured.registration.store,
+                registerCredential: (input) => {
+                  seen.push(input);
+                  return configured.registration.store.registerCredential(input);
+                },
+              },
+            },
+          }),
+        ),
+      );
+    expect(Exit.isSuccess(await run(age))).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toHaveProperty("minimumAgeAttestation");
+    expect(failureOf(await run({ ...age, affirmed: false }))).toBeInstanceOf(BadRequest);
+    expect(seen).toHaveLength(1);
   });
 
   test("returns the same account for an already-registered credential", async () => {

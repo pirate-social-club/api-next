@@ -1,9 +1,12 @@
 // biome-ignore lint/suspicious/noTsIgnore: cloudflare:workers exists only in the Workers runtime
 // @ts-ignore cloudflare:workers exists only in the Workers runtime
 import { DurableObject } from "cloudflare:workers";
-import { createHash } from "node:crypto";
 import {
   buildKaraokeScoringDiagnostics,
+  ControlPlaneAcquireFailed,
+  ControlPlaneOperationTimedOut,
+  ControlPlaneStatementFailed,
+  ControlPlaneTransactionOutcomeUnknown,
   createKaraokeSessionState,
   decodeKaraokeBinaryFrame,
   deserializeKaraokeSessionSnapshot,
@@ -17,12 +20,17 @@ import {
   type KaraokeSessionAuthority,
   KaraokeSessionHost,
   type KaraokeSessionState,
+  KaraokeStoreFailed,
   type KaraokeStreamingSttAdapter,
   type KaraokeStreamingSttEvent,
   type KaraokeTransportError,
   serializeKaraokeSessionSnapshot,
 } from "@pirate/application";
+import { LearnerAudioStorageOutcomeUnknown } from "@pirate/application/learner-audio-io-outcome";
 import { Effect } from "effect";
+import { makeCapturedKaraokeBindings } from "./captured-karaoke-bindings.ts";
+import { CapturedKaraokeMultipartArchive } from "./captured-karaoke-multipart.ts";
+import { makeCapturedKaraokeSqliteJournal } from "./captured-karaoke-sqlite-journal.ts";
 import {
   ElevenLabsKaraokeSttAdapter,
   elevenLabsSpeechProviderPolicy,
@@ -46,7 +54,18 @@ import {
   admitKaraokeResetOperator,
   type KaraokeResetOperatorBindings,
 } from "./karaoke-reset-operator-auth.ts";
+import { LearnerAudioCaptureRejected } from "./learner-audio-captured-io.ts";
 import { type HyperdriveConnection, makeHyperdriveControlPlaneLayer } from "./postgres.ts";
+
+/** A retry's acquisition/statement outcome says nothing about the original
+ * durable operation. The repository's ordinary wire adapter maps every native
+ * ControlPlane failure to KaraokeStoreFailed, which must also stay pending. */
+const isKaraokeControlPlaneFailure = (error: unknown): boolean =>
+  error instanceof ControlPlaneAcquireFailed ||
+  error instanceof ControlPlaneOperationTimedOut ||
+  error instanceof ControlPlaneStatementFailed ||
+  error instanceof ControlPlaneTransactionOutcomeUnknown ||
+  error instanceof KaraokeStoreFailed;
 
 const TOKEN_TTL_MS = 5 * 60 * 1_000;
 const R2_PART_BYTES = 5 * 1024 * 1024;
@@ -70,6 +89,7 @@ type KaraokeDurableObjectState = {
   readonly id: { toString(): string };
   readonly storage: {
     readonly sql: unknown;
+    transactionSync<A>(use: () => A): A;
     get<T = unknown>(key: string): Promise<T | undefined>;
     put(entries: Record<string, unknown>): Promise<void>;
     getAlarm(): Promise<number | null>;
@@ -103,6 +123,7 @@ type KaraokeR2Bucket = {
     size: number;
   }> | null>;
   resumeMultipartUpload(key: string, uploadId: string): KaraokeR2MultipartUpload;
+  delete(key: string): Promise<void>;
 };
 
 declare const WebSocketPair: {
@@ -261,6 +282,8 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     if (this.resetFenced) throw new Error("karaoke_reset_fenced");
   }
 
+  private capturedAudio: CapturedKaraokeMultipartArchive | null = null;
+  private capturedAudioLoading: Promise<CapturedKaraokeMultipartArchive> | null = null;
   private host: KaraokeSessionHost | null = null;
   private adapter: KaraokeStreamingSttAdapter | null = null;
   private serverSequence = 0;
@@ -484,6 +507,7 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     } else if (canonicalJson(sqlJson(existing.authority_json)) !== canonicalJson(authority)) {
       throw new Error("karaoke_session_identity_mismatch");
     }
+    await this.requireCapturedArchive();
     this.assertNotResetFenced();
     const credential = token();
     const tokenExpiresAt = Math.min(Date.now() + TOKEN_TTL_MS, Date.parse(authority.expiresAt));
@@ -632,7 +656,8 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         );
       } catch {
         if (this.resetFenced) return;
-        this.sql.exec("UPDATE karaoke_archive SET state='failed' WHERE id=1");
+        // An archive-frame error is not positive native terminal failure.
+        // Retain pending/unknown capture and journal for exact reconciliation.
       }
     }
     await this.persistHost();
@@ -883,155 +908,68 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     if (Number(pending?.bytes ?? 0) >= R2_PART_BYTES) await this.uploadPending(false);
   }
 
-  private uploadPending(final: boolean): Promise<void> {
-    return this.resetProducers.run(() => this.uploadPendingActive(final));
+  private requireCapturedArchive(): Promise<CapturedKaraokeMultipartArchive> {
+    if (this.capturedAudio !== null) return Promise.resolve(this.capturedAudio);
+    if (this.capturedAudioLoading !== null) return this.capturedAudioLoading;
+    const opening = this.openCapturedArchive();
+    // Cache BEFORE yielding to another DO event: exactly one archive serializer.
+    this.capturedAudioLoading = opening;
+    void opening.then(
+      (archive) => {
+        this.capturedAudio = archive;
+        if (this.capturedAudioLoading === opening) this.capturedAudioLoading = null;
+      },
+      () => {
+        // Retry reconstructs the same durable capture/journal; never a new upload.
+        if (this.capturedAudioLoading === opening) this.capturedAudioLoading = null;
+      },
+    );
+    return opening;
   }
-
-  private async uploadPendingActive(final: boolean): Promise<void> {
+  private async openCapturedArchive(): Promise<CapturedKaraokeMultipartArchive> {
     this.assertNotResetFenced();
     const bucket = this.runtimeEnv.LEARNER_AUDIO;
     if (bucket === undefined) throw new Error("karaoke_archive_bucket_unavailable");
-    let archive = this.archive();
-    const chunks = this.sql
-      .exec<{ frame_sequence: number; payload: ArrayBuffer }>(
-        "SELECT frame_sequence,payload FROM karaoke_audio_chunk ORDER BY frame_sequence",
-      )
-      .toArray();
-    const total = chunks.reduce((sum, chunk) => sum + chunk.payload.byteLength, 0);
-    if (total === 0 || (!final && total < R2_PART_BYTES)) return;
-    const upload =
-      archive.uploadId === null
-        ? await bucket.createMultipartUpload(archive.objectKey, {
-            httpMetadata: { contentType: "audio/L16;rate=16000;channels=1" },
-            customMetadata: { source: "karaoke_scored_pcm_v1" },
-          })
-        : bucket.resumeMultipartUpload(archive.objectKey, archive.uploadId);
-    if (archive.uploadId === null) {
-      archive = { ...archive, uploadId: upload.uploadId };
-      this.sql.exec("UPDATE karaoke_archive SET upload_id=? WHERE id=1", upload.uploadId);
-    }
-    // Preserve a newly issued upload ID for operator cleanup, but never issue
-    // its next R2 operation after a fence installed during creation.
-    this.assertNotResetFenced();
-    const payload = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      payload.set(new Uint8Array(chunk.payload), offset);
-      offset += chunk.payload.byteLength;
-    }
-    const part = await upload.uploadPart(archive.nextPart, payload);
-    this.assertNotResetFenced();
-    const parts = [...archive.parts, part];
-    this.sql.exec(
-      "UPDATE karaoke_archive SET next_part=?,parts_json=? WHERE id=1",
-      archive.nextPart + 1,
-      JSON.stringify(parts),
+    const authority = this.authority();
+    const binding = await Effect.runPromise(
+      makeCapturedKaraokeBindings(
+        makeHyperdriveControlPlaneLayer(this.runtimeEnv.CONTROL_PLANE),
+        authority,
+      ),
     );
-    this.sql.exec("DELETE FROM karaoke_audio_chunk");
+    this.assertNotResetFenced();
+    const journal = makeCapturedKaraokeSqliteJournal(
+      { sql: this.sql, transactionSync: (use) => this.runtimeCtx.storage.transactionSync(use) },
+      binding.capture,
+    );
+    return new CapturedKaraokeMultipartArchive(
+      journal,
+      binding.ledger,
+      bucket,
+      binding.authorizeDeletionStop,
+      binding.cancelUnclaimed,
+      () => this.assertNotResetFenced(),
+    );
   }
-
+  private uploadPending(final: boolean): Promise<void> {
+    return this.resetProducers.run(async () => {
+      this.assertNotResetFenced();
+      await (await this.requireCapturedArchive()).uploadPending(final);
+    });
+  }
   private finishArchive(): Promise<KaraokeRecordingResult> {
-    return this.resetProducers.run(() => this.finishArchiveActive());
+    return this.resetProducers.run(async () => {
+      this.assertNotResetFenced();
+      return await (await this.requireCapturedArchive()).finish();
+    });
   }
-
-  private async finishArchiveActive(): Promise<KaraokeRecordingResult> {
-    this.assertNotResetFenced();
-    const bucket = this.runtimeEnv.LEARNER_AUDIO;
-    if (bucket === undefined) return { state: "failed", failureKind: "multipart_failed" };
-    try {
-      const previous = this.archive();
-      if (previous.state === "failed") {
-        if (previous.uploadId !== null) {
-          try {
-            await bucket.resumeMultipartUpload(previous.objectKey, previous.uploadId).abort();
-          } catch {
-            // Recording failure remains independent from score finalization.
-          }
-        }
-        return { state: "failed", failureKind: "multipart_failed" };
-      }
-      if (previous.state === "stored" && previous.result !== null) return previous.result;
-      if (previous.state === "stored")
-        return await this.persistStoredArchiveResult(bucket, previous);
-      await this.uploadPending(true);
+  /** Internal RPC; PostgreSQL actual source-owned active fence authorizes it.
+   * A caller without that durable authority cannot alter this DO or scoring. */
+  stopCapturedAudioForDeletion(): Promise<void> {
+    return this.resetProducers.run(async () => {
       this.assertNotResetFenced();
-      const archive = this.archive();
-      if (archive.uploadId === null || archive.parts.length === 0) {
-        return { state: "failed", failureKind: "multipart_aborted" };
-      }
-      await bucket
-        .resumeMultipartUpload(archive.objectKey, archive.uploadId)
-        .complete([...archive.parts]);
-      this.assertNotResetFenced();
-      return await this.persistStoredArchiveResult(bucket, archive);
-    } catch {
-      this.assertNotResetFenced();
-      const archive = this.archive();
-      try {
-        const recovered = await this.storedArchiveResult(bucket, archive);
-        this.assertNotResetFenced();
-        if (recovered.state === "stored") {
-          this.storeArchiveResult(recovered);
-          return recovered;
-        }
-      } catch {
-        this.assertNotResetFenced();
-        // If R2 cannot confirm the object, the open multipart upload is aborted below.
-      }
-      if (archive.uploadId !== null) {
-        try {
-          await bucket.resumeMultipartUpload(archive.objectKey, archive.uploadId).abort();
-        } catch {
-          // The failed state is still reconciled even if R2 abort also fails.
-        }
-      }
-      this.assertNotResetFenced();
-      this.sql.exec("UPDATE karaoke_archive SET state='failed' WHERE id=1");
-      return { state: "failed", failureKind: "multipart_failed" };
-    }
-  }
-
-  private async storedArchiveResult(
-    bucket: KaraokeR2Bucket,
-    archive: ArchiveState,
-  ): Promise<KaraokeRecordingResult> {
-    this.assertNotResetFenced();
-    const stored = await bucket.get(archive.objectKey);
-    this.assertNotResetFenced();
-    if (stored === null) return { state: "failed", failureKind: "reconciliation_failed" };
-    const hash = createHash("sha256");
-    const reader = stored.body.getReader();
-    while (true) {
-      const next = await reader.read();
-      this.assertNotResetFenced();
-      if (next.done) break;
-      hash.update(next.value);
-    }
-    return {
-      state: "stored",
-      objectRef: archive.objectKey,
-      contentSha256: hash.digest("hex"),
-      byteSize: stored.size,
-      durationMs: Math.max(1, archive.durationMs),
-    };
-  }
-
-  private storeArchiveResult(result: Extract<KaraokeRecordingResult, { state: "stored" }>): void {
-    this.assertNotResetFenced();
-    this.sql.exec(
-      "UPDATE karaoke_archive SET state='stored',result_json=? WHERE id=1",
-      JSON.stringify(result),
-    );
-  }
-
-  private async persistStoredArchiveResult(
-    bucket: KaraokeR2Bucket,
-    archive: ArchiveState,
-  ): Promise<KaraokeRecordingResult> {
-    const result = await this.storedArchiveResult(bucket, archive);
-    this.assertNotResetFenced();
-    if (result.state === "stored") this.storeArchiveResult(result);
-    return result;
+      await (await this.requireCapturedArchive()).stopForDeletion();
+    });
   }
 
   private transportFacts() {
@@ -1117,16 +1055,18 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         );
         if (this.resetFenced) return;
         this.sql.exec("UPDATE karaoke_outbox SET score_state='stored' WHERE id=1");
-      } catch {
+      } catch (error) {
         if (this.resetFenced) return;
-        this.recordFinalizationFailure("score", Date.now());
+        // No score/qualification rewrite: reconcile the original durable
+        // operation rather than exhausting an ambiguous database outcome.
+        this.recordFinalizationFailure("score", Date.now(), isKaraokeControlPlaneFailure(error));
       }
     }
     if (this.resetFenced) return;
     if (row.recording_state === "pending" && Number(row.recording_next_attempt_at) <= now) {
-      const result = await this.finishArchive();
-      if (this.resetFenced) return;
       try {
+        const result = await this.finishArchive();
+        if (this.resetFenced) return;
         await Effect.runPromise(
           store.reconcileRecording({
             accountId: authority.accountId,
@@ -1140,9 +1080,15 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
         );
         if (this.resetFenced) return;
         this.sql.exec("UPDATE karaoke_outbox SET recording_state='stored' WHERE id=1");
-      } catch {
+      } catch (error) {
         if (this.resetFenced) return;
-        this.recordFinalizationFailure("recording", Date.now());
+        this.recordFinalizationFailure(
+          "recording",
+          Date.now(),
+          error instanceof LearnerAudioStorageOutcomeUnknown ||
+            isKaraokeControlPlaneFailure(error) ||
+            error instanceof LearnerAudioCaptureRejected,
+        );
       }
     }
     const current = one(
@@ -1156,14 +1102,18 @@ export class KaraokeAttemptDO extends DurableObject<KaraokeAttemptDoBindings> {
     await this.scheduleOutboxAlarm(Date.now());
   }
 
-  private recordFinalizationFailure(axis: FinalizationAxis, now: number): void {
+  private recordFinalizationFailure(
+    axis: FinalizationAxis,
+    now: number,
+    retainPending = false,
+  ): void {
     if (this.resetFenced) return;
     const row = one(this.sql, `SELECT ${axis}_attempts AS attempts FROM karaoke_outbox WHERE id=1`);
     if (row === null) return;
     const transition = karaokeFinalizationFailureTransition({
       attempts: Number(row.attempts),
       now,
-      exhaustionEnabled: this.finalizationExhaustionEnabled(),
+      exhaustionEnabled: retainPending ? false : this.finalizationExhaustionEnabled(),
     });
     this.sql.exec(
       `UPDATE karaoke_outbox

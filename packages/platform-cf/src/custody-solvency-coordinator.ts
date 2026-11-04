@@ -6,6 +6,7 @@ import type {
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
 import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
+import { readMegapotFinalizedHead } from "./megapot-finality.ts";
 import { type MegapotV2RpcClient, MegapotV2RpcFailed } from "./megapot-v2-rpc.ts";
 
 type CustodySolvencyRpcStage =
@@ -105,7 +106,15 @@ export function makeCustodySolvencyCoordinator(input: {
     observe: Effect.fn("CustodySolvencyCoordinator.observe")(
       function* (attestationId, tokenAddress) {
         const candidate = yield* input.store.loadCandidate(attestationId, tokenAddress);
-        if (!isMegapotStepChainAllowed("solvency", candidate.environment, candidate.chainId)) {
+        if (
+          !isMegapotStepChainAllowed(
+            "solvency",
+            candidate.environment,
+            candidate.chainId,
+            input.rpc,
+            candidate,
+          )
+        ) {
           return yield* failed("production_disabled");
         }
         const attested = yield* rpcEffect("deployment_attestation", () =>
@@ -121,7 +130,13 @@ export function makeCustodySolvencyCoordinator(input: {
         const head = yield* rpcEffect("head", () => input.rpc.readHead());
         const confirmations = BigInt(input.requiredConfirmations);
         if (head.blockNumber + 1n < confirmations) return yield* failed("observation_invalid");
-        const blockNumber = head.blockNumber - confirmations + 1n;
+        let blockNumber = head.blockNumber - confirmations + 1n;
+        if (candidate.chainId === 8453) {
+          const finalized = yield* rpcEffect("confirmed_block", () =>
+            readMegapotFinalizedHead(input.rpc),
+          );
+          if (finalized.blockNumber < blockNumber) blockNumber = finalized.blockNumber;
+        }
         const block = yield* rpcEffect("confirmed_block", () => input.rpc.readBlock(blockNumber));
         const balanceAtomic = yield* rpcEffect("confirmed_balance", () =>
           candidate.tokenAddress.toLowerCase() === candidate.usdcAddress.toLowerCase()
@@ -134,7 +149,15 @@ export function makeCustodySolvencyCoordinator(input: {
                   blockNumber,
                 ),
         );
-        if (block.blockNumber !== blockNumber) return yield* failed("observation_invalid");
+        const canonical = yield* rpcEffect("confirmed_block", () =>
+          input.rpc.readBlock(blockNumber),
+        );
+        if (
+          block.blockNumber !== blockNumber ||
+          canonical.blockNumber !== blockNumber ||
+          canonical.blockHash !== block.blockHash
+        )
+          return yield* failed("observation_invalid");
         const observationId = deriveCustodySolvencyObservationId(
           candidate.attestationId,
           blockNumber,

@@ -116,6 +116,36 @@ function rpc(
 }
 
 describe("Megapot drawing observer", () => {
+  test("stale heads and a block changed during reads cannot open a drawing", async () => {
+    const authority = candidate();
+    for (const reorg of [false, true]) {
+      let opened = 0;
+      const source = rpc(authority);
+      const observer = makeMegapotDrawingObserver({
+        store: {
+          loadCandidate: () => Effect.succeed(authority),
+          recordAndOpen: (observation) => {
+            opened++;
+            return Effect.succeed({ ...observation, openedPoolLegIds: [] });
+          },
+        },
+        rpc: reorg
+          ? {
+              ...source,
+              readBlock: async (blockNumber) => ({ blockNumber, blockHash: bytes32("f") }),
+            }
+          : source,
+        observationTtlMs: 60_000,
+        now: () => Date.parse(reorg ? "2026-04-29T00:01:00.000Z" : "2026-04-29T00:01:00.001Z"),
+      });
+      await expect(
+        Effect.runPromise(observer.observe(authority.attestationId)),
+      ).rejects.toMatchObject({
+        reason: reorg ? "deployment-attestation-mismatch" : "invalid-block-time",
+      });
+      expect(opened).toBe(0);
+    }
+  });
   test("reads one immutable block and opens drawings from persisted authority", async () => {
     const authority = candidate();
     const recorded: MegapotDrawingObservationRecord[] = [];

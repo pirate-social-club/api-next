@@ -22,8 +22,8 @@ import { Effect } from "effect";
 import type { HnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 
 export const HNS_COMMUNITY_APP_API_MAX_BODY_BYTES = 1_048_576 as const;
-const allowedMethods = new Set(["GET", "HEAD", "POST", "PATCH"]);
-const unsafeMethods = new Set(["POST", "PATCH"]);
+const allowedMethods = new Set(["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"]);
+const unsafeMethods = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
 type RequestHeaders = Readonly<{
   get: (name: string) => string | null;
@@ -125,12 +125,16 @@ export type VerifiedHnsCommunityAppApiRequest = Readonly<{
 export async function verifyHnsCommunityAppApiRequest(
   request: HnsCommunityAppTransportRequest,
   composition: Extract<HnsCommunityAppApiComposition, { readonly enabled: true }>,
+  beforeBodyRead?: () => Promise<void>,
 ): Promise<VerifiedHnsCommunityAppApiRequest> {
   const parsed = new URL(request.url);
   if (!isHnsCommunityAppApiPath(parsed.pathname) || !allowedMethods.has(request.method)) {
     throw invalidRequest();
   }
   await authenticateAccess(request, composition);
+  // Refusal-only transport callback. It mints no HNS/browser authority and must
+  // finish before this verifier clones/allocates/hashes any request body.
+  await beforeBodyRead?.();
   const bodyBytes = await readBoundedRequestBody(
     request.clone(),
     HNS_COMMUNITY_APP_API_MAX_BODY_BYTES,

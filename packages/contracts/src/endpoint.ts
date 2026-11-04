@@ -1,5 +1,5 @@
 import type { Schema } from "effect";
-import type { AuthPolicyApplication } from "./auth.ts";
+import { type AuthPolicyApplication, isBrowserParticipationOperation } from "./auth.ts";
 import type { ApiError } from "./errors.ts";
 
 /**
@@ -84,6 +84,10 @@ export interface BinaryResponseRepresentation {
 
 export interface EndpointDefinition {
   readonly method: HttpMethod;
+  /** Interface checkpoint only: dispatcher refuses even if a handler is supplied. */
+  readonly implementation?: "disabled";
+  /** Explicit private JSON response policy, including failures and disabled refusal. */
+  readonly cacheControl?: "private, no-store";
   /** Path with `:param` placeholders; path params are schema-decoded. */
   readonly path: string;
   readonly auth: AuthPolicyApplication;
@@ -108,6 +112,24 @@ export interface EndpointDefinition {
  * route-table keys) — the input shape stays frozen.
  */
 export function endpoint<const E extends EndpointDefinition>(def: E): E {
+  if (
+    def.auth.policy.kind === "browserParticipation" &&
+    (!isBrowserParticipationOperation(def.auth.policy) ||
+      def.auth.optionalUser !== undefined ||
+      def.auth.browserSessionOnly !== undefined ||
+      def.auth.setupSessionAccess !== undefined)
+  ) {
+    throw new Error("Invalid browser participation policy");
+  }
+  if (
+    def.auth.setupSessionAccess !== undefined &&
+    (def.auth.setupSessionAccess !== "successfulGuestAttachment" ||
+      def.auth.policy.kind !== "user" ||
+      def.auth.browserSessionOnly !== true ||
+      def.method !== "GET")
+  ) {
+    throw new Error("Invalid setup-session endpoint policy");
+  }
   if (def.responseRepresentation !== undefined) {
     const representation = def.responseRepresentation;
     const statuses = Array.isArray(def.successStatus) ? def.successStatus : [];

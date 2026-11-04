@@ -5,6 +5,7 @@ import {
   type MegapotBaseSepoliaAttestation,
   type MegapotBaseSepoliaPreflightDependencies,
   MegapotBaseSepoliaPreflightFailed,
+  runMegapotActivationPreflight,
   runMegapotBaseSepoliaPreflight,
 } from "./megapot-base-sepolia-preflight.ts";
 
@@ -94,6 +95,26 @@ const input = {
 } as const;
 
 describe("Base Sepolia Megapot preflight", () => {
+  test("refuses an unready runtime role before any chain read", async () => {
+    let chainRead = false;
+    const dependency = {
+      loadAttestation: async () => {
+        chainRead = true;
+        throw new Error("unexpected chain read");
+      },
+      makeRpc: () => {
+        chainRead = true;
+        throw new Error("unexpected RPC creation");
+      },
+    } as MegapotBaseSepoliaPreflightDependencies;
+    await expect(
+      runMegapotActivationPreflight(input, "postgres://admin.invalid/db", dependency, async () => {
+        throw new Error("runtime privilege preflight refused: missing grant");
+      }),
+    ).rejects.toThrow("missing grant");
+    expect(chainRead).toBe(false);
+  });
+
   test("proves the attested chain anchor and reports funding and approval needs", async () => {
     const result = await runMegapotBaseSepoliaPreflight(input, dependencies());
 

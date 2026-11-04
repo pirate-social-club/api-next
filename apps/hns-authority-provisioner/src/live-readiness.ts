@@ -1,6 +1,6 @@
 import { X509Certificate } from "node:crypto";
-import { createConnection, isIP } from "node:net";
-import { connect as connectTls } from "node:tls";
+import { isIP } from "node:net";
+import { type ConnectionOptions, connect as connectTls } from "node:tls";
 import {
   buildHnsAuthoritativeDnsQueryV1,
   classifyHnsAuthoritativeDnsResponseV1,
@@ -148,6 +148,26 @@ export function hnsGatewayReadinessStatusV1(statusLine: string): 200 | 421 {
   return status;
 }
 
+/** Opens the bound TCP connection and TLS handshake as one operation. */
+export function connectHnsGatewayTlsV1(input: {
+  readonly gateway_address: string;
+  readonly gateway_local_address: string;
+  readonly servername: string;
+  readonly port: number;
+}) {
+  // Bun forwards these net.connect options even though node:tls types omit
+  // them. A real TLS server test verifies the bound source address.
+  const options: ConnectionOptions & { localAddress: string; family: 4 } = {
+    host: input.gateway_address,
+    port: input.port,
+    family: 4,
+    localAddress: input.gateway_local_address,
+    servername: input.servername,
+    rejectUnauthorized: false,
+  };
+  return connectTls(options);
+}
+
 async function probeGateway(input: {
   readonly root_label: string;
   readonly gateway_address: string;
@@ -159,28 +179,22 @@ async function probeGateway(input: {
     let completed = false;
     let received = new Uint8Array();
     let socket: ReturnType<typeof connectTls> | undefined;
-    const transport = createConnection({
-      host: input.gateway_address,
-      port: 443,
-      family: 4,
-      localAddress: input.gateway_local_address,
-    });
     const finish = (action: () => void) => {
       if (completed) return;
       completed = true;
       clearTimeout(timeout);
       socket?.destroy();
-      transport.destroy();
       action();
     };
     const timeout = setTimeout(
       () => finish(() => reject(new Error("HNS gateway readiness probe timed out"))),
       input.timeout_ms,
     );
-    socket = connectTls({
-      socket: transport,
+    socket = connectHnsGatewayTlsV1({
+      gateway_address: input.gateway_address,
+      gateway_local_address: input.gateway_local_address,
       servername: host,
-      rejectUnauthorized: false,
+      port: 443,
     });
     socket.once("secureConnect", () => {
       const raw = socket?.getPeerCertificate(true).raw;

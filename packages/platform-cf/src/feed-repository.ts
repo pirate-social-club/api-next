@@ -319,6 +319,8 @@ const feedItemFromRow = (
   };
 };
 
+// A video joins Home only once Stream can play it: its ingest is ready with a
+// provider ID and its stream delivery has not failed.
 const homeFeedStatement = (input: {
   readonly cursor: FeedCursor | null;
   readonly cutoff: number | null;
@@ -398,6 +400,10 @@ const homeFeedStatement = (input: {
                ON alias.post_id = p.post_id
             WHERE c.status = 'active'
               AND p.status = 'published'
+              AND (p.post_type <> 'video'
+                OR (stream_ingest.state = 'ready'
+                  AND stream_ingest.provider_video_id IS NOT NULL
+                  AND stream_enrichment.state IS DISTINCT FROM 'failed'))
               AND ($2::double precision IS NULL OR EXTRACT(EPOCH FROM p.created_at) >= $2)
               AND (
                 p.visibility = 'public'

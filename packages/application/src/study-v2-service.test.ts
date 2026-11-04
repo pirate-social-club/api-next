@@ -90,6 +90,7 @@ describe("Study spoken answer command", () => {
   test("pays for one transcription and replays even when archival fails", async () => {
     let transcriptions = 0;
     let archives = 0;
+    let languageHint: string | null | undefined;
     let completed: StudyAnswerResultV2 | null = null;
     const recordedArchives: StudyAudioArchiveResult[] = [];
     const unused = () => Effect.die("unused Study store operation");
@@ -99,7 +100,12 @@ describe("Study spoken answer command", () => {
       getSession: unused,
       submitAnswer: unused,
       loadSpokenAnswerContext: () =>
-        Effect.succeed({ item: item(0), referenceText: "Hold on", dominantLanguage: null }),
+        Effect.succeed({
+          item: item(0),
+          referenceText: "Hold on",
+          dominantLanguage: null,
+          languageProvenance: { kind: "no_authoritative_evidence" },
+        }),
       reserveSpokenAnswer: (input) =>
         completed === null
           ? Effect.succeed({
@@ -138,8 +144,9 @@ describe("Study spoken answer command", () => {
     const service = makeStudyV2Service(store, {
       transcriber: {
         providerRetention: "stored",
-        transcribe: () => {
+        transcribe: (input) => {
           transcriptions += 1;
+          languageHint = input.languageHint;
           return Effect.succeed({
             transcript: "Hold on",
             detectedLanguage: "en",
@@ -177,13 +184,21 @@ describe("Study spoken answer command", () => {
     await expect(run()).resolves.toMatchObject({ outcome: "correct" });
     await expect(run()).resolves.toMatchObject({ outcome: "correct" });
     expect(transcriptions).toBe(1);
+    expect(languageHint).toBeNull();
     expect(archives).toBe(1);
     expect(recordedArchives).toEqual([{ state: "failed", objectRef: null }]);
   });
 
   test("grades new spoken items phonetically while preserving the immutable policy revision", async () => {
     let completedGrade: Parameters<StudyV2Store["completeSpokenAnswer"]>[0]["grade"] | null = null;
-    const v2Item = item(0, "script_aware_token_phonetic_v2");
+    let completionEvidence: Pick<
+      Parameters<StudyV2Store["completeSpokenAnswer"]>[0],
+      "languageProvenance" | "rerecordAssessment" | "rerecordEnabled"
+    > | null = null;
+    const v2Item = {
+      ...item(0, "script_aware_token_phonetic_v2"),
+      language_profile_revision: 1,
+    };
     const unused = () => Effect.die("unused Study store operation");
     const store: StudyV2Store = {
       getAvailability: unused,
@@ -191,7 +206,21 @@ describe("Study spoken answer command", () => {
       getSession: unused,
       submitAnswer: unused,
       loadSpokenAnswerContext: () =>
-        Effect.succeed({ item: v2Item, referenceText: "hold me close", dominantLanguage: "en" }),
+        Effect.succeed({
+          item: v2Item,
+          referenceText: "hold me close",
+          dominantLanguage: "en",
+          languageProvenance: {
+            kind: "unit_profile",
+            community_id: "community-1",
+            post_id: "post-1",
+            lyrics_revision: 1,
+            language_profile_revision: 1,
+            study_unit_id: "unit-0",
+            confidence: 0.99,
+            dominant_language: "en",
+          },
+        }),
       reserveSpokenAnswer: (input) =>
         Effect.succeed({
           state: "reserved",
@@ -203,6 +232,11 @@ describe("Study spoken answer command", () => {
       failSpokenAnswer: () => Effect.void,
       completeSpokenAnswer: (input) => {
         completedGrade = input.grade;
+        completionEvidence = {
+          languageProvenance: input.languageProvenance,
+          rerecordAssessment: input.rerecordAssessment,
+          rerecordEnabled: input.rerecordEnabled,
+        };
         return Effect.succeed({
           object: "study_answer_result_v2",
           session_item_id: input.sessionItemId,
@@ -260,6 +294,22 @@ describe("Study spoken answer command", () => {
       matchKind: "phonetic",
       policyRevision: "script_aware_token_phonetic_v2",
     });
+    expect(completionEvidence).toMatchObject({
+      languageProvenance: {
+        kind: "unit_profile",
+        community_id: "community-1",
+        post_id: "post-1",
+        lyrics_revision: 1,
+        language_profile_revision: 1,
+        study_unit_id: "unit-0",
+        confidence: 0.99,
+      },
+      rerecordAssessment: {
+        policyRevision: "study_spoken_rerecord_v1",
+        candidateReason: null,
+      },
+      rerecordEnabled: false,
+    });
   });
 
   test("binds provider retention into the reserved command identity", async () => {
@@ -274,7 +324,12 @@ describe("Study spoken answer command", () => {
       getSession: unused,
       submitAnswer: unused,
       loadSpokenAnswerContext: () =>
-        Effect.succeed({ item: item(0), referenceText: "Hold on", dominantLanguage: null }),
+        Effect.succeed({
+          item: item(0),
+          referenceText: "Hold on",
+          dominantLanguage: null,
+          languageProvenance: { kind: "no_authoritative_evidence" },
+        }),
       reserveSpokenAnswer: (input) => {
         recorded.retention = input.providerRetention;
         recorded.requestHash = input.requestHash;

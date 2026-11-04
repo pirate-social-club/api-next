@@ -1,6 +1,8 @@
 import {
+  type HnsOwnerRecoveryPollFailure,
   type HnsOwnerRecoveryPollServices,
   type HnsOwnerRecoveryStartServices,
+  type PollHnsOwnerRecoveryInput,
   pollHnsOwnerRecovery,
   startHnsOwnerRecovery,
 } from "@pirate/application/route-revalidation";
@@ -24,7 +26,11 @@ import {
 
 export interface HnsOwnerRecoveryHandlerServices {
   readonly start: HnsOwnerRecoveryStartServices;
-  readonly poll: HnsOwnerRecoveryPollServices;
+  readonly poll:
+    | HnsOwnerRecoveryPollServices
+    | ((
+        input: PollHnsOwnerRecoveryInput,
+      ) => Effect.Effect<HnsOwnerRecoveryPollServices, HnsOwnerRecoveryPollFailure>);
 }
 
 export type HnsOwnerRecoveryHandlers = Readonly<{
@@ -113,9 +119,9 @@ function pollStatus(status: string): 200 | 202 | 422 | 503 {
 }
 
 /**
- * Builds the owner-facing HTTP seam without registering it. Runtime
- * composition remains blocked until the durable store and private provider
- * transport exist and HNS enablement is explicitly authorized.
+ * The runtime registers these handlers only with enabled HNS ownership and
+ * its private verifier binding. Poll services can load the pinned lease policy
+ * per request; this keeps the one-hour regtest and mainnet leases aligned.
  */
 export function makeHnsOwnerRecoveryHandlers(
   services: HnsOwnerRecoveryHandlerServices,
@@ -149,19 +155,20 @@ export function makeHnsOwnerRecoveryHandlers(
         idempotency_key: string;
         channel: "poll_result";
       }>;
+      const input = {
+        actor_id: actorId(request.principal),
+        community_id: communityId(request),
+        route_recovery_id: body.route_recovery_id,
+        session_id: body.session_id,
+        expected_generation: body.expected_generation,
+        idempotency_key: body.idempotency_key,
+        channel: body.channel,
+      } as const;
+      const pollServices =
+        typeof services.poll === "function" ? services.poll(input) : Effect.succeed(services.poll);
       return Effect.runPromise(
-        pollHnsOwnerRecovery(
-          {
-            actor_id: actorId(request.principal),
-            community_id: communityId(request),
-            route_recovery_id: body.route_recovery_id,
-            session_id: body.session_id,
-            expected_generation: body.expected_generation,
-            idempotency_key: body.idempotency_key,
-            channel: body.channel,
-          },
-          services.poll,
-        ).pipe(
+        pollServices.pipe(
+          Effect.flatMap((resolved) => pollHnsOwnerRecovery(input, resolved)),
           Effect.map((result) => withEndpointResult(result, pollStatus(result.status))),
           Effect.mapError(wireFailure),
         ),

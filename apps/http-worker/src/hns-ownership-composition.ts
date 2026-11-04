@@ -1,3 +1,4 @@
+import { HNS_TXT_IMPORT_PROTOCOL_VERSION } from "@pirate/application/namespace-ownership";
 import type { CommunityCreationProviderBinding } from "@pirate/domain";
 import { ProviderConfigurationRef } from "@pirate/domain/verification";
 import type {
@@ -18,6 +19,11 @@ export type HnsOwnershipCompositionConfig = Readonly<{
   readonly environment: "development" | "staging" | "production";
   readonly configuration_reference: string;
   readonly configuration_version: string;
+  /**
+   * Comma-separated protocols the pinned provider entry advertises beyond
+   * hns-txt-v1. Only hns-txt-import-v1 is known; anything else is refused.
+   */
+  readonly capabilities?: string;
 }>;
 
 export type HnsOwnershipCompositionDependencies = Readonly<{
@@ -69,6 +75,13 @@ export function makeHnsOwnershipComposition(
     throw new Error("HNS ownership composition is incomplete or invalid");
   }
 
+  const capabilities = (config.capabilities ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  if (capabilities.some((value) => value !== HNS_TXT_IMPORT_PROTOCOL_VERSION)) {
+    throw new Error("HNS ownership composition is incomplete or invalid");
+  }
   const configuration = Object.freeze(providerConfiguration.value);
   const binding = Object.freeze({
     requirement: "namespace_ownership" as const,
@@ -87,6 +100,9 @@ export function makeHnsOwnershipComposition(
         transport: dependencies.transport,
         provider_configuration: configuration,
         environments,
+        ...(capabilities.includes(HNS_TXT_IMPORT_PROTOCOL_VERSION)
+          ? { import_protocol_enabled: true }
+          : {}),
       }),
     }),
   });

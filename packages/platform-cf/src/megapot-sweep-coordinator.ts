@@ -6,6 +6,7 @@ import type {
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
 import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
+import { readMegapotFinalizedHead } from "./megapot-finality.ts";
 import { MEGAPOT_REFERRAL_SPLIT_SCALE } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 
@@ -97,7 +98,15 @@ export function makeMegapotSweepCoordinator(input: {
     const existing = yield* input.store.findResult(sweepId);
     if (existing !== null) return completed(existing);
     const candidate = yield* input.store.loadCandidate(command);
-    if (!isMegapotStepChainAllowed("sweep", candidate.environment, candidate.chainId)) {
+    if (
+      !isMegapotStepChainAllowed(
+        "sweep",
+        candidate.environment,
+        candidate.chainId,
+        input.rpc,
+        candidate,
+      )
+    ) {
       return yield* failed("production_disabled");
     }
     yield* rpcEffect(() => input.rpc.attestDeployment()).pipe(
@@ -114,7 +123,12 @@ export function makeMegapotSweepCoordinator(input: {
         observationBlockNumber: null,
       } as const;
     }
-    const observationBlockNumber = head.blockNumber - confirmationOffset;
+    let observationBlockNumber = head.blockNumber - confirmationOffset;
+    if (candidate.chainId === 8453) {
+      const finalized = yield* rpcEffect(() => readMegapotFinalizedHead(input.rpc));
+      if (finalized.blockNumber < observationBlockNumber)
+        observationBlockNumber = finalized.blockNumber;
+    }
     const [block, currentDrawingId, drawingState] = yield* rpcEffect(() =>
       Promise.all([
         input.rpc.readBlock(observationBlockNumber),
@@ -188,6 +202,13 @@ export function makeMegapotSweepCoordinator(input: {
         netWinningsAtomic: netWinningsAtomic.toString(),
       }),
     );
+    const canonical = yield* rpcEffect(() => input.rpc.readBlock(observationBlockNumber));
+    if (
+      canonical.blockNumber !== observationBlockNumber ||
+      canonical.blockHash !== block.blockHash
+    ) {
+      return yield* failed("drawing_evidence_invalid");
+    }
     const result = yield* input.store.complete({
       candidate,
       sweepId,

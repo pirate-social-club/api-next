@@ -1,13 +1,15 @@
-import { phoneticStreamSimilarity } from "../study/english-phonetics.ts";
+import { phoneticStreamSimilarity, tokenPhoneCount } from "../study/english-phonetics.ts";
 
 export const STUDY_TRANSCRIPT_GRADER_POLICY_V1 = "script_aware_token_diff_v1" as const;
 export const STUDY_TRANSCRIPT_GRADER_POLICY_V2 = "script_aware_token_phonetic_v2" as const;
 export const STUDY_TRANSCRIPT_GRADER_POLICY_V3 = "script_aware_token_phonetic_v3" as const;
+export const STUDY_TRANSCRIPT_GRADER_POLICY_V4 = "script_aware_token_phonetic_v4" as const;
 
 export type StudyTranscriptGraderPolicyRevision =
   | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V1
   | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V2
-  | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V3;
+  | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V3
+  | typeof STUDY_TRANSCRIPT_GRADER_POLICY_V4;
 export type StudyTranscriptMatchKind = "exact" | "phonetic" | "none";
 
 export const studyTranscriptReviewGrade = (
@@ -75,13 +77,44 @@ const meaningChangingEnglishTokens = new Set([
   "without",
 ]);
 
-const isMeaningChangingToken = (token: string): boolean =>
+export const isMeaningChangingStudyToken = (token: string): boolean =>
   /\p{N}/u.test(token) || meaningChangingEnglishTokens.has(token);
 
 const expandEnglishContractions = (value: string): string =>
   value
     .replace(/\b(can)'t\b/giu, "$1 not")
     .replace(/\b(won)'t\b/giu, "will not")
+    .replace(/\b(i)'m\b/giu, "$1 am")
+    .replace(/\b([a-z]+)'re\b/giu, "$1 are")
+    .replace(/\b([a-z]+)'ve\b/giu, "$1 have")
+    .replace(/\b([a-z]+)'ll\b/giu, "$1 will")
+    .replace(/\b([a-z]+)'d\b/giu, "$1 would")
+    .replace(/\b([a-z]+)'s\b/giu, "$1 is");
+
+// Revision v4 canonicalizes the negative contractions v1-v3 leave alone:
+// providers expand them (isn't heard as is not) and the resulting diff then
+// touches a negation token, which the meaning-changing guard refuses, so an
+// equivalent reading was rejected. Curly apostrophes from lyric typography
+// are normalized first because expansion runs before normalizeText. Bare
+// forms precede the apostrophe rules, and the can't/won't special cases
+// precede the general apostrophized rule, or can't expands to ca not and
+// won't to wo not; cannot, cant, and wont converge with can't and won't on
+// their expanded forms. The legacy bare ill, id, im, and ive rewrites are
+// deliberately not ported: those are ordinary words and not homophones of
+// their contractions.
+const expandEnglishContractionsV4 = (value: string): string =>
+  value
+    .replaceAll(/[‘’‛′`´]/gu, "'")
+    .replace(/\bcannot\b/giu, "can not")
+    .replace(/\bcant\b/giu, "can not")
+    .replace(/\bwont\b/giu, "will not")
+    .replace(
+      /\b(is|are|was|were|do|does|did|has|have|had|could|should|would|must)nt\b/giu,
+      "$1 not",
+    )
+    .replace(/\b(can)'t\b/giu, "$1 not")
+    .replace(/\b(won)'t\b/giu, "will not")
+    .replace(/\b([a-z]+)n't\b/giu, "$1 not")
     .replace(/\b(i)'m\b/giu, "$1 am")
     .replace(/\b([a-z]+)'re\b/giu, "$1 are")
     .replace(/\b([a-z]+)'ve\b/giu, "$1 have")
@@ -98,22 +131,58 @@ const normalizeEnglishRecallToken = (token: string): string => {
   return compact.length > 3 && compact.endsWith("s") ? compact.slice(0, -1) : compact;
 };
 
-const rawTokens = (value: string, dominantLanguage: string | null): string[] => {
+const rawTokens = (
+  value: string,
+  dominantLanguage: string | null,
+  expand: (value: string) => string,
+): string[] => {
   const english = dominantLanguage?.split("-", 1)[0] === "en";
-  const normalized = normalizeText(english ? expandEnglishContractions(value) : value);
+  const normalized = normalizeText(english ? expand(value) : value);
   if (normalized.length === 0) return [];
   return [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(normalized)]
     .filter(({ isWordLike }) => isWordLike === true)
     .map(({ segment }) => segment);
 };
 
-const tokens = (value: string, dominantLanguage: string | null): string[] => {
+const tokens = (
+  value: string,
+  dominantLanguage: string | null,
+  expand: (value: string) => string,
+): string[] => {
   const english = dominantLanguage?.split("-", 1)[0] === "en";
-  const segmented = rawTokens(value, dominantLanguage);
+  const segmented = rawTokens(value, dominantLanguage, expand);
   if (!english) return segmented;
   return segmented
     .map(normalizeEnglishRecallToken)
     .filter((token) => token.length > 0 && !ignoredEnglishRecallTokens.has(token));
+};
+
+const englishRecallWordForms = (value: string, expand: (value: string) => string): string[] =>
+  rawTokens(value, "en", expand).filter((word) => {
+    const token = normalizeEnglishRecallToken(word);
+    return token.length > 0 && !ignoredEnglishRecallTokens.has(token);
+  });
+
+// A provider may change whitespace without changing any letters. Align those
+// adjacent spans before counting omitted/inserted words. Never join across a
+// negation or number: their existing meaning-changing guard must still see them.
+const joinedTokenSpan = (words: readonly string[], end: number, target: string): number => {
+  const normalizedTarget = normalizeEnglishRecallToken(target);
+  if (isMeaningChangingStudyToken(normalizedTarget)) return 0;
+  let joined = "";
+  for (let start = end - 1; start >= 0; start -= 1) {
+    const word = words[start] as string;
+    if (isMeaningChangingStudyToken(normalizeEnglishRecallToken(word))) return 0;
+    joined = word + joined;
+    // Only normalize an ending after assembling the span: normalizing "news"
+    // first would lose the internal s in "news paper" → "newspaper".
+    // Recall normalization removes at most two letters from a word's ending.
+    if (joined.length > normalizedTarget.length + 2) return 0;
+    if (end - start > 1 && normalizeEnglishRecallToken(joined) === normalizedTarget) {
+      return end - start;
+    }
+  }
+  return 0;
 };
 
 export const gradeTranscriptV2 = (
@@ -123,15 +192,23 @@ export const gradeTranscriptV2 = (
   policyRevision: StudyTranscriptGraderPolicyRevision,
 ): StudyTranscriptGradeV2 => {
   const v3 = policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V3;
-  let expected = tokens(reference, dominantLanguage);
-  let actual = tokens(heardTranscript, dominantLanguage);
+  const v4 = policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V4;
+  const english = dominantLanguage?.split("-", 1)[0] === "en";
+  const alignWordBoundaries = v4 && english;
+  const expand = v4 ? expandEnglishContractionsV4 : expandEnglishContractions;
+  let expected = tokens(reference, dominantLanguage, expand);
+  let actual = tokens(heardTranscript, dominantLanguage, expand);
+  const expectedForms = alignWordBoundaries ? englishRecallWordForms(reference, expand) : expected;
+  const actualForms = alignWordBoundaries
+    ? englishRecallWordForms(heardTranscript, expand)
+    : actual;
   // Revision v3 refuses vacuous comparisons: when article and stopword
   // filtering empties both sides, compare the unfiltered segmentation so an
   // article-only line versus silence is incorrect while the same article on
   // both sides stays exact.
   if (v3 && expected.length === 0 && actual.length === 0) {
-    const rawExpected = rawTokens(reference, dominantLanguage);
-    const rawActual = rawTokens(heardTranscript, dominantLanguage);
+    const rawExpected = rawTokens(reference, dominantLanguage, expand);
+    const rawActual = rawTokens(heardTranscript, dominantLanguage, expand);
     if (rawExpected.length === 0) {
       // No meaningful reference remains: refuse rather than score an empty
       // comparison as a match.
@@ -167,6 +244,26 @@ export const gradeTranscriptV2 = (
               row[right - 1] ?? 0,
               distance[left - 1]?.[right - 1] ?? 0,
             );
+      if (alignWordBoundaries) {
+        const joinedExpected = joinedTokenSpan(
+          expectedForms,
+          left,
+          actualForms[right - 1] as string,
+        );
+        const joinedActual = joinedTokenSpan(actualForms, right, expectedForms[left - 1] as string);
+        if (joinedExpected > 0) {
+          row[right] = Math.min(
+            row[right] as number,
+            distance[left - joinedExpected]?.[right - 1] ?? 0,
+          );
+        }
+        if (joinedActual > 0) {
+          row[right] = Math.min(
+            row[right] as number,
+            distance[left - 1]?.[right - joinedActual] ?? 0,
+          );
+        }
+      }
     }
   }
   const matched: StudyTokenPositionV2[] = [];
@@ -176,6 +273,30 @@ export const gradeTranscriptV2 = (
   let left = expected.length;
   let right = actual.length;
   while (left > 0 || right > 0) {
+    if (alignWordBoundaries && left > 0 && right > 0) {
+      const joinedExpected = joinedTokenSpan(expectedForms, left, actualForms[right - 1] as string);
+      const joinedActual = joinedTokenSpan(actualForms, right, expectedForms[left - 1] as string);
+      if (
+        joinedExpected > 0 &&
+        distance[left]?.[right] === distance[left - joinedExpected]?.[right - 1]
+      ) {
+        for (let position = left - 1; position >= left - joinedExpected; position -= 1) {
+          matched.push({ token: expected[position] as string, position });
+        }
+        left -= joinedExpected;
+        right -= 1;
+        continue;
+      }
+      if (
+        joinedActual > 0 &&
+        distance[left]?.[right] === distance[left - 1]?.[right - joinedActual]
+      ) {
+        matched.push({ token: expected[left - 1] as string, position: left - 1 });
+        left -= 1;
+        right -= joinedActual;
+        continue;
+      }
+    }
     if (
       left > 0 &&
       right > 0 &&
@@ -209,32 +330,46 @@ export const gradeTranscriptV2 = (
   extra.reverse();
   substituted.reverse();
   const exact = missing.length === 0 && extra.length === 0 && substituted.length === 0;
-  const english = dominantLanguage?.split("-", 1)[0] === "en";
-  // Revision v3 refuses phonetic acceptance when a negation or numeric token
-  // was substituted, inserted or dropped: those changes alter what the line
-  // says, and the phonetic budget must never absorb them.
+  // Revisions v3 and v4 refuse phonetic acceptance when a negation or
+  // numeric token was substituted, inserted or dropped: those changes alter
+  // what the line says, and the phonetic budget must never absorb them.
   const meaningChanged =
-    v3 &&
-    (missing.some(({ token }) => isMeaningChangingToken(token)) ||
-      extra.some(isMeaningChangingToken) ||
+    (v3 || v4) &&
+    (missing.some(({ token }) => isMeaningChangingStudyToken(token)) ||
+      extra.some(isMeaningChangingStudyToken) ||
       substituted.some(
         ({ expected: mismatch, heard }) =>
-          isMeaningChangingToken(mismatch.token) || isMeaningChangingToken(heard),
+          isMeaningChangingStudyToken(mismatch.token) || isMeaningChangingStudyToken(heard),
       ));
   const phonetic =
     !exact &&
     english &&
     (policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V2 ||
-      policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V3)
+      policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V3 ||
+      policyRevision === STUDY_TRANSCRIPT_GRADER_POLICY_V4)
       ? phoneticStreamSimilarity(expected, actual)
       : null;
   // Ported calibration: the floor accepts short inflection/fragmentation errors,
   // while the cap prevents long lines from absorbing semantic substitutions.
   const phoneticBudget =
     phonetic === null ? 0 : Math.max(2, Math.min(Math.floor(0.15 * phonetic.length), 4));
+  // Revision v4 bounds whole-word drift: inflection and fragmentation stay
+  // acceptable, but the unmatched added and missing tokens together may not
+  // reach three phones, so a single inserted or deleted short word can no
+  // longer ride the phonetic budget. The weight uses the same primitive as
+  // the stream comparison.
+  const unmatchedPhoneWeight = v4
+    ? [...missing.map(({ token }) => token), ...extra].reduce(
+        (sum, token) => sum + tokenPhoneCount(token),
+        0,
+      )
+    : 0;
   const matchKind: StudyTranscriptMatchKind = exact
     ? "exact"
-    : phonetic?.available === true && phonetic.distance <= phoneticBudget && !meaningChanged
+    : phonetic?.available === true &&
+        phonetic.distance <= phoneticBudget &&
+        !meaningChanged &&
+        unmatchedPhoneWeight < 3
       ? "phonetic"
       : "none";
   // Revision v2 cleared the diff on phonetic acceptance; v3 keeps it so the
@@ -257,3 +392,6 @@ export const gradeEnglishTranscriptV2 = (reference: string, heardTranscript: str
 
 export const gradeEnglishTranscriptV3 = (reference: string, heardTranscript: string) =>
   gradeTranscriptV2(reference, heardTranscript, "en", STUDY_TRANSCRIPT_GRADER_POLICY_V3);
+
+export const gradeEnglishTranscriptV4 = (reference: string, heardTranscript: string) =>
+  gradeTranscriptV2(reference, heardTranscript, "en", STUDY_TRANSCRIPT_GRADER_POLICY_V4);

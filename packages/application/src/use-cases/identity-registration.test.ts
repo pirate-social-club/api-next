@@ -24,11 +24,6 @@ const candidate = (suffix: string): IdentityRegistrationCandidate => ({
 const registrationInput = (providerSubject: string) => ({
   providerAppId: "privy-staging",
   providerSubject,
-  minimumAgeAttestation: {
-    version: "minimum-age-attestation-v1" as const,
-    minimum_age: 16 as const,
-    affirmed: true as const,
-  },
 });
 
 const failureOf = <A, E>(exit: Exit.Exit<A, E>): E => {

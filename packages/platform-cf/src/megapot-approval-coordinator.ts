@@ -10,6 +10,7 @@ import type {
 import { Data, Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
 import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
+import { megapotReceiptIsFinalized } from "./megapot-finality.ts";
 import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   encodeMegapotUsdcApproval,
@@ -19,6 +20,7 @@ import {
 } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
+import { preparedTransactionLanded, type RewardRunAuthority } from "./reward-operations-control.ts";
 
 export class MegapotApprovalCoordinatorFailed extends Data.TaggedError(
   "MegapotApprovalCoordinatorFailed",
@@ -157,6 +159,7 @@ export function makeMegapotApprovalCoordinator(input: {
   readonly store: MegapotApprovalStore;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
+  readonly authority: RewardRunAuthority;
   readonly requiredConfirmations: number;
   readonly gasLimitMultiplierBps: number;
   readonly nativeGasReserveFloorWei: bigint;
@@ -184,7 +187,15 @@ export function makeMegapotApprovalCoordinator(input: {
   const attest = Effect.fn("MegapotApprovalCoordinator.attest")(function* (
     candidate: MegapotApprovalCandidate,
   ) {
-    if (!isMegapotStepChainAllowed("approval", candidate.environment, candidate.chainId)) {
+    if (
+      !isMegapotStepChainAllowed(
+        "approval",
+        candidate.environment,
+        candidate.chainId,
+        input.rpc,
+        candidate,
+      )
+    ) {
       return yield* failed("production_disabled", "configuration");
     }
     if (signer.address.toLowerCase() !== candidate.custodyAddress.toLowerCase()) {
@@ -208,6 +219,7 @@ export function makeMegapotApprovalCoordinator(input: {
   const reconcilePrepared = Effect.fn("MegapotApprovalCoordinator.reconcilePrepared")(function* (
     approval: MegapotPreparedApproval,
   ) {
+    if (approval.chainId === 8453) yield* attest(approval);
     const transactionHash = approval.transactionHash ?? approval.signedTransactionHash;
     const receiptAttempt = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       rpc.readReceipt(transactionHash),
@@ -225,6 +237,13 @@ export function makeMegapotApprovalCoordinator(input: {
         : ({ kind: "submitted", effectId: approval.effectId, transactionHash } as const);
     }
     const receipt = receiptAttempt.receipt;
+    if (
+      !(yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
+        megapotReceiptIsFinalized(rpc, approval.chainId, receipt.blockNumber),
+      ))
+    ) {
+      return { kind: "submitted", effectId: approval.effectId, transactionHash } as const;
+    }
     if (receipt.status !== "success") {
       return yield* requireReconciliation(approval, "approval_receipt_reverted");
     }
@@ -298,6 +317,23 @@ export function makeMegapotApprovalCoordinator(input: {
     approval: MegapotPreparedApproval,
   ) {
     if (approval.state !== "prepared") return yield* reconcilePrepared(approval);
+    // A stored signature does not show the transaction was never sent: the send can
+    // succeed and the record of it fail. If the chain already holds it, that is
+    // recorded and nothing is signed or sent again. This comes before any check
+    // that applies only to a fresh send.
+    if (yield* preparedTransactionLanded(rpc, approval.signedTransactionHash)) {
+      yield* store.recordSubmission({
+        effectId: approval.effectId,
+        transactionHash: approval.signedTransactionHash,
+        submittedAt: new Date(now()).toISOString(),
+        outcome: "accepted",
+      });
+      return yield* reconcilePrepared({
+        ...approval,
+        state: "broadcast_pending",
+        transactionHash: approval.signedTransactionHash,
+      });
+    }
     yield* attest(approval);
     const expectedCalldata = encodeMegapotUsdcApproval(
       approval.jackpotAddress,
@@ -311,6 +347,9 @@ export function makeMegapotApprovalCoordinator(input: {
     ) {
       return yield* failed("receipt_evidence_invalid", "prepare");
     }
+    // Sending needs authority. It is asked outside the handling below, so a refusal
+    // is never taken for a broadcast of unknown outcome.
+    yield* input.authority.ensure();
     const submission = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       rpc.sendRawTransaction(approval.signedTransaction as Hex),
     ).pipe(
@@ -377,6 +416,8 @@ export function makeMegapotApprovalCoordinator(input: {
     if (nativeBalance < gas * feeQuote.maxFeePerGas + input.nativeGasReserveFloorWei) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
+    // Signing needs authority, on a resumed reservation as much as a new one.
+    yield* input.authority.ensure();
     const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
       signer.sign({
         chainId: reservation.chainId,
@@ -490,6 +531,8 @@ export function makeMegapotApprovalCoordinator(input: {
       observedBlockHash: feeQuote.observedBlockHash,
       observedAt: new Date(now()).toISOString(),
     });
+    // Signing needs authority, on a resumed reservation as much as a new one.
+    yield* input.authority.ensure();
     const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
       signer.sign({
         chainId: reservation.chainId,

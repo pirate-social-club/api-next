@@ -30,6 +30,63 @@ const Downloads = Schema.Struct({
   success: Schema.Literal(true),
   result: Schema.Record(Schema.String, Schema.Unknown),
 });
+/** One bounded diagnostic event per failed Stream step. Never carries a URL,
+ * source grant, token or response body beyond Stream's codes and messages. */
+export type VideoStreamTransportEvent = Readonly<{
+  event: "stream_step_failed";
+  step: "copy" | "observe" | "downloads" | "grant_issue" | "copy_ack";
+  status?: number;
+  codes?: readonly number[];
+  messages?: readonly string[];
+  error?: string;
+}>;
+
+function streamOperation(path: string): "copy" | "observe" | "downloads" {
+  return path === "/copy" ? "copy" : path.endsWith("/downloads") ? "downloads" : "observe";
+}
+
+/** Stream error text, with any URL removed and length bounded. */
+function sanitizeStreamMessage(value: unknown): string {
+  return String(value ?? "")
+    .replace(/https?:\/\/\S+/gu, "<url>")
+    .slice(0, 200);
+}
+
+async function readStreamFailure(
+  response: Response,
+): Promise<{ codes: number[]; messages: string[] }> {
+  try {
+    const reader = response.body?.getReader();
+    if (!reader) return { codes: [], messages: [] };
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (size < 8_192) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        chunks.push(chunk.value);
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+    const text = new TextDecoder().decode(
+      Uint8Array.from(chunks.flatMap((c) => [...c])).slice(0, 8_192),
+    );
+    const parsed = JSON.parse(text) as { errors?: unknown; messages?: unknown };
+    const list = (value: unknown) =>
+      (Array.isArray(value) ? value : []) as { code?: unknown; message?: unknown }[];
+    const entries = [...list(parsed.errors), ...list(parsed.messages)].slice(0, 5);
+    return {
+      codes: entries.map((e) => e.code).filter((c): c is number => Number.isSafeInteger(c)),
+      messages: entries.map((e) => sanitizeStreamMessage(e.message)).filter((m) => m.length > 0),
+    };
+  } catch {
+    return { codes: [], messages: [] };
+  }
+}
+
 const Copy = Schema.Struct({
   success: Schema.Literal(true),
   result: Schema.Struct({ uid: Video.fields.uid }),
@@ -44,6 +101,8 @@ export function makeVideoStreamTransport(
     grants: QencodeSourceGrantIssuer;
     fetch: typeof fetch;
     nowMs: () => number;
+    /** Diagnostic sink; defaults to one JSON line on the Worker log. */
+    log?: (event: VideoStreamTransportEvent) => void;
   }>,
 ): VideoStreamIngestServices["transport"] {
   if (
@@ -54,12 +113,19 @@ export function makeVideoStreamTransport(
     throw new Error("Missing or invalid Stream deployment credentials");
   makeVideoSourceUrl(input.sourceGatewayOrigin, "a".repeat(43));
   const base = `https://api.cloudflare.com/client/v4/accounts/${input.accountId}/stream`;
+  // Called unbound: workerd rejects the global fetch invoked as a method of
+  // another object ("Illegal invocation"), which Bun and Node allow.
+  const send = input.fetch;
+  const log =
+    input.log ?? ((event: VideoStreamTransportEvent) => console.log(JSON.stringify(event)));
   async function request(path: string, body?: unknown): Promise<unknown> {
     // Bound both headers and body. Never retain provider bodies, source grants or tokens in errors.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);
+    const step = streamOperation(path);
+    let logged = false;
     try {
-      const response = await input.fetch(`${base}${path}`, {
+      const response = await send(`${base}${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: { Authorization: `Bearer ${input.apiToken}`, "Content-Type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -69,7 +135,9 @@ export function makeVideoStreamTransport(
         redirect: "manual",
       });
       if (!response.ok || !response.body) {
-        await response.body?.cancel();
+        const failure = await readStreamFailure(response);
+        log({ event: "stream_step_failed", step, status: response.status, ...failure });
+        logged = true;
         throw new Error("Stream request failed");
       }
       const declared = response.headers.get("content-length");
@@ -99,7 +167,14 @@ export function makeVideoStreamTransport(
         offset += chunk.byteLength;
       }
       return JSON.parse(new TextDecoder().decode(bytes));
-    } catch {
+    } catch (error) {
+      if (!logged) {
+        log({
+          event: "stream_step_failed",
+          step,
+          error: error instanceof Error ? error.name : "unknown",
+        });
+      }
       throw new Error("Stream transport unavailable");
     } finally {
       clearTimeout(timer);
@@ -116,14 +191,24 @@ export function makeVideoStreamTransport(
         source.encodingDeadlineMs < source.acceptanceDeadlineMs
       )
         throw new Error("Invalid Stream copy policy or expired intent");
-      const grant = await input.grants.issue({
-        objectKey: mediaProcessingPhysicalObjectKey(source.sealedSourceRef),
-        requestId: source.identity.operationId,
-        sha256: source.identity.sourceSha256,
-        byteLength: source.sourceByteLength,
-        mediaType: source.sourceMediaType,
-        expiresAtMs: source.encodingDeadlineMs,
-      });
+      let grant: Awaited<ReturnType<QencodeSourceGrantIssuer["issue"]>>;
+      try {
+        grant = await input.grants.issue({
+          objectKey: mediaProcessingPhysicalObjectKey(source.sealedSourceRef),
+          requestId: source.identity.operationId,
+          sha256: source.identity.sourceSha256,
+          byteLength: source.sourceByteLength,
+          mediaType: source.sourceMediaType,
+          expiresAtMs: source.encodingDeadlineMs,
+        });
+      } catch (error) {
+        log({
+          event: "stream_step_failed",
+          step: "grant_issue",
+          error: error instanceof Error ? error.name : "unknown",
+        });
+        throw error;
+      }
       if (grant.expiresAtMs !== source.encodingDeadlineMs || grant.expiresAtMs <= input.nowMs())
         throw new Error("Stream source grant expired or mismatched");
       const capability = grant.url.slice(grant.url.lastIndexOf("/") + 1);
@@ -133,8 +218,9 @@ export function makeVideoStreamTransport(
       )
         throw new Error("Stream source grant origin or path mismatch");
       // Downloads are opt-in via a separate API; this adapter never creates them.
+      // Stream's copy contract names the source link `url` ("Upload via link").
       const copied = await request("/copy", {
-        input: grant.url,
+        url: grant.url,
         creator: source.identity.creator,
         meta: {
           source_sha256: source.identity.sourceSha256,
@@ -145,6 +231,7 @@ export function makeVideoStreamTransport(
       try {
         Schema.decodeUnknownSync(Copy)(copied);
       } catch {
+        log({ event: "stream_step_failed", step: "copy_ack" });
         throw new Error("Stream copy acknowledgement unavailable");
       }
       // The copy response is deliberately not authority. Recovery always observes by creator.

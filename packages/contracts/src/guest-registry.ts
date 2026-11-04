@@ -1,0 +1,51 @@
+import {
+  AcknowledgeGuestCredentialV1,
+  CleanupGuestBrowserProofV1,
+  ConfirmGuestAttachmentTargetV1,
+  ConfirmGuestBootstrapV1,
+  CreateGuestAttachmentIntentV1,
+  DeleteGuestLearnerAudioV1,
+  GetGuestAuthorityV1,
+  GetMySuccessfulGuestAttachmentV1,
+  IssueGuestBootstrapV1,
+  ListGuestParticipationsV1,
+  PrepareGuestAttachmentTargetV1,
+  RenewGuestAuthorityV1,
+  RotateGuestCredentialV1,
+  SetGuestLearningRetentionV1,
+} from "./guest-browser-authority.ts";
+import {
+  GetGuestStudySessionV1,
+  GetGuestStudyStartOperationV1,
+  GetPublicStudyPreparedContentV1,
+  StartGuestStudySessionV1,
+  SubmitGuestStudyAnswerV1,
+} from "./guest-study.ts";
+import {
+  ClaimOwnerRewardCreditV1,
+  SelectOwnerRewardCreditRecipientV1,
+} from "./rewards-owner-claims.ts";
+
+export const guestParticipationRegistry = {
+  GetPublicStudyPreparedContentV1,
+  GetGuestAuthorityV1,
+  IssueGuestBootstrapV1,
+  ConfirmGuestBootstrapV1,
+  RenewGuestAuthorityV1,
+  RotateGuestCredentialV1,
+  AcknowledgeGuestCredentialV1,
+  CleanupGuestBrowserProofV1,
+  StartGuestStudySessionV1,
+  GetGuestStudyStartOperationV1,
+  GetGuestStudySessionV1,
+  SubmitGuestStudyAnswerV1,
+  ListGuestParticipationsV1,
+  SetGuestLearningRetentionV1,
+  DeleteGuestLearnerAudioV1,
+  CreateGuestAttachmentIntentV1,
+  PrepareGuestAttachmentTargetV1,
+  ConfirmGuestAttachmentTargetV1,
+  GetMySuccessfulGuestAttachmentV1,
+  SelectOwnerRewardCreditRecipientV1,
+  ClaimOwnerRewardCreditV1,
+} as const;

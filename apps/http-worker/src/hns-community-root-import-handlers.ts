@@ -1,6 +1,8 @@
 import {
   activateHnsCommunityRootImport,
+  checkHnsTxtAttachment,
   getCurrentHnsCommunityRootImport,
+  getCurrentHnsTxtAttachment,
   getHnsCommunityRootImport,
   type HnsCommunityPublicationQueue,
   type HnsCommunityRootImportActivationServices,
@@ -8,8 +10,11 @@ import {
   type HnsCommunityRootImportPollServices,
   type HnsCommunityRootImportReadStore,
   type HnsCommunityRootImportStartServices,
+  type HnsTxtAttachmentCheckServices,
+  type HnsTxtAttachmentStartServices,
   requestHnsCommunityPublicationCheck,
   startHnsCommunityRootImport,
+  startHnsTxtAttachment,
 } from "@pirate/application/namespace-ownership";
 import {
   AuthError,
@@ -29,6 +34,7 @@ function wireFailure(error: unknown): Error {
     readonly _tag?: string;
     readonly reason?: string;
     readonly retry_after_seconds?: number;
+    readonly window_reason?: string;
   };
   // Preserve the originating failure while retaining the declared quota and
   // ownership responses from the current production contract.
@@ -52,6 +58,34 @@ function wireFailure(error: unknown): Error {
     return new Conflict({ message: "HNS root import conflicts with durable state" });
   if (tagged.reason === "ownership_conflict")
     return new Conflict({ message: "This HNS name is already attached to another community" });
+  // Each of these is final for the request that met it, and none is retried
+  // by waiting: the details name what happened and what can be done next.
+  if (tagged.reason === "preparation_expired")
+    return new Conflict({
+      message: "This HNS import expired before it started. Start a new import.",
+      details: { reason: "root_import_preparation_expired", next_action: "start_new_import" },
+    });
+  if (tagged.reason === "ownership_check_exhausted")
+    return new Conflict({
+      message:
+        "The HNS ownership check was refused three times. The import is held for operator recovery; once it is retired, a new import can start.",
+      details: {
+        reason: "ownership_check_attempts_exhausted",
+        next_action: "operator_recovery",
+      },
+    });
+  if (tagged.reason === "publication_window_closed")
+    return new Conflict({
+      message: "The HNS publication check is not open for this import.",
+      details: {
+        reason: "publication_window_closed",
+        window_reason: tagged.window_reason ?? "unknown",
+        next_action:
+          tagged.window_reason === "session_state" || tagged.window_reason === "phase_closed"
+            ? "read_import_status"
+            : "operator_recovery",
+      },
+    });
   if (tagged.reason === "ownership_misconfigured")
     return new ProviderMisconfigured({ message: "HNS ownership setup could not be completed" });
   if (tagged.reason === "ownership_unavailable")
@@ -219,6 +253,85 @@ export function makeHnsCommunityRootImportHandlers(
           services,
         ).pipe(
           Effect.map((result) => withEndpointResult(result, result.replayed ? 200 : 201)),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+  };
+}
+
+function userPrincipal(request: Parameters<EndpointHandler>[0]) {
+  if (
+    request.principal === null ||
+    (request.principal.kind !== "user" && request.principal.kind !== "admin")
+  ) {
+    throw new AuthError({ message: "Authentication required" });
+  }
+  return request.principal;
+}
+
+export function makeHnsTxtAttachmentHandlers(
+  services: HnsTxtAttachmentStartServices & HnsTxtAttachmentCheckServices,
+): Readonly<{
+  StartHnsTxtAttachment: EndpointHandler;
+  GetCurrentHnsTxtAttachment: EndpointHandler;
+  CheckHnsTxtAttachment: EndpointHandler;
+}> {
+  return {
+    StartHnsTxtAttachment: (request) => {
+      const principal = userPrincipal(request);
+      const params = request.params as Readonly<{ communityId: string }>;
+      const body = request.body as Readonly<{ root_label: string; idempotency_key: string }>;
+      return Effect.runPromise(
+        startHnsTxtAttachment(
+          {
+            actor_id: principal.subject,
+            community_id: params.communityId,
+            root_label: body.root_label,
+            idempotency_key: body.idempotency_key,
+          },
+          services,
+        ).pipe(
+          Effect.map((result) =>
+            withEndpointResult(result, result.status === "attached" ? 200 : 202),
+          ),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+    GetCurrentHnsTxtAttachment: (request) => {
+      const principal = userPrincipal(request);
+      const params = request.params as Readonly<{ communityId: string }>;
+      return Effect.runPromise(
+        getCurrentHnsTxtAttachment(
+          { actor_id: principal.subject, community_id: params.communityId },
+          services,
+        ).pipe(
+          Effect.map((result) => withEndpointResult(result, 200)),
+          Effect.mapError(wireFailure),
+        ),
+      );
+    },
+    CheckHnsTxtAttachment: (request) => {
+      const principal = userPrincipal(request);
+      const params = request.params as Readonly<{
+        communityId: string;
+        attachmentIntentId: string;
+      }>;
+      const body = request.body as Readonly<{ idempotency_key: string }>;
+      return Effect.runPromise(
+        checkHnsTxtAttachment(
+          {
+            actor_id: principal.subject,
+            community_id: params.communityId,
+            attachment_intent_id: params.attachmentIntentId,
+            idempotency_key: body.idempotency_key,
+          },
+          services,
+        ).pipe(
+          Effect.map((result) =>
+            withEndpointResult(result, result.status === "awaiting_txt" ? 202 : 200),
+          ),
           Effect.mapError(wireFailure),
         ),
       );

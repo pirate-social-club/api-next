@@ -1,0 +1,9 @@
+[Unit]
+Description=Isolated HNS staging resource budget
+
+[Slice]
+CPUQuota=100%
+MemoryHigh=640M
+MemoryMax=768M
+MemorySwapMax=0
+TasksMax=1024

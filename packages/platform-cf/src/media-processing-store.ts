@@ -24,6 +24,7 @@ import type {
   PublicationDecision,
   TrustedSongAnalysis,
 } from "../../domain/src/media-submission.ts";
+import { makeReadMediaAlignmentRecovery } from "./media-alignment-recovery-read.ts";
 import {
   type MediaOutboxRecord,
   makeControlPlaneMediaOutboxRepository,
@@ -406,6 +407,31 @@ export function makeMediaProcessingStore(
     ) {
       return null;
     }
+    const vocalRows = await run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.execute<Row>({
+          label: "media-processing.vocal-stem",
+          text: `SELECT immutable_ref, canonical_sha256 FROM media_song_stems
+                  WHERE submission_id=$1 AND community_id=$2 AND actor_user_id=$3
+                    AND author_persona_id=$4 AND slot='vocal_audio'`,
+          values: [state.submissionId, state.communityId, location.actorUserId, state.personaId],
+          readonly: true,
+        });
+      }),
+    );
+    if (vocalRows.rows.length > 1) {
+      throw new MediaProcessingStoreError({ operation: "authority", reason: "invalid-row" });
+    }
+    const vocal = vocalRows.rows[0];
+    if (
+      vocal !== undefined &&
+      (!validId(vocal.immutable_ref) ||
+        typeof vocal.canonical_sha256 !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(vocal.canonical_sha256))
+    ) {
+      throw new MediaProcessingStoreError({ operation: "authority", reason: "invalid-row" });
+    }
     return {
       communityId: state.communityId,
       actorAccountId: location.actorAccountId,
@@ -429,6 +455,13 @@ export function makeMediaProcessingStore(
           ? state.phase
           : null,
       audio: state.audio,
+      vocalStem:
+        vocal === undefined
+          ? null
+          : {
+              immutableRef: vocal.immutable_ref as string,
+              canonicalSha256: vocal.canonical_sha256 as string,
+            },
       termsRevision: location.termsRevision,
       lyrics:
         state.lyrics === null
@@ -579,7 +612,34 @@ export function makeMediaProcessingStore(
       return claimAttempt(input, latest);
     }
 
-    const attemptNumber = (latest?.attemptNumber ?? 0) + 1;
+    let attemptNumber = (latest?.attemptNumber ?? 0) + 1;
+    if (input.stage === "classifier") {
+      // Lyrics can change before analysis commits. Input-bound replay reads
+      // exclude old lyrics, but the database's three slots span this analysis.
+      const slots = await run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute<Row>({
+            label: "media-processing.classifier-attempt-slots",
+            text: "SELECT COALESCE(MAX(attempt_number),0)::text AS last_slot FROM media_processing_attempts WHERE community_id=$1 AND actor_user_id=$2 AND author_persona_id=$3 AND submission_id=$4 AND operation_id=$5 AND audio_revision=$6 AND analysis_revision=$7 AND stage='classifier' AND author_retry_count=0",
+            values: [
+              input.authority.communityId,
+              input.authority.actorAccountId,
+              input.authority.authorPersonaId,
+              input.authority.submissionId,
+              input.authority.operationId,
+              input.authority.audioRevision,
+              input.authority.analysisRevision,
+            ],
+            readonly: true,
+          });
+        }),
+      );
+      const lastSlot = integer(slots.rows[0]?.last_slot);
+      if (slots.rows.length !== 1 || lastSlot === null || lastSlot > 3)
+        throw new MediaProcessingStoreError({ operation: "attempt", reason: "invalid-row" });
+      attemptNumber = Math.max(attemptNumber, lastSlot + 1);
+    }
     if (attemptNumber > 3) return { kind: "exhausted" };
     const retrySuffix = authorRetryCount === 0 ? "" : `-r${authorRetryCount}`;
     const attemptId = `${input.attemptId}${retrySuffix}-n${attemptNumber}`;
@@ -1147,140 +1207,14 @@ export function makeMediaProcessingStore(
       }),
     );
 
-  const alignmentFailureCodes = [
-    "elevenlabs_key_missing",
-    "key_invalid",
-    "rate_limited",
-    "provider_unavailable",
-    "timeout",
-    "invalid_response",
-    "alignment_failed",
-    "lyrics_missing",
-    "audio_missing",
-  ] as const;
-
-  const readAlignmentRecovery: MediaProcessingStore["readAlignmentRecovery"] = async (
-    authority,
-  ) => {
-    const postId = authority.postId;
-    const audio = authority.audio;
-    const publishedLyricsRevision = authority.publishedLyricsRevision;
-    if (
-      postId === null ||
-      audio === null ||
-      publishedLyricsRevision === null ||
-      publishedLyricsRevision !== (authority.lyrics?.lyricsRevision ?? null)
-    )
-      return { kind: "stale" } as const;
-    try {
-      const recovery = await run(
-        Effect.gen(function* () {
-          const db = yield* ControlPlaneDb;
-          return yield* db.execute<Row>({
-            label: "media-processing.alignment-recovery-authorization",
-            text: "SELECT state,recovery_action_id,attempt_id FROM media_alignment_recovery_actions WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND post_id=$5 AND audio_revision=$6 AND analysis_revision=$7 AND lyrics_revision=$8 AND canonical_audio_sha256=$9",
-            values: [
-              authority.communityId,
-              authority.actorAccountId,
-              authority.submissionId,
-              authority.operationId,
-              postId,
-              authority.audioRevision,
-              authority.analysisRevision,
-              publishedLyricsRevision,
-              audio.canonicalSha256,
-            ],
-            readonly: true,
-          });
-        }),
-      );
-      if (recovery.rows.length > 1) return { kind: "stale" } as const;
-      const recoveryRow = recovery.rows[0];
-      if (recoveryRow?.state === "requested") {
-        const recoveryActionId = recoveryRow.recovery_action_id;
-        const attemptId = recoveryRow.attempt_id;
-        if (typeof recoveryActionId !== "string" || typeof attemptId !== "string")
-          return { kind: "stale" } as const;
-        return { kind: "recovery", recoveryActionId, attemptId } as const;
-      }
-      const recoveryAttemptId =
-        recoveryRow?.state === "completed" && typeof recoveryRow.attempt_id === "string"
-          ? recoveryRow.attempt_id
-          : undefined;
-      const result = await run(
-        Effect.gen(function* () {
-          const db = yield* ControlPlaneDb;
-          return yield* db.execute<Row>({
-            label: "media-processing.alignment-recovery",
-            text: "SELECT projection.status,projection.failure_code,projection.current_artifact_ref,projection.current_artifact_revision,artifact.artifact_sha256,artifact.artifact FROM media_alignment_projections projection LEFT JOIN media_timed_lyrics_artifacts artifact ON artifact.artifact_ref=projection.current_artifact_ref AND artifact.artifact_revision=projection.current_artifact_revision AND artifact.community_id=projection.community_id AND artifact.actor_user_id=projection.actor_user_id AND artifact.submission_id=projection.submission_id AND artifact.operation_id=projection.operation_id AND artifact.post_id=projection.post_id AND artifact.audio_revision=projection.audio_revision AND artifact.analysis_revision=projection.analysis_revision AND artifact.canonical_audio_sha256=projection.canonical_audio_sha256 AND artifact.lyrics_revision=projection.lyrics_revision WHERE projection.community_id=$1 AND projection.actor_user_id=$2 AND projection.submission_id=$3 AND projection.operation_id=$4 AND projection.post_id=$5 AND projection.audio_revision=$6 AND projection.analysis_revision=$7 AND projection.canonical_audio_sha256=$8 AND projection.lyrics_revision IS NOT DISTINCT FROM $9",
-            values: [
-              authority.communityId,
-              authority.actorAccountId,
-              authority.submissionId,
-              authority.operationId,
-              postId,
-              authority.audioRevision,
-              authority.analysisRevision,
-              audio.canonicalSha256,
-              publishedLyricsRevision,
-            ],
-            readonly: true,
-          });
-        }),
-      );
-      if (result.rows.length !== 1) return { kind: "stale" } as const;
-      const row = result.rows[0];
-      if (row === undefined) return { kind: "stale" } as const;
-      if (row.status === "pending") return { kind: "pending" } as const;
-      if (row.status === "unavailable") {
-        const failureCode = row.failure_code;
-        if (
-          typeof failureCode !== "string" ||
-          !(alignmentFailureCodes as readonly string[]).includes(failureCode)
-        )
-          return { kind: "stale" } as const;
-        return {
-          kind: "committed",
-          result: {
-            kind: "alignment",
-            status: "unavailable",
-            failureCode: failureCode as (typeof alignmentFailureCodes)[number],
-          },
-          ...(recoveryAttemptId === undefined ? {} : { recoveryAttemptId }),
-        } as const;
-      }
-      if (row.status === "ready") {
-        const artifactRef = row.current_artifact_ref;
-        const artifactRevision = integer(row.current_artifact_revision);
-        const artifactSha256 = row.artifact_sha256;
-        const artifact = row.artifact;
-        if (
-          typeof artifactRef !== "string" ||
-          artifactRevision === null ||
-          typeof artifactSha256 !== "string" ||
-          !/^[0-9a-f]{64}$/u.test(artifactSha256) ||
-          typeof artifact !== "object" ||
-          artifact === null ||
-          Array.isArray(artifact)
-        )
-          return { kind: "stale" } as const;
-        return {
-          kind: "committed",
-          result: {
-            kind: "alignment",
-            status: "ready",
-            artifactRef,
-            artifactSha256,
-            artifact: artifact as Readonly<Record<string, unknown>>,
-          },
-          ...(recoveryAttemptId === undefined ? {} : { recoveryAttemptId }),
-        } as const;
-      }
-      return { kind: "stale" } as const;
-    } catch {
-      return { kind: "failed" } as const;
-    }
-  };
+  const readAlignmentRecovery = makeReadMediaAlignmentRecovery((statement) =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return (yield* db.execute<Row>(statement)).rows;
+      }),
+    ),
+  );
 
   return {
     getOutbox,

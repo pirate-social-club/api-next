@@ -11,8 +11,8 @@ import {
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import {
+  CURRENT_SONG_VIDEO_INTERVAL_POLICY,
   checkSongVideoInterval,
-  SONG_VIDEO_INTERVAL_POLICY_V1,
 } from "../../../domain/src/video-submission.ts";
 import { requireMediaHumanActor } from "../media/submission-service.ts";
 import type { ContentStoreService, M2Actor } from "../ports.ts";
@@ -58,6 +58,28 @@ export type SongCanonicalTiming =
   | Readonly<{ state: "ready"; durationSamples: number }>
   | Readonly<{ state: "failed" }>;
 
+/** The admitted, immutable PCM fact for this exact song audio revision. */
+export type SongVideoPcmReference = Readonly<{
+  songPostId: string;
+  audioRevision: number;
+  canonicalAudioSha256: string;
+  durationSamples: number;
+  objectKey: string;
+  objectVersion: string;
+  objectEtag: string;
+  pcmSha256: string;
+  byteLength: number;
+  decoderRecipe: string;
+}>;
+
+export interface SongVideoPcmReferenceStore {
+  /** Null unless the durable fact and the exact R2 object both still agree. */
+  readonly getReady: (
+    song: Pick<PublishedCanonicalSong, "songPostId" | "audioRevision" | "canonicalAudioSha256">,
+    durationSamples: number,
+  ) => Promise<SongVideoPcmReference | null>;
+}
+
 export interface SongVideoIntervalStore {
   /** Null when the post is not a published song. */
   readonly getPublishedSong: (songPostId: string) => Promise<PublishedCanonicalSong | null>;
@@ -81,6 +103,8 @@ export interface SongVideoIntervalStore {
 
 export type SongVideoIntervalServices = Readonly<{
   store: SongVideoIntervalStore;
+  /** Omitted until the staging catalog is backfilled and this gate is enabled. */
+  pcmReference?: SongVideoPcmReferenceStore;
   /**
    * The same post read the post endpoint and video playback use, as the viewer.
    * It decides visibility, membership, age gating and holds; nothing here
@@ -113,10 +137,10 @@ const DEFAULT_MEASURING_RETRY_AFTER_MS = 2_000;
 
 function intervalPolicy() {
   return {
-    policy_revision: SONG_VIDEO_INTERVAL_POLICY_V1.policyRevision,
-    sample_rate_hz: SONG_VIDEO_INTERVAL_POLICY_V1.sampleRateHz,
-    min_clip_duration_samples: SONG_VIDEO_INTERVAL_POLICY_V1.minClipDurationSamples,
-    max_clip_duration_samples: SONG_VIDEO_INTERVAL_POLICY_V1.maxClipDurationSamples,
+    policy_revision: CURRENT_SONG_VIDEO_INTERVAL_POLICY.policyRevision,
+    sample_rate_hz: CURRENT_SONG_VIDEO_INTERVAL_POLICY.sampleRateHz,
+    min_clip_duration_samples: CURRENT_SONG_VIDEO_INTERVAL_POLICY.minClipDurationSamples,
+    max_clip_duration_samples: CURRENT_SONG_VIDEO_INTERVAL_POLICY.maxClipDurationSamples,
   } as const;
 }
 
@@ -251,6 +275,17 @@ export async function preflightSongVideoInterval(
       reason: "canonical_timing_unavailable",
     };
   }
+  if (
+    services.pcmReference !== undefined &&
+    (await services.pcmReference.getReady(song, timing.durationSamples)) === null
+  ) {
+    return {
+      state: "measuring",
+      song_post_id: song.songPostId,
+      audio_revision: song.audioRevision,
+      retry_after_ms: services.measuringRetryAfterMs ?? DEFAULT_MEASURING_RETRY_AFTER_MS,
+    };
+  }
   const verdict =
     body.interval === undefined
       ? null
@@ -328,6 +363,15 @@ export async function freezeSongReservationPlan(
       details: { reason_code: verdict.reason },
     });
   }
+  if (
+    services.pcmReference !== undefined &&
+    (await services.pcmReference.getReady(song, timing.durationSamples)) === null
+  ) {
+    throw new RetryableConflict({
+      message: "This song is still being prepared for video",
+      details: { reason_code: "pcm_reference_pending" },
+    });
+  }
   const selectedFrom =
     body.selected_from.kind === "feed"
       ? ({ kind: "feed", originPostId: body.selected_from.origin_post_id } as const)
@@ -348,7 +392,7 @@ export async function freezeSongReservationPlan(
     songAssetId: song.songAssetId,
     clipStartSamples: body.clip_start_samples,
     clipDurationSamples: body.clip_duration_samples,
-    intervalPolicyRevision: SONG_VIDEO_INTERVAL_POLICY_V1.policyRevision,
+    intervalPolicyRevision: CURRENT_SONG_VIDEO_INTERVAL_POLICY.policyRevision,
     ownerPolicyRevision: policy.policyRevision,
     ownerPolicyHash: policy.policyHash,
     derivativeVideo: policy.derivativeVideo,

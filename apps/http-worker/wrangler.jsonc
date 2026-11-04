@@ -99,8 +99,8 @@
   ],
   "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-development" }] },
   "vars": {
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_AUTHORING_ENABLED": "false",
-    "TELEGRAM_ENABLED": "false",
     "API_NEXT_ENV": "development",
     "SONG_PLAYBACK_ENABLED": "false",
     "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
@@ -113,6 +113,8 @@
     // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
     "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
     "STUDY_GENERATION_ENABLED": "false",
+    "STUDY_PROFILE_COVERAGE_ENABLED": "false",
+    "STUDY_SPOKEN_RERECORD_ENABLED": "false",
     "STUDY_GENERATION_OPENROUTER_MODEL": "",
     "MEGAPOT_REWARDS_ENABLED": "false",
     "MEGAPOT_CHAIN_ID": "84532",
@@ -120,6 +122,7 @@
     "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
     "MEDIA_UPLOADS_ENABLED": "false",
     "VIDEO_SONG_REFERENCE_ENABLED": "false",
+    "VIDEO_PCM_REFERENCE_GATE_ENABLED": "false",
     "MEDIA_INGRESS_R2_ACCOUNT_ID": "",
     "MEDIA_INGRESS_R2_BUCKET_NAME": "",
     "REGISTRATION_IP_LIMIT": "5",
@@ -174,6 +177,11 @@
     "staging": {
       "triggers": { "crons": ["* * * * *"] },
       "name": "pirate-http-worker-staging",
+      // Run beside the PlanetScale database, not at the caller's colo: each
+      // request makes several sequential query round trips, and from Europe
+      // each one crossed the Atlantic (2026-09-25: playback-access 5.1 s -> 1.3 s,
+      // Home time to playback 8.3 s -> 4.5 s on the Pixel). TCP probe, not HTTP.
+      "placement": { "mode": "targeted", "host": "aws-us-east-1-4.pg.psdb.cloud:5432" },
       "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "observability": {
         "enabled": true,
@@ -191,6 +199,10 @@
       "routes": [
         {
           "pattern": "api-next-staging.pirate.sc",
+          "custom_domain": true
+        },
+        {
+          "pattern": "hns-community-api-staging.pirate.sc",
           "custom_domain": true
         }
       ],
@@ -230,6 +242,18 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "services": [
+        {
+          "binding": "HNS_OWNER_VERIFIER",
+          "service": "pirate-hns-owner-verifier-staging"
+        }
+      ],
+      "vpc_services": [
+        {
+          "binding": "HNS_AUTHORITY_HSD",
+          "service_id": "01a0e6f3-20d8-7923-856e-cefb56e983cf"
+        }
+      ],
       "workflows": [
         {
           "binding": "STUDY_GENERATION_WORKFLOW",
@@ -250,34 +274,53 @@
           "binding": "LEARNER_AUDIO",
           "bucket_name": "pirate-learner-audio-staging"
         },
-        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-staging" }
+        { "binding": "MEDIA_DERIVED", "bucket_name": "pirate-media-derived-staging" },
+        // Avatar storage and Images, live on staging since the avatar lane;
+        // Staging authoring is enabled after provider-backed acceptance.
+        { "binding": "AVATAR_INGRESS", "bucket_name": "pirate-avatar-ingress-staging" },
+        { "binding": "AVATAR_SEALED", "bucket_name": "pirate-avatar-sealed-staging" }
       ],
+      "images": { "binding": "AVATAR_IMAGES" },
       "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-staging" }] },
       "vars": {
-    "AVATAR_AUTHORING_ENABLED": "false",
-        "TELEGRAM_ENABLED": "false",
-        "TELEGRAM_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
-        "TELEGRAM_WEBHOOK_ORIGIN": "https://api-next-staging.pirate.sc",
-        "TELEGRAM_CREDENTIAL_ACTIVE_VERSION": "v1",
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
+    "AVATAR_AUTHORING_ENABLED": "true",
+        "AVATAR_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+        "AVATAR_R2_BUCKET_NAME": "pirate-avatar-ingress-staging",
         "API_NEXT_ENV": "staging",
+        // Spaces native claims run on staging only. The runtime fails closed
+        // unless both flags are exactly "true" here; production and development
+        // declare neither.
+        "SPACES_RUNTIME_ENABLED": "true",
+        // Trusted web origin for Spaces community addresses (/c/@root).
+        "SPACES_ROUTE_PUBLIC_ORIGIN": "https://web-next-staging.pirate.sc",
+        "SPACES_TAPROOT_RECIPIENT_ENABLED": "true",
         "SONG_PLAYBACK_ENABLED": "true",
         "SONG_PLAYBACK_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "SONG_PLAYBACK_R2_BUCKET": "pirate-media-immutable-staging",
-    // Enable only with reviewed immutable-bucket GET credentials and a rate limiter.
-    "VIDEO_DELIVERY_ENABLED": "false",
-    "VIDEO_STREAM_CUSTOMER_HOST": "",
-    "VIDEO_STREAM_SIGNING_KEY_ID": "",
-    // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
-    // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
+        // Staging video delivery is live; its signing JWK and playback-source
+        // HMAC are the secrets VIDEO_STREAM_SIGNING_JWK_BASE64 and
+        // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64, never vars.
+        "VIDEO_DELIVERY_ENABLED": "true",
+        "VIDEO_STREAM_CUSTOMER_HOST": "customer-ma1pwa54r5492drw.cloudflarestream.com",
+        "VIDEO_STREAM_SIGNING_KEY_ID": "f9429a3e99739200172de35e525f6d75",
         "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
         "STUDY_GENERATION_ENABLED": "true",
+        "STUDY_PROFILE_COVERAGE_ENABLED": "true",
+        "STUDY_SPOKEN_RERECORD_ENABLED": "false",
         "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
-        "MEGAPOT_REWARDS_ENABLED": "false",
+        // Prepared for the bounded staging pilot; coordinator admission and closeout are required.
+        "MEGAPOT_REWARDS_ENABLED": "true",
         "MEGAPOT_CHAIN_ID": "84532",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+        "MEGAPOT_GAS_TOPUP_TARGET_WEI": "50000000000000",
+        "MEGAPOT_GAS_TOPUP_MAX_WEI": "50000000000000",
+        "MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT": "3",
+        "MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI": "5000000000000000",
         "MEDIA_UPLOADS_ENABLED": "true",
-        "VIDEO_SONG_REFERENCE_ENABLED": "false",
+        "VIDEO_SONG_REFERENCE_ENABLED": "true",
+        "VIDEO_PCM_REFERENCE_GATE_ENABLED": "true",
         "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-staging",
         "REGISTRATION_IP_LIMIT": "50",
@@ -301,17 +344,30 @@
         "VERY_WEB_API_URL": "https://api.very.org/api/v1",
         "VERY_WEB_VERIFY_URL": "https://verify.very.org/api/v1/verify",
         "VERY_WEB_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
-        "HNS_OWNERSHIP_ENABLED": "false",
-        "HNS_COMMUNITY_APP_API_ENABLED": "false",
-        "HNS_HANDLE_HOST_API_ENABLED": "false",
-        "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "",
-        "HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE": "",
-        "HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE": "",
-        "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "",
-        "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "0",
-        "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "-1",
+        // Staging ownership uses its own mainnet observer configuration and
+        // the verifier's read-only mainnet binding.
+        "HNS_OWNERSHIP_ENABLED": "true",
+        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging-mainnet-v1",
+        "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "HNS_OWNERSHIP_CAPABILITIES": "hns-txt-import-v1",
+        "HNS_ACTIVATION_CURRENT_VIEW_ENABLED": "true",
+        "HNS_AUTHORITY_HSD_RPC_URL": "http://hns-staging-mainnet-reader.internal/",
+        "HNS_AUTHORITY_CHAIN_NETWORK": "main",
+        "HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH": "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+        "HNS_AUTHORITY_TREE_INTERVAL_BLOCKS": "36",
+        "HNS_AUTHORITY_SAFE_CONFIRMATIONS": "12",
+        "HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS": "10800",
+        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS": "3600",
+        "HNS_COMMUNITY_APP_API_ENABLED": "true",
+        "HNS_HANDLE_HOST_API_ENABLED": "true",
+        "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api-staging.pirate.sc",
+        "HNS_COMMUNITY_APP_API_ACCESS_ISSUER": "https://piratesocialclub.cloudflareaccess.com",
+        "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL": "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",
+        "HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE": "f077cbaec4e7c6ff9ceaf0ebf5b3c5f4ec9d01a35fb4275deb05e33179143818",
+        "HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE": "pirate:hns-forwarder-v3:staging-community-app:v1",
+        "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION": "2026-09-23-01",
+        "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS": "300",
+        "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS": "5",
         "HNS_EDGE_STATUS_ENABLED": "false",
         "HNS_EDGE_STATUS_ACCESS_ISSUER": "",
         "HNS_EDGE_STATUS_ACCESS_JWKS_URL": "",
@@ -354,6 +410,7 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
+          "HNS_AUTHORITY_HSD_AUTHORIZATION",
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
@@ -368,7 +425,12 @@
           "OPENROUTER_API_KEY",
           "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
           "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
-          "SONG_PLAYBACK_SOURCE_HMAC_BASE64"
+          "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
+          "VIDEO_STREAM_SIGNING_JWK_BASE64",
+          "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+          "SPACES_VERIFIER_ACCESS_CLIENT_ID",
+          "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
+          "SPACES_VERIFIER_BEARER_TOKEN"
         ]
       }
     },
@@ -376,9 +438,8 @@
       "triggers": { "crons": ["* * * * *"] },
       "name": "pirate-http-worker-production",
       "version_metadata": { "binding": "CF_VERSION_METADATA" },
-      // Keep the deployed lifecycle until production video is admitted.
-      // Class creation requires a full deploy, so it must not ride on a
-      // gradual release of unrelated features while video delivery is off.
+      // Source preparation only; product gates remain off. Creating v6 requires
+      // the coordinator's full deploy after the production freeze is lifted.
       "migrations": [
         {
           "tag": "v1",
@@ -390,7 +451,8 @@
         { "tag": "v2", "new_sqlite_classes": ["SelfCallbackCaptureDO"] },
         { "tag": "v3", "deleted_classes": ["SelfCallbackCaptureDO"] },
         { "tag": "v4", "new_sqlite_classes": ["HnsForwarderReplayStoreDO"] },
-        { "tag": "v5", "new_sqlite_classes": ["KaraokeAttemptDO"] }
+        { "tag": "v5", "new_sqlite_classes": ["KaraokeAttemptDO"] },
+        { "tag": "v6", "new_sqlite_classes": ["VideoPlaybackRateLimiterDO"] }
       ],
       "observability": {
         "enabled": true,
@@ -430,6 +492,14 @@
             "class_name": "HnsForwarderReplayStoreDO"
           },
           {
+            "name": "SONG_PLAYBACK_RATE_LIMITER",
+            "class_name": "VideoPlaybackRateLimiterDO"
+          },
+          {
+            "name": "VIDEO_PLAYBACK_RATE_LIMITER",
+            "class_name": "VideoPlaybackRateLimiterDO"
+          },
+          {
             "name": "KARAOKE_ATTEMPT",
             "class_name": "KaraokeAttemptDO"
           }
@@ -440,7 +510,7 @@
           "binding": "CONTROL_PLANE",
           // Dedicated canonical-account production Hyperdrive. Its source
           // credential selects only the api_next schema.
-          "id": "884b68c5a7904982a86620ed90032b77",
+          "id": "0c215865d7994c92b940d905f54ece37",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
@@ -448,6 +518,12 @@
         {
           "binding": "HNS_OWNER_VERIFIER",
           "service": "pirate-hns-owner-verifier-production"
+        }
+      ],
+      "vpc_services": [
+        {
+          "binding": "HNS_AUTHORITY_HSD",
+          "service_id": "01a0e9d2-8fdd-7fe0-81ed-00fd6a3195ca"
         }
       ],
       "workflows": [
@@ -474,39 +550,50 @@
       ],
       "queues": { "producers": [{ "binding": "TELEGRAM_QUEUE", "queue": "pirate-community-telegram-production" }] },
       "vars": {
+        "TELEGRAM_CONFIG_JSON": "{\"version\":1,\"enabled\":false,\"linking_enabled\":false,\"practice_enabled\":false}",
     "AVATAR_AUTHORING_ENABLED": "false",
-        "TELEGRAM_ENABLED": "false",
         "API_NEXT_ENV": "production",
-    "SONG_PLAYBACK_ENABLED": "false",
-    "SONG_PLAYBACK_R2_ACCOUNT_ID": "",
-    "SONG_PLAYBACK_R2_BUCKET": "",
+    "SONG_PLAYBACK_ENABLED": "true",
+    "SONG_PLAYBACK_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
+    "SONG_PLAYBACK_R2_BUCKET": "pirate-media-immutable-production",
     // Enable only with reviewed immutable-bucket GET credentials and a rate limiter.
-    "VIDEO_DELIVERY_ENABLED": "false",
-    "VIDEO_STREAM_CUSTOMER_HOST": "",
-    "VIDEO_STREAM_SIGNING_KEY_ID": "",
+    "VIDEO_DELIVERY_ENABLED": "true",
+    "VIDEO_STREAM_CUSTOMER_HOST": "customer-ma1pwa54r5492drw.cloudflarestream.com",
+    "VIDEO_STREAM_SIGNING_KEY_ID": "f9429a3e99739200172de35e525f6d75",
     // Before enabling delivery, provision VIDEO_STREAM_SIGNING_JWK_BASE64 and
     // VIDEO_PLAYBACK_SOURCE_HMAC_BASE64 as secrets, never vars.
-        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "false",
-        "STUDY_GENERATION_ENABLED": "false",
-        "STUDY_GENERATION_OPENROUTER_MODEL": "",
+        "KARAOKE_FINALIZATION_RECOVERY_ENABLED": "true",
+        "STUDY_GENERATION_ENABLED": "true",
+        "STUDY_PROFILE_COVERAGE_ENABLED": "true",
+        "STUDY_SPOKEN_RERECORD_ENABLED": "false",
+        "STUDY_GENERATION_OPENROUTER_MODEL": "google/gemini-3.8-flash",
+        "GUEST_STUDY_SERVING_ENABLED": "false",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
-        "MEDIA_UPLOADS_ENABLED": "false",
-        "VIDEO_SONG_REFERENCE_ENABLED": "false",
+        "MEDIA_UPLOADS_ENABLED": "true",
+        "VIDEO_SONG_REFERENCE_ENABLED": "true",
+        "VIDEO_PCM_REFERENCE_GATE_ENABLED": "true",
         "MEDIA_INGRESS_R2_ACCOUNT_ID": "08a4c22cf52e2ecae883e36f80a33f4a",
         "MEDIA_INGRESS_R2_BUCKET_NAME": "pirate-media-ingress-production",
         "REGISTRATION_IP_LIMIT": "5",
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
         "REGISTRATION_APPLICATION_WINDOW_SECONDS": "60",
-        "CORS_ORIGIN": "https://app.pirate,https://pirate.app,https://pirate.sc",
+        "CORS_ORIGIN": "https://app.pirate,https://pirate.sc",
         "PIRATE_API_PUBLIC_ORIGIN": "https://api-next.pirate.sc",
         "SELF_PASS_ENABLED": "false",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
         "VERY_OAUTH_ENABLED": "false",
+        // Ordinary Palm candidate: reuse the public working ZK identifier.
+        // Production requires its own sealing key and fresh ceremony acceptance.
+        "VERY_WEB_ENABLED": "true",
+        "VERY_WEB_APP_ID": "fa6bb1db-51dd-4673-915a-b945e7a895a0",
+        "VERY_WEB_API_URL": "https://api.very.org/api/v1",
+        "VERY_WEB_VERIFY_URL": "https://verify.very.org/api/v1/verify",
+        "VERY_WEB_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
         "OPENAI_MODERATION_ENABLED": "true",
         "OPENAI_MODERATION_MODEL": "omni-moderation-2024-09-26",
         "OPENAI_MODERATION_BASE_URL": "https://api.openai.com/v1",
@@ -514,6 +601,14 @@
         "HNS_OWNERSHIP_ENABLED": "true",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-production",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "HNS_ACTIVATION_CURRENT_VIEW_ENABLED": "true",
+        "HNS_AUTHORITY_HSD_RPC_URL": "http://hns-production-mainnet-reader.internal/",
+        "HNS_AUTHORITY_CHAIN_NETWORK": "main",
+        "HNS_AUTHORITY_CHAIN_GENESIS_BLOCK_HASH": "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+        "HNS_AUTHORITY_TREE_INTERVAL_BLOCKS": "36",
+        "HNS_AUTHORITY_SAFE_CONFIRMATIONS": "12",
+        "HNS_AUTHORITY_MAXIMUM_TIP_AGE_SECONDS": "10800",
+        "HNS_AUTHORITY_MAXIMUM_FUTURE_TIP_SECONDS": "3600",
         "HNS_COMMUNITY_APP_API_ENABLED": "true",
         "HNS_HANDLE_HOST_API_ENABLED": "true",
         "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN": "https://hns-community-api.pirate.sc",
@@ -546,11 +641,20 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "HNS_FORWARDER_V3_HMAC_KEY_REGISTRY",
+          "HNS_AUTHORITY_HSD_AUTHORIZATION",
           "HNS_EDGE_ALERT_TOKEN",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "VERY_WEB_SEALING_KEY",
           "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
           "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
-          "OPENAI_API_KEY"
+          "OPENAI_API_KEY",
+          "ELEVENLABS_API_KEY",
+          "OPENROUTER_API_KEY",
+          "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
+          "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
+          "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
+          "VIDEO_STREAM_SIGNING_JWK_BASE64",
+          "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64"
         ]
       }
     }

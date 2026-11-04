@@ -3,16 +3,40 @@ import { Data, Effect } from "effect";
 import { Clock, IdGen } from "../ports.ts";
 import { canonicalBodyHash } from "../use-cases/content/common.ts";
 import type { RewardFundingIntent } from "./reward-funding.ts";
+import type { RewardOperationsPaused } from "./reward-operations.ts";
 
 export { Clock, IdGen } from "../ports.ts";
 export type { RewardFundingIntent, RewardFundingStore } from "./reward-funding.ts";
+export {
+  makeRewardGasTopupRequester,
+  RewardGasTopupBalanceUnavailable,
+  type RewardGasTopupFailure,
+  RewardGasTopupRejected,
+  type RewardGasTopupRequester,
+  RewardGasTopupStorageFailed,
+  type RewardGasTopupView,
+} from "./reward-gas-topup.ts";
+export { RewardOperationsPaused } from "./reward-operations.ts";
 export type {
   PublicSongAssetBonusProjection,
   PublicSongMegapotPoolProjection,
   RewardCredit,
+  RewardCreditClaim,
+  RewardCreditClaimOutcome,
+  RewardCreditSend,
   RewardProjectionFailure,
   RewardProjectionStore,
 } from "./reward-projections.ts";
+export { RewardProjectionRejected } from "./reward-projections.ts";
+export {
+  makeRewardWinnerSendService,
+  REWARD_WINNER_SEND_CHAIN_ID,
+  RewardWinnerSendChainUnavailable,
+  type RewardWinnerSendRecord,
+  RewardWinnerSendRejected,
+  type RewardWinnerSendService,
+  RewardWinnerSendStorageFailed,
+} from "./reward-winner-send.ts";
 
 export class SongRewardOfferStorageFailed extends Data.TaggedError("SongRewardOfferStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";
@@ -33,7 +57,10 @@ export class SongRewardOfferRejected extends Data.TaggedError("SongRewardOfferRe
     | "song-unavailable";
 }> {}
 
-export type SongRewardOfferFailure = SongRewardOfferRejected | SongRewardOfferStorageFailed;
+export type SongRewardOfferFailure =
+  | SongRewardOfferRejected
+  | SongRewardOfferStorageFailed
+  | RewardOperationsPaused;
 
 export type SongRewardOffer = Readonly<{
   offerId: string;
@@ -129,6 +156,15 @@ export interface SongRewardOfferStore {
     RewardQualificationPoliciesV1,
     SongRewardOfferFailure
   >;
+  /**
+   * The only funding sender a reward leg may name: the chosen persona's single
+   * active EVM wallet, owned by the authenticated account. Missing, inactive or
+   * ambiguous assignments fail closed as persona-ineligible.
+   */
+  readonly fundingSender: (input: {
+    readonly accountId: string;
+    readonly personaId: string;
+  }) => Effect.Effect<string, SongRewardOfferFailure>;
   readonly openOffer: (input: {
     readonly actionId: string;
     readonly offerId: string;
@@ -382,7 +418,9 @@ export function makeSongRewardOfferService(input: {
       request.maxTicketPriceAtomic <= 0n ||
       request.fundingAmountAtomic < request.maxTicketPriceAtomic ||
       !Number.isSafeInteger(request.entryCutoffSeconds) ||
-      request.entryCutoffSeconds <= 0 ||
+      // Jobs need the 120-second chain safety margin plus scheduled cycles to
+      // commit and purchase after entries freeze. Shorter terms can never buy.
+      request.entryCutoffSeconds < 300 ||
       !Number.isSafeInteger(request.minScoreBps) ||
       request.minScoreBps < 7_000 ||
       request.minScoreBps > 10_000 ||

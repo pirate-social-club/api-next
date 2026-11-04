@@ -5,10 +5,23 @@ secondary. It is not the primary authority provisioner, a queue consumer or a
 replacement for end-to-end DNSSEC/DANE observation. Python 3.10 or newer and
 the Docker CLI are sufficient; there are no Python package dependencies.
 
-The initial profile preserves the reviewed PowerDNS 5.1 image digest, Compose
-bytes and September 1 readiness configuration. The SQLite database and its
-trigger remain retained host state, not release contents. The trigger file is
-an expected-policy fixture, never an automatically executed migration.
+The production successor keeps the reviewed PowerDNS 5.1 image digest,
+SQLite database, transfer policy and trigger. It enables a loopback-only API
+for the provisioner's secondary readiness check. The trigger remains retained
+host state, not an automatically executed migration.
+
+The static `pdns.conf` includes `/etc/powerdns/private`, a read-only mount
+from `/etc/pirate-hns-secondary/private`. That root-owned directory must be
+group 953, mode 0750, and contain exactly one root-owned, group-953 mode-0640
+file, `api-key.conf`, holding a
+single `api-key=$scrypt$...` line. Generate the hash from a fresh, random API
+key with `pdnsutil hash-password` through standard input; deliver the
+plaintext only through the protected operator secret and provisioner
+environment. The verifier checks the host file against the independent
+root-owned `/etc/pirate-hns-secondary/api-key.sha256` digest and the bytes
+mounted inside the container. Neither key form is in the release archive or
+printed by the verifier. Both the webserver and its allowlist bind to
+`127.0.0.1:8081`; no public API listener is accepted.
 
 PowerDNS permits unsigned outbound transfers from allow-axfr-ips and separately
 admits transfers signed by an authorized TSIG key, regardless of that IP list.
@@ -67,13 +80,12 @@ The service needs root-equivalent Docker access and read access to the SQLite
 store. Its systemd sandbox is defense in depth, not a boundary against the
 Docker daemon. No operator database credential or webhook is installed here.
 
-Verify runtime against the staged release before changing current. The initial
-repair preserves the exact Compose and DNS configuration bytes and the running
-image, so it does not require restarting the DNS container. The bind source
-remains /srv/pirate-hns-secondary/current/config/pdns.conf; the verifier also
-hashes the actual file inside the container to detect a stale bind after any
-future change. A future change of those bytes needs its own reviewed container
-recreation and serving cutover, not just a symlink switch.
+Verify staged files before changing current. This successor changes Compose
+and DNS configuration bytes, so it requires a reviewed container recreation
+and serving cutover. The bind source remains
+`/srv/pirate-hns-secondary/current/config/pdns.conf`; the verifier hashes
+both mounted configuration files inside the container to detect stale binds.
+Observe the retained zone from both authorities before and after recreation.
 
 Switch current atomically, verify again, then enable the new timer. Retain one
 manual and one natural timer invocation with actual start/end times and exit
@@ -88,10 +100,12 @@ the maintained continuity observer before and after the switch. Separately
 retain unsigned transfer behavior without logging zone contents. Do not promote
 an inventory or change a gateway reference in this DNS verification release.
 
-Rollback stops/disables the new timer, restores the previous current selector
-and retained unit state, and verifies DNS serving against the retained bytes.
-No database rollback or TSIG rotation is involved. If runtime bytes diverge,
-stop and diagnose before any selector change; do not reset the manifest baseline.
+Rollback restores the previous selector and retained unit state, recreates the
+previous container with its prior Compose/configuration bytes, and verifies
+DNS serving against both authorities. The private API directory and tunnel can
+then be removed after the prior provisioner is restored. No database rollback
+or TSIG rotation is involved. If runtime bytes diverge, stop and diagnose
+before any selector change; do not reset the manifest baseline.
 
 ## Verification
 

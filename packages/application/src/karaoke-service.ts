@@ -46,7 +46,7 @@ export type KaraokeSessionAuthority = Readonly<{
   lines: readonly KaraokeRuntimeLine[];
   lyricsRevision: number;
   personaId: string;
-  playbackKind: "full_mix";
+  playbackKind: "full_mix" | "instrumental";
   postId: string;
   qualificationPolicyVersionId: string;
   requestHash: string;

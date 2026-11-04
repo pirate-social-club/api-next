@@ -30,6 +30,11 @@ export const StudyPrivateGraderV2 = Schema.Union([
     tokenizer_policy_revision: Identifier,
   }),
   Schema.Struct({
+    kind: Schema.Literal("source_token_phonetic_v4"),
+    reference_text: Text,
+    tokenizer_policy_revision: Identifier,
+  }),
+  Schema.Struct({
     kind: Schema.Literal("exact_choice_v1"),
     correct_choice_key: Identifier,
     correct_text: Text,
@@ -83,7 +88,8 @@ export const StudySourceItemV2 = Schema.Struct({
       item.exercise_type === "say_it_back"
         ? item.private_grader.kind === "source_token_diff_v1" ||
           item.private_grader.kind === "source_token_phonetic_v2" ||
-          item.private_grader.kind === "source_token_phonetic_v3"
+          item.private_grader.kind === "source_token_phonetic_v3" ||
+          item.private_grader.kind === "source_token_phonetic_v4"
         : item.private_grader.kind === "exact_choice_v1";
     if (!graderKindMatches) {
       return "Exercise and private grader kinds must match";
@@ -92,14 +98,17 @@ export const StudySourceItemV2 = Schema.Struct({
       item.exercise_type === "say_it_back" &&
       (item.private_grader.kind === "source_token_diff_v1" ||
         item.private_grader.kind === "source_token_phonetic_v2" ||
-        item.private_grader.kind === "source_token_phonetic_v3")
+        item.private_grader.kind === "source_token_phonetic_v3" ||
+        item.private_grader.kind === "source_token_phonetic_v4")
     ) {
       const expectedPolicy =
         item.private_grader.kind === "source_token_diff_v1"
           ? "script_aware_token_diff_v1"
           : item.private_grader.kind === "source_token_phonetic_v2"
             ? "script_aware_token_phonetic_v2"
-            : "script_aware_token_phonetic_v3";
+            : item.private_grader.kind === "source_token_phonetic_v3"
+              ? "script_aware_token_phonetic_v3"
+              : "script_aware_token_phonetic_v4";
       if (
         item.grader_policy_revision !== expectedPolicy ||
         item.private_grader.tokenizer_policy_revision !== expectedPolicy

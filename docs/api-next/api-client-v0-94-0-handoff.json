@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.94.0",
+  "sourceBranch": "feat/persona-song-library",
+  "sourceBase": "29582a47b",
+  "validatedSourceCommit": null,
+  "pullRequest": 414,
+  "wireContract": "Adds the persona song library reads (recent song activity and public trending songs) to the 0.93.0 client. No existing operation changes.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.94.0.tgz",
+    "sha256": "ba23732e345868839b3e8fd2a456f8d2c664d519eccc24da6fc0f4a5043ae48f"
+  },
+  "validation": {
+    "status": "Local candidate; repository and hosted gates pending",
+    "passed": [
+      "Generated OpenAPI and browser client from the merged registered contracts"
+    ],
+    "remaining": [
+      "Repository check, unit and PostgreSQL 17 gates",
+      "Hosted checks on PR #414",
+      "Solid adoption"
+    ],
+    "operationalBoundary": "No package registry publication, deployment, or live product mutation occurred."
+  }
+}

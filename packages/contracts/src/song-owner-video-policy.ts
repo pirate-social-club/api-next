@@ -77,7 +77,8 @@ export type SongOwnerPolicyManagementV1 = Schema.Schema.Type<typeof SongOwnerPol
  * acceptance case 10 names: the effective derivative-video policy, its
  * revision, and the capability boolean. Account and audit identity, the
  * owner's reward posture, and the song audio revision never cross this
- * boundary; exposing them would require a Spec 013 amendment.
+ * boundary. Video readiness is advisory for the current audio revision;
+ * reservation rechecks it before granting upload authority.
  */
 export const PublicSongOwnerPolicyV1 = Schema.Struct({
   object: Schema.Literal("song_owner_policy"),
@@ -86,6 +87,7 @@ export const PublicSongOwnerPolicyV1 = Schema.Struct({
   policy_revision: PositiveInteger,
   derivative_video: SongOwnerDerivativeVideoPolicyV1,
   can_post_with_song: Schema.Boolean,
+  video_ready: Schema.Boolean,
 });
 export type PublicSongOwnerPolicyV1 = Schema.Schema.Type<typeof PublicSongOwnerPolicyV1>;
 

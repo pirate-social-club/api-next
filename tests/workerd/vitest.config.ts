@@ -1,10 +1,25 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 import { unstable_readConfig } from "wrangler";
+import { rewardsPlatformAliases } from "../rewards-platform-aliases.ts";
+import { withWorkspacePublicAliases } from "../workspace-public-aliases.ts";
 
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
-const alias = {
+const alias = withWorkspacePublicAliases({
+  ...rewardsPlatformAliases,
+  "@pirate/platform-cf/hns-active-lease-renewal-repository": new URL(
+    "../../packages/platform-cf/src/hns-active-lease-renewal-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-control-observer-postgres.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-owner-active-lease-renewal-service-binding": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-owner-active-lease-renewal-service-binding.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/avatars/ports": new URL(
     "../../packages/application/src/avatars/ports.ts",
     import.meta.url,
@@ -22,6 +37,14 @@ const alias = {
     import.meta.url,
   ).pathname,
 
+  "@pirate/application/telegram-study": new URL(
+    "../../packages/application/src/telegram-study.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/telegram-linking": new URL(
+    "../../packages/application/src/telegram-linking.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,
@@ -132,6 +155,30 @@ const alias = {
     "../../packages/platform-cf/config/index.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/spaces-final-issuance-verifier": new URL(
+    "../../packages/platform-cf/src/spaces-final-issuance-verifier.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-reconciliation-repository": new URL(
+    "../../packages/platform-cf/src/spaces-reconciliation-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-community-route-attachment-repository": new URL(
+    "../../packages/platform-cf/src/spaces-community-route-attachment-repository.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-root-authority-observer": new URL(
+    "../../packages/platform-cf/src/spaces-root-authority-observer.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-root-observation-targets": new URL(
+    "../../packages/platform-cf/src/spaces-root-observation-targets.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/spaces-sale-namespace-repository": new URL(
+    "../../packages/platform-cf/src/spaces-sale-namespace-repository.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/media-processing-cloudflare": new URL(
     "../../packages/platform-cf/src/media-processing-cloudflare.ts",
     import.meta.url,
@@ -174,7 +221,7 @@ const alias = {
     "../../packages/verifier-response-contract/src/index.ts",
     import.meta.url,
   ).pathname,
-};
+});
 
 const productionJobsConfiguration = unstable_readConfig(
   {

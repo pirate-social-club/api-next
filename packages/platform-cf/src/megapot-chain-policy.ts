@@ -1,4 +1,6 @@
-import type { MegapotV2Environment } from "./megapot-v2.ts";
+import { isMegapotLocalForkClient } from "./megapot-local-fork.ts";
+import type { MegapotV2DeploymentAttestation, MegapotV2Environment } from "./megapot-v2.ts";
+import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 
 export const MEGAPOT_CHAIN_STEPS = [
   "approval",
@@ -21,7 +23,14 @@ export function isMegapotStepChainAllowed(
   step: MegapotChainStep,
   environment: MegapotV2Environment,
   chainId: number,
+  localForkRpc?: MegapotV2RpcClient,
+  expectedDeployment?: MegapotV2DeploymentAttestation,
 ): boolean {
   if (!MEGAPOT_CHAIN_STEPS.includes(step)) return false;
+  if (environment === "production" && chainId === 8453 && step !== "transaction-signing") {
+    return (
+      expectedDeployment !== undefined && isMegapotLocalForkClient(localForkRpc, expectedDeployment)
+    );
+  }
   return (environment === "test" || environment === "staging") && chainId === 84_532;
 }

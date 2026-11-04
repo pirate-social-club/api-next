@@ -12,6 +12,7 @@ import type {
   HnsLifecycleReadinessContextV1,
   HnsLifecycleReadinessPortsV1,
 } from "./lifecycle-readiness.ts";
+import { HnsLifecycleReadinessContextError } from "./lifecycle-readiness.ts";
 import type {
   HnsRootReadinessObservationConfig,
   HnsRootReadinessObservationPorts,
@@ -201,11 +202,10 @@ export function makePostgresHnsRootImportLifecycleQueue(
           // The claimed job is validated under its own fence before anything
           // else, exactly as the observation transaction does.
           const owned = await client.query<Record<string, unknown>>(
-            `SELECT lifecycle_job_id, created_at FROM hns_root_import_lifecycle_jobs
-              WHERE lifecycle_job_id=$1 AND root_import_session_id=$2
-                AND job_kind='reconcile_provider' AND state='leased' AND leased_by=$3
-                AND lease_fence=$4 AND lease_expires_at > clock_timestamp()
-              FOR UPDATE`,
+            `SELECT lifecycle_job_id, created_at
+               FROM lock_hns_root_import_lifecycle_job_v1(
+                 $1,$2,'reconcile_provider',$3,$4
+               )`,
             [job.lifecycle_job_id, job.root_import_session_id, executorId, job.lease_fence],
           );
           if (owned.rows.length !== 1) {
@@ -215,7 +215,7 @@ export function makePostgresHnsRootImportLifecycleQueue(
           const claimedAt = owned.rows[0]?.created_at;
           const lifecycle = await client.query<Record<string, unknown>>(
             `SELECT phase, revision, pending_reason, next_check_at
-               FROM hns_root_import_lifecycle WHERE root_import_session_id=$1 FOR UPDATE`,
+               FROM lock_hns_root_import_lifecycle_v1($1)`,
             [job.root_import_session_id],
           );
           const row = lifecycle.rows[0];
@@ -526,7 +526,7 @@ export function makePostgresHnsLifecycleReadinessPorts(
           (await sha256Hex(publishPlanBytes)) !== publishPlanSha256 ||
           (await sha256Hex(provisionResultBytes)) !== provisionResultSha256
         ) {
-          throw new Error("HNS lifecycle readiness read an invalid operation");
+          throw new HnsLifecycleReadinessContextError();
         }
         const context: HnsLifecycleReadinessContextV1 = {
           lifecycle_revision: revision,

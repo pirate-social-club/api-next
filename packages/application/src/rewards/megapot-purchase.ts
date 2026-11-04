@@ -1,5 +1,6 @@
 import type { MegapotTicket } from "@pirate/domain";
 import { Data, type Effect } from "effect";
+import type { RewardOperationsPaused, RewardRunAuthorityUnavailable } from "./reward-operations.ts";
 
 export type MegapotPurchaseStorageReason =
   | "conflict"
@@ -21,7 +22,11 @@ export class MegapotPurchaseRejected extends Data.TaggedError("MegapotPurchaseRe
     | "not-found";
 }> {}
 
-export type MegapotPurchaseFailure = MegapotPurchaseRejected | MegapotPurchaseStorageFailed;
+export type MegapotPurchaseFailure =
+  | MegapotPurchaseRejected
+  | MegapotPurchaseStorageFailed
+  | RewardOperationsPaused
+  | RewardRunAuthorityUnavailable;
 
 export type MegapotPreBroadcastCloseReason =
   | "cutoff_safety_margin"

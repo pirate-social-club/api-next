@@ -19,11 +19,14 @@ export async function withHnsRootZoneMutation<A>(
   client.on("error", disconnected);
   client.on("end", disconnected);
   let begun = false;
+  let stage: "connect" | "begin" | "lock" | "mutate" | "commit" = "connect";
   try {
     await client.connect();
+    stage = "begin";
     await client.query("BEGIN");
     begun = true;
     await client.query("SET LOCAL lock_timeout='5s'");
+    stage = "lock";
     const retained = await client.query<{ admitted: boolean }>(
       "SELECT lock_hns_root_zone_mutation_v1($1,$2,$3,$4,$5,$6) AS admitted",
       [
@@ -37,11 +40,23 @@ export async function withHnsRootZoneMutation<A>(
     );
     if (retained.rows.length !== 1 || retained.rows[0]?.admitted !== true)
       throw new Error("HNS zone mutation no longer admitted");
+    stage = "mutate";
     const result = await mutate(controller.signal);
     controller.signal.throwIfAborted();
+    stage = "commit";
     await client.query("COMMIT");
     return result;
   } catch (error) {
+    const code =
+      error !== null && typeof error === "object" && "code" in error ? error.code : undefined;
+    console.error(
+      JSON.stringify({
+        event: "hns_zone_mutation_stage_failed",
+        stage,
+        database_signal_aborted: controller.signal.aborted,
+        ...(typeof code === "string" && /^[0-9A-Z_]{5,32}$/u.test(code) ? { code } : {}),
+      }),
+    );
     controller.abort(error);
     // No provider mutation is retried here, including an ambiguous COMMIT.
     if (begun) await client.query("ROLLBACK").catch(() => undefined);

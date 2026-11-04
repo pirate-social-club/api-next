@@ -33,7 +33,7 @@ describe("staging song playback configuration", () => {
     expect(staging.vars?.SONG_PLAYBACK_ENABLED).toBe("true");
     expect(staging.vars?.SONG_PLAYBACK_R2_ACCOUNT_ID).toBe("08a4c22cf52e2ecae883e36f80a33f4a");
     expect(staging.vars?.SONG_PLAYBACK_R2_BUCKET).toBe("pirate-media-immutable-staging");
-    expect(staging.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    expect(staging.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
     expect(staging.secrets?.required).toEqual(
       expect.arrayContaining([
         "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
@@ -43,20 +43,15 @@ describe("staging song playback configuration", () => {
     );
   });
 
-  test("keeps playback disabled outside staging", () => {
-    for (const name of ["development", "production"] as const) {
-      const current = environment(name);
-      expect(current.vars?.SONG_PLAYBACK_ENABLED).toBe("false");
-      expect(current.vars?.SONG_PLAYBACK_R2_ACCOUNT_ID).toBe("");
-      expect(current.vars?.SONG_PLAYBACK_R2_BUCKET).toBe("");
-      expect(current.secrets?.required ?? []).not.toEqual(
-        expect.arrayContaining([
-          "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
-          "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
-          "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
-        ]),
-      );
-    }
+  test("prepares production playback while keeping development disabled", () => {
+    const production = environment("production");
+    expect(production.vars?.SONG_PLAYBACK_ENABLED).toBe("true");
+    expect(production.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    const development = environment("development");
+    expect(development.vars?.SONG_PLAYBACK_ENABLED).toBe("false");
+    expect(development.vars?.SONG_PLAYBACK_R2_ACCOUNT_ID).toBe("");
+    expect(development.vars?.SONG_PLAYBACK_R2_BUCKET).toBe("");
+    expect(development.secrets?.required ?? []).not.toContain("SONG_PLAYBACK_R2_ACCESS_KEY_ID");
   });
 
   test("reuses the existing isolated limiter and migration", () => {

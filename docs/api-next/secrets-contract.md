@@ -17,6 +17,53 @@ and its operator credential contract are retired.
 
 Date of inventory: 2026-08-25.
 
+## Production Palm candidate — 2026-10-15
+
+This source contract prepares the existing `very.web` ZK transport for ordinary
+production joining. It does not record a production activation, installed key,
+permission grant or successful Palm ceremony. Earlier inventory and deployment
+statements below remain dated history.
+
+Production HTTP declares `VERY_WEB_ENABLED=true` and the public application ID
+`fa6bb1db-51dd-4673-915a-b945e7a895a0`, already demonstrated by real staging
+ceremonies. It retains `https://api.very.org/api/v1`,
+`https://verify.very.org/api/v1/verify` and `https://bridge.very.org/api/v1` as
+the public API, proof verifier and encrypted bridge endpoints. These values
+belong in Wrangler vars, not Infisical. Reusing this public identifier under
+the existing `pirate-social` relying-party scope is the reviewed candidate;
+fresh production provider acceptance is still required. The selected widget
+and bridge transport requires no OAuth client secret or registered HTTPS
+callback. The current [ZK guide](https://very.org/docs/developers/zk-integration)
+does not establish a separate production app-registration or origin-allowlist
+step. Do not substitute the separate OAuth setup procedure for this transport.
+
+`VERY_WEB_SEALING_KEY` is required at `prod:/services/api-next` and in production
+HTTP `secrets.required`. It is a server-only AES-GCM key whose string must encode
+to exactly 32 UTF-8 bytes. Generate and provision production material
+independently through the reviewed credential workflow; never copy the staging
+key. Only the HTTP Worker consumes it. It is not a provider-issued OAuth secret,
+a public var, an operator fixture or an input for Jobs or media Workers. Missing
+or malformed enabled-provider configuration prevents HTTP startup, and the
+name-only inventory audit reports a missing production key until it is
+provisioned. Inventory admission alone neither creates nor uploads a key.
+
+The optional `PRODUCTION_E2E_CREATOR_EMAIL`, `PRODUCTION_E2E_CREATOR_OTP`,
+`PRODUCTION_E2E_PARTICIPANT_EMAIL` and `PRODUCTION_E2E_PARTICIPANT_OTP` names are
+admitted only at `prod:/services/api-next/operator`. These existing fixture
+names are an explicit exception to the general environment-free naming rule
+below. They must never be synchronized to any Worker or declared as Worker
+vars or secrets. Presence is not proof of populated values, valid login, a
+distinct participant account or an eligible Palm identity.
+
+The release coordinator separately owns the independent production sealing key,
+effective-role privilege review and rehearsal, deployment and real participant
+ceremony. The source candidate leaves staging intent intact, including its
+prepared Rewards pilot. It does not enable production Rewards, Telegram,
+guest serving, nationality, Self, ZKPassport, Spaces or OAuth. A successful
+production join requires authoritative completion, evidence, subject binding,
+gate decision, membership and fulfilled-intent readback; a packaged Worker is
+not acceptance evidence.
+
 ## Production HTTP activation — 2026-08-25
 
 The production HTTP Worker is `pirate-http-worker-production` in canonical
@@ -265,6 +312,17 @@ configuration must be reintroduced deliberately.
   CONTROL_PLANE_POSTGRES_ADMIN_URL
   CONTROL_PLANE_POSTGRES_RUNTIME_URL
 ```
+
+For the staging Megapot gas top-up rollout, `/services/api-next/operator` may
+also hold the optional `GAS_TOPUP_KEY`. It is the private key of a new gas
+wallet, separate from Megapot custody. The operator-only rollout guard reads
+it to check the public address during wallet registration and sends it on
+standard input to a versioned Cloudflare secret upload for the staging jobs
+Worker as `MEGAPOT_GAS_TOPUP_PRIVATE_KEY`. Infisical does not synchronize this
+operator value to any Worker automatically. The key is absent until a separate
+operator ceremony creates it; this inventory rule authorizes no key creation,
+wallet funding, Worker upload, or rewards activation. Development, production,
+and the shared staging runtime path do not admit `GAS_TOPUP_KEY`.
 
 ### Disabled HNS community API activation boundary — 2026-08-26
 
@@ -1126,3 +1184,52 @@ decision retains their custody pending upstream rotation. Inventory admission
 does not restore confidentiality or lift the provisioning record's prohibition
 on reusing the disclosed pair in a wallet ceremony. No credential was read,
 rotated, deleted or synchronized by this contract change.
+
+## Retained testnet reward custody keys
+
+The jobs Worker accepts the optional redacted secret
+`MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS` for obligations originating under retired
+Base Sepolia attestations. Its value is a JSON object mapping each lowercase
+custody address to its matching lowercase hexadecimal private key. The map is
+bounded to 32 entries and 8,192 characters. The primary
+`MEGAPOT_CUSTODY_PRIVATE_KEY` remains available alongside these retained keys.
+Malformed maps and address/key mismatches fail with a sanitized configuration
+error; missing historical authority holds the affected item before nonce
+reservation while other candidates continue.
+
+Staging `/services/api-next` admits this optional name. It is never a public
+variable, database field, commitment artifact or log value. A separately
+authorized rotation provisions the jobs-only binding and declares the installed
+secret in the Worker configuration and names-only inventory. This implementation
+does not provision keys or alter any deployment. Development and production
+Infisical inventories do not admit this testnet secret. Retain each key until
+its original attestation has no outstanding liabilities or pending chain effects
+and its operator closeout has been verified.
+
+## HNS production operator inventory, October 6
+
+The accepted production host and database use seven optional names only at
+production `/services/api-next/operator`: `HNS_AUTHORITY_HSD_AUTHORIZATION`,
+`HNS_AUTHORITY_SECONDARY_PDNS_API_KEY`, `HNS_PRODUCTION_MAINNET_READER_CLIENT_KEY`,
+and `HNS_PRODUCTION_POSTGRES_ADMIN_URL`, `HNS_PRODUCTION_POSTGRES_GATEWAY_URL`,
+`HNS_PRODUCTION_POSTGRES_PROVISIONER_URL`, `HNS_PRODUCTION_POSTGRES_RUNTIME_URL`.
+The authority inputs belong to the retained provisioner/authority host, the
+reader key belongs to the reviewed mainnet reader, and the database URLs belong
+to fenced operator/preflight workflows for the replacement production branch.
+They are not browser or shared Worker bindings. Inventory admission creates
+no credential, changes no effective permission, and enables no runtime.
+
+The video source gateway's production source now names the same replacement
+Hyperdrive as the other production Workers. A read-only deployment listing on
+October 6 returned Worker-not-found for that production gateway. This source
+repair does not create or deploy it; the current release excludes that Worker.
+
+The optional production `/services/spaces-operator` folder admits only
+`SPACES_BACKUP_AGE_RECIPIENT`, `SPACES_BACKUP_B2_KEY_ID` and
+`SPACES_BACKUP_B2_APPLICATION_KEY` for the
+maintained operator backup uploader. These names are not Worker runtime inputs.
+The absence of this optional folder is not a missing-secret finding; an
+unknown folder or additional stored name remains a violation. Staging Spaces
+operator names admit only the verified observer node/DB pair and Yahoo
+assignment, capability report, funding report and registry tokens. They remain
+operator-only; no HTTP/jobs distribution or feature activation is implied.

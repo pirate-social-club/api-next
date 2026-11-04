@@ -12,6 +12,7 @@ import { deriveMegapotTicket } from "@pirate/domain";
 import { Data, Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
 import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
+import { megapotReceiptIsFinalized } from "./megapot-finality.ts";
 import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   encodeMegapotBuyTickets,
@@ -23,6 +24,7 @@ import {
 } from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
+import { preparedTransactionLanded, type RewardRunAuthority } from "./reward-operations-control.ts";
 
 export type MegapotPurchaseCoordinatorReason =
   | "allowance_insufficient"
@@ -79,6 +81,13 @@ export type MegapotPurchaseCoordinatorOptions = Readonly<{
 }>;
 
 export interface MegapotPurchaseCoordinator {
+  readonly closeUnavailable: (command: {
+    readonly poolLegId: string;
+    readonly drawingId: bigint;
+  }) => Effect.Effect<
+    Extract<MegapotPurchaseCoordinatorResult, { readonly kind: "closed" }> | null,
+    MegapotPurchaseFailure | MegapotPurchaseCoordinatorFailed
+  >;
   readonly purchase: (input: {
     readonly poolLegId: string;
     readonly drawingId: bigint;
@@ -193,6 +202,7 @@ export function makeMegapotPurchaseCoordinator(input: {
   readonly store: MegapotPurchaseStore;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
+  readonly authority: RewardRunAuthority;
   readonly options: MegapotPurchaseCoordinatorOptions;
 }): MegapotPurchaseCoordinator {
   const { store, rpc, signer } = input;
@@ -221,7 +231,15 @@ export function makeMegapotPurchaseCoordinator(input: {
   const assertLivePurchase = Effect.fn("MegapotPurchaseCoordinator.assertLivePurchase")(function* (
     candidate: MegapotPurchaseCandidate,
   ) {
-    if (!isMegapotStepChainAllowed("purchase", candidate.environment, candidate.chainId)) {
+    if (
+      !isMegapotStepChainAllowed(
+        "purchase",
+        candidate.environment,
+        candidate.chainId,
+        input.rpc,
+        candidate,
+      )
+    ) {
       return yield* failed("production_disabled", "configuration");
     }
     if (!sameAddress(signer.address, candidate.custodyAddress)) {
@@ -267,6 +285,22 @@ export function makeMegapotPurchaseCoordinator(input: {
   const reconcilePrepared = Effect.fn("MegapotPurchaseCoordinator.reconcilePrepared")(function* (
     purchase: MegapotPreparedPurchase,
   ) {
+    if (purchase.chainId === 8453) {
+      if (
+        !isMegapotStepChainAllowed(
+          "purchase",
+          purchase.environment,
+          purchase.chainId,
+          rpc,
+          purchase,
+        )
+      ) {
+        return yield* failed("production_disabled", "configuration");
+      }
+      yield* rpcEffect("preflight", "deployment_attestation_mismatch", () =>
+        rpc.attestDeployment(),
+      );
+    }
     const transactionHash = purchase.transactionHash ?? purchase.signedTransactionHash;
     const receiptAttempt = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       rpc.readReceipt(transactionHash),
@@ -284,6 +318,13 @@ export function makeMegapotPurchaseCoordinator(input: {
         : ({ kind: "submitted", effectId: purchase.effectId, transactionHash } as const);
     }
     const receipt = receiptAttempt.receipt;
+    if (
+      !(yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
+        megapotReceiptIsFinalized(rpc, purchase.chainId, receipt.blockNumber),
+      ))
+    ) {
+      return { kind: "submitted", effectId: purchase.effectId, transactionHash } as const;
+    }
     if (receipt.status !== "success") {
       return yield* requireReconciliation(purchase, "purchase_receipt_reverted");
     }
@@ -369,6 +410,23 @@ export function makeMegapotPurchaseCoordinator(input: {
     purchase: MegapotPreparedPurchase,
   ) {
     if (purchase.state !== "prepared") return yield* reconcilePrepared(purchase);
+    // A stored signature does not show the transaction was never sent: the send can
+    // succeed and the record of it fail. If the chain already holds it, that is
+    // recorded and nothing is signed or sent again. This comes before any check
+    // that applies only to a fresh send.
+    if (yield* preparedTransactionLanded(rpc, purchase.signedTransactionHash)) {
+      yield* store.recordSubmission({
+        effectId: purchase.effectId,
+        transactionHash: purchase.signedTransactionHash,
+        submittedAt: new Date(now()).toISOString(),
+        outcome: "accepted",
+      });
+      return yield* reconcilePrepared({
+        ...purchase,
+        state: "broadcast_pending",
+        transactionHash: purchase.signedTransactionHash,
+      });
+    }
     yield* assertLivePurchase(purchase);
     const expectedCalldata = encodeMegapotBuyTickets({
       tickets: [purchase.ticket],
@@ -385,6 +443,9 @@ export function makeMegapotPurchaseCoordinator(input: {
     ) {
       return yield* failed("receipt_evidence_invalid", "prepare");
     }
+    // Sending needs authority. It is asked outside the handling below, so a refusal
+    // is never taken for a broadcast of unknown outcome.
+    yield* input.authority.ensure();
     const submission = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       rpc.sendRawTransaction(purchase.signedTransaction as Hex),
     ).pipe(
@@ -431,6 +492,8 @@ export function makeMegapotPurchaseCoordinator(input: {
     maxFeePerGas: bigint,
     maxPriorityFeePerGas: bigint,
   ) {
+    // Signing needs authority, on a resumed reservation as much as a new one.
+    yield* input.authority.ensure();
     const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
       signer.sign({
         chainId: reservation.chainId,
@@ -534,6 +597,43 @@ export function makeMegapotPurchaseCoordinator(input: {
     return yield* reconcilePrepared(progress);
   });
 
+  const checkPreBroadcastWindow = Effect.fn("MegapotPurchaseCoordinator.checkPreBroadcastWindow")(
+    function* (candidate: MegapotPurchaseCandidate) {
+      const preflight = yield* assertLivePurchase(candidate).pipe(
+        Effect.as({ ok: true as const }),
+        Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+      );
+      if (!preflight.ok) {
+        const terminalReasons = new Set<MegapotPreBroadcastCloseReason>([
+          "cutoff_safety_margin",
+          "drawing_locked",
+          "drawing_rolled_over",
+        ]);
+        if (terminalReasons.has(preflight.error.reason as MegapotPreBroadcastCloseReason)) {
+          const reason = preflight.error.reason as MegapotPreBroadcastCloseReason;
+          yield* store.closePreBroadcast({
+            candidate,
+            reason,
+            failedAt: new Date(now()).toISOString(),
+          });
+          return { kind: "closed", reason } as const;
+        }
+        return yield* preflight.error;
+      }
+      return null;
+    },
+  );
+
+  /** Read-only chain checks plus proven-unsent closure; never reserves or resumes a send. */
+  const closeUnavailable = Effect.fn("MegapotPurchaseCoordinator.closeUnavailable")(
+    function* (command: { readonly poolLegId: string; readonly drawingId: bigint }) {
+      const effectId = deriveMegapotPurchaseEffectId(command.poolLegId, command.drawingId);
+      if ((yield* store.findProgress(effectId)) !== null) return null;
+      const candidate = yield* store.loadCandidate(command);
+      return yield* checkPreBroadcastWindow(candidate);
+    },
+  );
+
   const purchase = Effect.fn("MegapotPurchaseCoordinator.purchase")(function* (command: {
     readonly poolLegId: string;
     readonly drawingId: bigint;
@@ -542,27 +642,8 @@ export function makeMegapotPurchaseCoordinator(input: {
     const existing = yield* store.findProgress(effectId);
     if (existing !== null) return yield* resume(existing);
     const candidate = yield* store.loadCandidate(command);
-    const preflight = yield* assertLivePurchase(candidate).pipe(
-      Effect.as({ ok: true as const }),
-      Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
-    );
-    if (!preflight.ok) {
-      const terminalReasons = new Set<MegapotPreBroadcastCloseReason>([
-        "cutoff_safety_margin",
-        "drawing_locked",
-        "drawing_rolled_over",
-      ]);
-      if (terminalReasons.has(preflight.error.reason as MegapotPreBroadcastCloseReason)) {
-        const reason = preflight.error.reason as MegapotPreBroadcastCloseReason;
-        yield* store.closePreBroadcast({
-          candidate,
-          reason,
-          failedAt: new Date(now()).toISOString(),
-        });
-        return { kind: "closed", reason } as const;
-      }
-      return yield* preflight.error;
-    }
+    const closed = yield* checkPreBroadcastWindow(candidate);
+    if (closed !== null) return closed;
     const ticket = deriveMegapotTicket({
       effectId,
       drawingId: candidate.drawingId,
@@ -623,5 +704,5 @@ export function makeMegapotPurchaseCoordinator(input: {
     );
   });
 
-  return { purchase, reconcile };
+  return { purchase, reconcile, closeUnavailable };
 }

@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
+import {
+  decodeHnsAuthorityDetachedObserverEvidenceV1,
+  decodeHnsDnsHealthDocumentV1,
+  decodeHnsDnsZonePersistenceDocumentV1,
+} from "../../packages/application/src/hns-host-persistence.ts";
+import { canonicalJson } from "../../packages/domain/src/canonical-json.ts";
 import { parseContinuityArguments } from "../hns-continuity.ts";
 import { buildContinuityCandidate } from "./candidate.mjs";
 import { rotationFixture } from "./gateway-rotation.fixture.ts";
@@ -44,6 +51,108 @@ test("uses the observed successor health generation instead of assuming zero", a
   await expect(buildContinuityCandidate(input)).rejects.toThrow(
     "Successor health generation is missing",
   );
+});
+
+test("advances a dated zone revision without changing the captured zone or activation generation", async () => {
+  for (const rotate of [false, true]) {
+    const input = await fixture();
+    input.state.dns.zone_revision = "2026100714";
+    const prepared = await buildContinuityCandidate({
+      ...input,
+      gatewayRotation: rotate ? rotationFixture(input.state) : undefined,
+    });
+    const artifact = prepared.candidate.artifacts.find(
+      (entry) => entry.name === "dns_zone_activation",
+    );
+    const dns = JSON.parse(Buffer.from(artifact?.bytes_hex ?? "", "hex").toString());
+    expect(dns.zone_revision).toBe(2026100715);
+    expect(dns.dns_authority_generation).toBe(13);
+    expect(dns.zone_bytes_hex).toBe(input.primary.canonical_zone_bytes_hex);
+    expect(dns.zone_bytes_digest).toBe(input.state.dns.zone_bytes_digest);
+    expect(dns.dnssec_keyset_version).toBe(input.state.dns.dnssec_keyset_version);
+    expect(dns.gateway_certificate_spki_sha256).toBe(
+      input.state.dns.gateway_certificate_spki_sha256,
+    );
+  }
+});
+
+test("refuses missing, invalid and overflowing retained zone revisions", async () => {
+  for (const revision of [
+    undefined,
+    null,
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    "1e3",
+    "01",
+    "",
+    Number.MAX_SAFE_INTEGER,
+    "9007199254740992",
+  ]) {
+    const input = await fixture();
+    input.state.dns.zone_revision = revision;
+    await expect(buildContinuityCandidate(input)).rejects.toThrow(
+      "Retained zone revision cannot advance safely",
+    );
+  }
+});
+
+test("binds renewal persistence to the full raw chain while retaining detached evidence", async () => {
+  const input = await fixture();
+  const prepared = await buildContinuityCandidate(input);
+  const artifact = (name: string) => {
+    const value = prepared.candidate.artifacts.find(
+      (entry: { name: string }) => entry.name === name,
+    );
+    if (value === undefined) throw new Error("Expected candidate artifact");
+    return Buffer.from(value.bytes_hex, "hex");
+  };
+  const dns = await decodeHnsDnsZonePersistenceDocumentV1(artifact("dns_zone_activation"));
+  const health = decodeHnsDnsHealthDocumentV1(artifact("health_observation"));
+  const evidence = await decodeHnsAuthorityDetachedObserverEvidenceV1(
+    artifact("observer_evidence"),
+  );
+  const row = input.chain.rows.find(
+    (entry: { ref: string }) => entry.ref === `getnameresource:${input.state.dns.canonical_root}`,
+  );
+  const raw = JSON.parse(row.raw);
+  const fullDigest = createHash("sha256").update(canonicalJson(raw.result.records)).digest("hex");
+  const controlDigest = createHash("sha256")
+    .update(
+      canonicalJson(raw.result.records.filter((entry: { type: string }) => entry.type !== "TXT")),
+    )
+    .digest("hex");
+  expect(fullDigest).not.toBe(controlDigest);
+  expect(dns.stable_chain_delegation_snapshot_reference).toBe(`hns-root-chain:${fullDigest}`);
+  expect(health.stable_chain_delegation_snapshot_reference).toBe(
+    dns.stable_chain_delegation_snapshot_reference,
+  );
+  expect(evidence.evidence_reference).toStartWith("hns-detached-observation:continuity-");
+  expect(evidence.evidence_reference).not.toBe(dns.stable_chain_delegation_snapshot_reference);
+  expect(evidence.chain_authority_digest).toBe(dns.stable_chain_delegation_snapshot_digest);
+});
+
+test("refuses a changed parsed chain result with unchanged raw transcript", async () => {
+  const input = await fixture();
+  const row = input.chain.rows.find(
+    (entry: { ref: string }) => entry.ref === `getnameresource:${input.state.dns.canonical_root}`,
+  );
+  row.result.records.push({ type: "TXT", txt: ["changed capture"] });
+  await expect(buildContinuityCandidate(input)).rejects.toThrow(
+    "Captured chain result disagrees with its raw response",
+  );
+});
+
+test("refuses noncanonical raw chain bytes instead of silently trimming them", async () => {
+  for (const extra of [" ", "\n"]) {
+    const input = await fixture();
+    const row = input.chain.rows.find(
+      (entry: { ref: string }) => entry.ref === `getnameresource:${input.state.dns.canonical_root}`,
+    );
+    row.raw += extra;
+    await expect(buildContinuityCandidate(input)).rejects.toThrow("exact compact JSON");
+  }
 });
 
 test("rejects divergent authorities, modified AXFR bytes, and a certificate mismatch", async () => {

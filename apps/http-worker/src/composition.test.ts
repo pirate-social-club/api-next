@@ -35,11 +35,13 @@ function withVeryOauth(bindings: HttpWorkerBindings): HttpWorkerBindings {
   };
 }
 
-function withVeryWeb(bindings: HttpWorkerBindings): HttpWorkerBindings {
+function withProductionVeryWeb(bindings: HttpWorkerBindings): HttpWorkerBindings {
   return {
     ...bindings,
+    API_NEXT_ENV: "production",
+    MEGAPOT_CHAIN_ID: "8453",
     VERY_WEB_ENABLED: "true",
-    VERY_WEB_APP_ID: "pirate-web-staging",
+    VERY_WEB_APP_ID: "pirate-web-test",
     VERY_WEB_API_URL: "https://api.very.org/api/v1",
     VERY_WEB_VERIFY_URL: "https://verify.very.org/api/v1/verify",
     VERY_WEB_BRIDGE_API_URL: "https://bridge.very.org/api/v1",
@@ -53,6 +55,29 @@ const inertHnsTransport: HnsOwnerTransport = {
 };
 
 describe("HTTP production composition", () => {
+  test("a malformed profile provider credential does not block HTTP composition", async () => {
+    const configured = await bindings();
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        STUDY_PROFILE_COVERAGE_ENABLED: "true",
+        OPENROUTER_API_KEY: " padded ",
+        STUDY_GENERATION_OPENROUTER_MODEL: "google/gemini-test",
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  test("Telegram setup failure leaves unrelated HTTP routes available", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker({
+      ...configured,
+      TELEGRAM_CONFIG_JSON: "malformed-fixture",
+      TELEGRAM_SECRETS_JSON: "malformed-secret-fixture",
+    });
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+  });
+
   test("requires both Durable Object registration limiter bindings", () => {
     expect(() =>
       makeProductionIdentityRegistrationRateLimiter({} as HttpWorkerBindings, "development"),
@@ -220,6 +245,8 @@ describe("HTTP production composition", () => {
       MEDIA_INGRESS: {
         head: async () => null,
         get: async () => null,
+        createMultipartUpload: async () => ({ uploadId: "fixture-upload" }),
+        resumeMultipartUpload: () => ({ complete: async () => ({}), abort: async () => {} }),
       },
       MEDIA_IMMUTABLE_ORIGINALS: {
         head: async () => null,
@@ -265,7 +292,12 @@ describe("HTTP production composition", () => {
         MEDIA_INGRESS_R2_BUCKET_NAME: "fixture",
         MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID: "fixture",
         MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY: "fixture",
-        MEDIA_INGRESS: { head: async () => null, get: async () => null },
+        MEDIA_INGRESS: {
+          head: async () => null,
+          get: async () => null,
+          createMultipartUpload: async () => ({ uploadId: "fixture-upload" }),
+          resumeMultipartUpload: () => ({ complete: async () => ({}), abort: async () => {} }),
+        },
         MEDIA_IMMUTABLE_ORIGINALS: { head: async () => null, put: async () => null },
       },
       runtime,
@@ -359,7 +391,7 @@ describe("HTTP production composition", () => {
   });
 
   test("fails closed before registering Very web when required configuration is incomplete", async () => {
-    const configured = withVeryWeb(await bindings());
+    const configured = withProductionVeryWeb(await bindings());
     for (const setting of [
       "VERY_WEB_APP_ID",
       "VERY_WEB_API_URL",
@@ -374,8 +406,25 @@ describe("HTTP production composition", () => {
   });
 
   test("constructs the enabled Very web provider without making an upstream request", async () => {
-    const worker = await createProductionHttpWorker(withVeryWeb(await bindings()));
+    const worker = await createProductionHttpWorker(withProductionVeryWeb(await bindings()));
     expect((await worker.request("https://worker.test/health")).status).toBe(200);
+  });
+
+  test("rejects malformed production Palm configuration and enforces UTF-8 sealing byte length", async () => {
+    const configured = withProductionVeryWeb(await bindings());
+    for (const invalid of [
+      { VERY_WEB_APP_ID: " padded " },
+      { VERY_WEB_API_URL: "http://api.very.org/api/v1" },
+      { VERY_WEB_VERIFY_URL: "http://verify.very.org/api/v1/verify" },
+      { VERY_WEB_BRIDGE_API_URL: "http://bridge.very.org/api/v1" },
+      { VERY_WEB_SEALING_KEY: "w".repeat(31) },
+      { VERY_WEB_SEALING_KEY: "w".repeat(33) },
+      { VERY_WEB_SEALING_KEY: "é".repeat(32) },
+    ]) {
+      await expect(createProductionHttpWorker({ ...configured, ...invalid })).rejects.toThrow(
+        "HTTP worker configuration is incomplete or invalid",
+      );
+    }
   });
 
   test("keeps HNS ownership disabled by default and fails closed when enabled incompletely", async () => {
@@ -419,6 +468,15 @@ describe("HTTP production composition", () => {
       },
     });
     expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    expect(calls).toBe(0);
+    for (const operation of ["start", "poll"]) {
+      const response = await worker.request(
+        `https://worker.test/communities/community-1/canonical-route/ownership-recovery/${operation}`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      );
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
+    }
     expect(calls).toBe(0);
   });
 

@@ -1,5 +1,6 @@
 import {
   type ActiveSongMediaPostSubmissionPageV1,
+  AttachSongStemV1,
   BadRequest,
   BindSongLyricsV1,
   BindSongReferenceV1,
@@ -56,6 +57,7 @@ export const MEDIA_SUBMISSION_ENDPOINTS = {
   lyrics: "/media-post-submissions/:submissionId/lyrics",
   finalize: "/media-post-submissions/:submissionId/finalize",
   reference: "/media-post-submissions/:submissionId/reference",
+  stems: "/media-post-submissions/:submissionId/stems",
   retry: "/media-post-submissions/:submissionId/retry",
   cancel: "/media-post-submissions/:submissionId/cancel",
   moderate: "/moderation/media-post-submissions/:submissionId/actions",
@@ -118,10 +120,17 @@ export type MediaLyricsSnapshot = Readonly<{
     | { readonly status: "no_lyrics" };
 }>;
 
+export type MediaSongStemSlot = "instrumental_audio" | "vocal_audio";
+export type MediaSongStems = Readonly<
+  Record<MediaSongStemSlot, Readonly<{ sizeBytes: number; contentType: "audio/mpeg" }> | null>
+>;
+
 export type MediaSubmissionView = Readonly<{
   readonly state: MediaSubmissionState;
   readonly lyrics: MediaLyricsSnapshot;
   readonly updatedAt: string;
+  /** Sealed stems; absent or all-null when the author attached none. */
+  readonly stems?: MediaSongStems;
   /** Persisted post alias, resolved only after submission ownership is checked. */
   readonly publishedHref?: string;
 }>;
@@ -217,7 +226,42 @@ export interface MediaUploadStore {
     readonly responseBytes: Bytes;
     readonly responseSha256: string;
     readonly reservationId: string;
+    readonly slot?: "primary_audio" | MediaSongStemSlot;
   }) => Promise<MediaReservationOutcome>;
+  readonly getStemContext: (input: {
+    readonly submissionId: string;
+    readonly actorUserId: string;
+    readonly personaId: string;
+    readonly reservationId: string;
+  }) => Promise<Readonly<{
+    view: MediaSubmissionView;
+    reservation: Readonly<{
+      slot: "primary_audio" | MediaSongStemSlot;
+      state: string;
+      expired: boolean;
+      expectedContentType: string;
+      expectedSizeBytes: number;
+      expectedSha256: string | null;
+    }> | null;
+  }> | null>;
+  readonly attachStem: (
+    input: MediaCommandBase &
+      Readonly<{
+        expectedCreationRevision: number;
+        slot: MediaSongStemSlot;
+        reservationId: string;
+        stemOperationId: string;
+        immutableObject: Readonly<{
+          immutableRef: string;
+          destinationRef: string;
+          etag: string;
+          objectVersion: string;
+          sizeBytes: number;
+          contentType: string;
+          canonicalSha256: string;
+        }>;
+      }>,
+  ) => Promise<CommitOutcome>;
   readonly replay: (input: {
     readonly communityId: string;
     readonly actorUserId: string;
@@ -545,6 +589,14 @@ function publicPersona(
     : persona;
 }
 
+function projectStem(
+  stem: MediaSongStems[MediaSongStemSlot],
+): { status: "sealed"; content_type: "audio/mpeg"; size_bytes: number } | null {
+  return stem === null
+    ? null
+    : { status: "sealed", content_type: stem.contentType, size_bytes: stem.sizeBytes };
+}
+
 export function projectMediaSubmission(
   view: MediaSubmissionView,
   persona: PersonaRecord | MediaPostSubmissionV1["author_persona"],
@@ -569,6 +621,15 @@ export function projectMediaSubmission(
           : view.lyrics.current,
     },
     updated_at: view.updatedAt,
+    ...(view.stems !== undefined &&
+    (view.stems.instrumental_audio !== null || view.stems.vocal_audio !== null)
+      ? {
+          stems: {
+            instrumental_audio: projectStem(view.stems.instrumental_audio),
+            vocal_audio: projectStem(view.stems.vocal_audio),
+          },
+        }
+      : {}),
   };
   switch (state.status) {
     case "processing":
@@ -812,7 +873,7 @@ export async function reserveMediaUpload(
   const document: Schema.Schema.Type<typeof SongAudioReservationV1> = {
     reservation_id: reservationId,
     track: "song",
-    slot: "primary_audio",
+    slot: body.slot,
     status: "awaiting_upload",
     upload: {
       method: "PUT",
@@ -839,6 +900,7 @@ export async function reserveMediaUpload(
       responseBytes: response.bytes,
       responseSha256: response.sha256,
       reservationId,
+      slot: body.slot,
     });
   } catch (error) {
     throw mapMediaStoreError(error);
@@ -1701,6 +1763,169 @@ export async function bindMediaReference(
           workflow_revision: state.workflowRevision,
           workflow_instance_id: `media-${state.operationId}-r${state.workflowRevision}`,
         }),
+      }),
+      response,
+    );
+  } catch (error) {
+    if (error instanceof IdempotencyConflict || error instanceof InternalError) throw error;
+    throw mapMediaStoreError(error);
+  }
+}
+
+/**
+ * Attaches one uploaded stem (instrumental or vocals) to the author's song
+ * submission before it is published. The stem is sealed under its own
+ * operation and immutable key, so the submission's primary audio lineage,
+ * revision and workflow are unchanged.
+ */
+export async function attachMediaStem(
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }> & MediaRequestLifetime,
+  services: MediaSubmissionServices,
+): Promise<MediaPostSubmissionV1> {
+  const context = await mutationContext(
+    input,
+    AttachSongStemV1,
+    MEDIA_SUBMISSION_ENDPOINTS.stems,
+    services,
+  );
+  if (context.replay !== null) return context.replay;
+  const body = context.body as Schema.Schema.Type<typeof AttachSongStemV1>;
+  let stemContext: Awaited<ReturnType<MediaUploadStore["getStemContext"]>>;
+  try {
+    stemContext = await services.store.getStemContext({
+      submissionId: input.submissionId,
+      actorUserId: input.actor.userId,
+      personaId: body.persona_id,
+      reservationId: body.reservation_id,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (stemContext === null) throw new NotFound({ message: "Media submission not found" });
+  const { view, reservation } = stemContext;
+  const state = view.state;
+  if (reservation === null) throw new NotFound({ message: "Stem upload reservation not found" });
+  if (state.creationRevision !== body.expected_creation_revision) {
+    throw new Conflict({
+      message: "Media submission conflicts with current state",
+      details: { reason_code: "stale-revision" },
+    });
+  }
+  if (["published", "blocked", "abandoned"].includes(state.status)) {
+    throw new Conflict({
+      message: "Stems can only be added before the song is published",
+      details: { reason_code: "stem_window_closed" },
+    });
+  }
+  if (view.stems?.[body.slot] != null) {
+    throw new Conflict({
+      message: "This stem is already attached",
+      details: { reason_code: "stem_already_attached" },
+    });
+  }
+  if (reservation.slot !== body.slot || reservation.state !== "issued" || reservation.expired) {
+    throw new Conflict({
+      message: "The stem upload reservation cannot be used",
+      details: { reason_code: "reservation-conflict" },
+    });
+  }
+  const sourceKey = mediaIngressObjectKey(body.reservation_id);
+  let inspection: Awaited<ReturnType<MediaUploadSealer["inspect"]>>;
+  try {
+    inspection = await services.sealer.inspect({
+      sourceKey,
+      expectedSizeBytes: reservation.expectedSizeBytes,
+      expectedContentType: reservation.expectedContentType,
+    });
+  } catch {
+    throw new InternalError({ message: "Media upload inspection failed" });
+  }
+  if (inspection.outcome === "source_missing") {
+    throw new UploadObjectMissing({
+      message: "The reserved upload object is not present",
+      details: {
+        reason_code: "upload_object_missing",
+        submission_id: input.submissionId,
+        reservation_id: body.reservation_id,
+      },
+    });
+  }
+  if (inspection.outcome === "expectation_mismatch") {
+    throw new Conflict({
+      message: "The uploaded stem does not match its reservation",
+      details: { reason_code: "upload_expectation_mismatch" },
+    });
+  }
+  const stemOperationId = `${state.operationId}-stem-${body.slot}`;
+  let attempt: Awaited<ReturnType<MediaUploadSealer["seal"]>>;
+  try {
+    attempt = await services.sealer.seal({
+      source: inspection.source,
+      destinationKey: mediaImmutableObjectKey(stemOperationId),
+      immutableRef: mediaImmutableRef(stemOperationId),
+      expectedSizeBytes: reservation.expectedSizeBytes,
+      expectedContentType: reservation.expectedContentType,
+      ...(reservation.expectedSha256 === null
+        ? {}
+        : { expectedSha256: reservation.expectedSha256 }),
+      ownershipMarker: stemOperationId,
+    });
+  } catch (error) {
+    if (error instanceof MediaSealFailure && error.code !== "sibling_convergence_unavailable") {
+      throw new Conflict({
+        message: "The stem upload could not be sealed",
+        details: { reason_code: "stem_seal_failed" },
+      });
+    }
+    throw new InternalError({ message: "Media upload seal failed" });
+  }
+  const sealed = attempt.result;
+  if (sealed.outcome !== "sealed") {
+    throw new Conflict({
+      message: "The stem upload could not be sealed",
+      details: {
+        reason_code:
+          sealed.outcome === "expectation_mismatch"
+            ? "upload_expectation_mismatch"
+            : sealed.outcome === "source_precondition_failed"
+              ? "upload_source_changed"
+              : "stem_seal_conflict",
+      },
+    });
+  }
+  const stems: MediaSongStems = {
+    instrumental_audio: view.stems?.instrumental_audio ?? null,
+    vocal_audio: view.stems?.vocal_audio ?? null,
+    [body.slot]: { sizeBytes: sealed.size_bytes, contentType: "audio/mpeg" },
+  };
+  const response = await mediaResponseSnapshot(
+    projectMediaSubmission({ ...view, stems, updatedAt: services.nowIso() }, context.persona),
+  );
+  try {
+    return await commitSnapshot(
+      await services.store.attachStem({
+        communityId: state.communityId,
+        submissionId: state.submissionId,
+        actorUserId: input.actor.userId,
+        personaId: body.persona_id,
+        endpointTemplate: MEDIA_SUBMISSION_ENDPOINTS.stems,
+        idempotencyKey: body.idempotency_key,
+        requestHash: context.requestHash,
+        responseBytes: response.bytes,
+        responseSha256: response.sha256,
+        expectedCreationRevision: body.expected_creation_revision,
+        slot: body.slot,
+        reservationId: body.reservation_id,
+        stemOperationId,
+        immutableObject: {
+          immutableRef: sealed.immutable_ref,
+          destinationRef: sealed.destination_ref,
+          etag: sealed.etag,
+          objectVersion: sealed.version,
+          sizeBytes: sealed.size_bytes,
+          contentType: reservation.expectedContentType,
+          canonicalSha256: sealed.canonical_sha256,
+        },
       }),
       response,
     );

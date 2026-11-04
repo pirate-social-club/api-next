@@ -1,4 +1,4 @@
-import { parseMultiGoldenInput } from "./megapot-golden-multi-input.ts";
+import { type MultiGoldenInput, parseMultiGoldenInput } from "./megapot-golden-multi-input.ts";
 import type { GoldenObservation } from "./megapot-golden-reconciliation.ts";
 
 export const rehearsalTime = Date.parse("2026-09-21T10:00:00.000Z");
@@ -78,9 +78,28 @@ export const rehearsalInput = () =>
     },
   });
 
-export function rehearsalObservation(): GoldenObservation {
-  const input = rehearsalInput();
-  const positives = input.participants.filter((p) => p.expected_admission === "eligible");
+export function onePalmRehearsalInput(): MultiGoldenInput {
+  const base = rehearsalInput();
+  const verified = base.participants[0];
+  const karaoke = base.participants[1];
+  const unverified = base.participants[2];
+  if (!verified || !karaoke?.karaoke_audio || !unverified) throw new Error("fixture");
+  return parseMultiGoldenInput({
+    ...base,
+    participants: [
+      {
+        ...verified,
+        activities: ["study", "karaoke"],
+        karaoke_audio: karaoke.karaoke_audio,
+      },
+      unverified,
+    ],
+  });
+}
+
+export function rehearsalObservation(
+  input: MultiGoldenInput = rehearsalInput(),
+): GoldenObservation {
   return {
     leg_id: "leg",
     drawing_id: "101",
@@ -101,7 +120,7 @@ export function rehearsalObservation(): GoldenObservation {
     other_unresolved_drawings: 0,
     refund_receipt_atomic: "900",
     claim_receipt_atomic: "0",
-    shares: positives.map((p) => ({ account_id: p.account_id, persona_id: p.persona_id })),
+    shares: input.participants.map((p) => ({ account_id: p.account_id, persona_id: p.persona_id })),
     qualifications: input.participants.flatMap((p) =>
       p.activities.map((activity_key) => ({
         account_id: p.account_id,
@@ -109,17 +128,19 @@ export function rehearsalObservation(): GoldenObservation {
         activity_key,
       })),
     ),
-    beneficiaries: positives.map((p, ordinal) => ({
+    beneficiaries: input.participants.map((p, ordinal) => ({
       ordinal,
       account_id: p.account_id,
       persona_id: p.persona_id,
     })),
+    // Mirrors migration 0203: every participant, verified or not, gets one
+    // eligible decision, for its first qualifying activity.
     decisions: input.participants.map((p) => ({
       account_id: p.account_id,
       persona_id: p.persona_id,
-      activity_key: p.activities[0],
-      outcome: p.expected_admission === "eligible" ? "eligible" : "ineligible",
-      reason: p.expected_admission === "eligible" ? null : "verification_missing",
+      activity_key: p.activities[0]!,
+      outcome: "eligible",
+      reason: null,
     })),
     credits: [],
   };

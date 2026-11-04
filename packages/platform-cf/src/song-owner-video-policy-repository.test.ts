@@ -107,6 +107,7 @@ describe("song owner policy Postgres repository", () => {
         policy_revision: 2,
         derivative_video: "owner_only",
         can_post_with_song: false,
+        video_ready: true,
       });
       expect(publicExit.value).not.toHaveProperty("owner_account_id");
       expect(publicExit.value).not.toHaveProperty("third_party_reward_legs");
@@ -118,6 +119,58 @@ describe("song owner policy Postgres repository", () => {
       "song-owner-policy.public.read",
     ]);
     expect(calls[1]?.text).toContain("post.visibility = 'public'");
+  });
+
+  test("public video readiness follows the current revision's verified PCM object", async () => {
+    const checked: unknown[] = [];
+    const repository = makeControlPlaneSongOwnerPolicyRepository({
+      getReady: async (song, duration) => {
+        checked.push({ song, duration });
+        return null;
+      },
+    });
+    const input = {
+      communityId: "community-1",
+      postId: "song-1",
+      accountId: "account-owner",
+      personaId: "persona-owner",
+    };
+    const readyTiming = publicRow({
+      audio_revision: "3",
+      timing_audio_sha256: "a".repeat(64),
+      timing_duration_samples: "720000",
+    });
+    const pending = await runWith(repository.getPublic(input), fakeDb([[publicRow()]], []));
+    expect(Exit.isSuccess(pending) && pending.value.video_ready).toBe(false);
+    expect(checked).toEqual([]);
+    const absent = await runWith(repository.getPublic(input), fakeDb([[readyTiming]], []));
+    expect(Exit.isSuccess(absent) && absent.value.video_ready).toBe(false);
+    expect(checked).toEqual([
+      {
+        song: {
+          songPostId: "song-1",
+          audioRevision: 3,
+          canonicalAudioSha256: "a".repeat(64),
+        },
+        duration: 720000,
+      },
+    ]);
+    const verified = makeControlPlaneSongOwnerPolicyRepository({
+      getReady: async () => ({
+        songPostId: "song-1",
+        audioRevision: 3,
+        canonicalAudioSha256: "a".repeat(64),
+        durationSamples: 720000,
+        objectKey: "song-video-pcm/song-1-r3.pcm",
+        objectVersion: "v3",
+        objectEtag: "etag-3",
+        pcmSha256: "b".repeat(64),
+        byteLength: 2880000,
+        decoderRecipe: "pinned-ffmpeg-6.1.1",
+      }),
+    });
+    const available = await runWith(verified.getPublic(input), fakeDb([[readyTiming]], []));
+    expect(Exit.isSuccess(available) && available.value.video_ready).toBe(true);
   });
 
   test("maps the database CAS exception to a typed policy conflict", async () => {

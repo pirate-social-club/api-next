@@ -154,7 +154,9 @@ export async function consumeVideoAnalysisQueueMessage(
     prior.state.creationRevision !== existing.creationRevision ||
     prior.state.videoRevision !== existing.videoRevision ||
     prior.state.status !== "processing" ||
-    (prior.state.decision !== null && prior.state.phase !== "publish")
+    (prior.state.decision !== null &&
+      prior.state.phase !== "publish" &&
+      prior.state.phase !== "render")
   )
     return { disposition: "ack" };
   const claimed = await dependencies.outbox.claim(existing.effectIdentity, dependencies.workerId);
@@ -173,7 +175,9 @@ export async function consumeVideoAnalysisQueueMessage(
     return { disposition: "ack" };
   }
   if (
-    (authority.state.decision !== null && authority.state.phase !== "publish") ||
+    (authority.state.decision !== null &&
+      authority.state.phase !== "publish" &&
+      authority.state.phase !== "render") ||
     authority.state.status !== "processing"
   ) {
     // PostgreSQL outcomes outlive the provider's instance-retention period.

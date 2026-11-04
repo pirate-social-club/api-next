@@ -7,6 +7,8 @@ export type TableKey = `postgres:${string}`;
 export interface JobRuntimeContext {
   readonly owner: string;
   readonly attemptId: string;
+  /** When the runner started this job's timeout clock, before setup and retries. */
+  readonly startedAtMs?: number;
   readonly lease: () => FencedLeaseRecord;
   readonly adapterSafety: {
     readonly markAbortedOrFenced: () => void;

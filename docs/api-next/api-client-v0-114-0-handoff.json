@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.114.0",
+  "sourceBranch": "fix/song-stems-karaoke-runtime",
+  "sourceBase": "6debf7d2b97bad8626cdf85500709a9ac02263a3",
+  "semanticSourceCommit": "f0034915ce30c6c0f81e95e7750539cb35019533",
+  "validatedSourceCommit": null,
+  "pullRequest": "https://github.com/pirate-social-club/api-next/pull/592",
+  "wireContract": "CreateKaraokePlaybackAccess requires community_id, karaoke_revision_id and playback_ref. The server rechecks current publication/rating and accepted vocal-aligned Karaoke readiness, refuses mismatched source before signing, and returns authoritative post_id, community_id, karaoke_revision_id and playback_audio {kind: instrumental, ref} beside existing kind, playback_url, expires_at and renew_after. Ordinary full-mix grants and historical sessions retain their behavior.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.114.0.tgz",
+    "sha256": "a2eb47a5118b358ab5c445c2efcdaf030c8b4574ba2cf545d990ae3e596a9186"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.114.0",
+    "sourceIdentifier": "api-next-contracts@36e26910030063954d0e094f04ac10667bf26f52e0fa7584968ef4c7743d9894",
+    "openapiSha256": "36e26910030063954d0e094f04ac10667bf26f52e0fa7584968ef4c7743d9894",
+    "clientSha256": "2dd42796b730d8550cdf596036a95a43db9665a5949c4b2c8ecfd402e6e35278"
+  },
+  "validation": {
+    "status": "Generated candidate; source semantic review accepted. Required full local and hosted checks remain pending.",
+    "focusedUnits": "14 passed, 74 assertions across handler, application, readiness and signer suites.",
+    "types": "Root and Workers type programs passed, including the final restricted-reader fixture and named Effect.fn adjustment.",
+    "restrictedPostgres": "PostgreSQL 17.11 restricted-reader case passed: 1 test, 41 assertions, 0 failures. Two disposable setup failures and a subsequently resolved socket cleanup error are retained in local evidence. Exact task containers, three event-bound anonymous volumes and socket directory were removed.",
+    "contractFreshness": "Passed",
+    "breakingCheck": "Passed against integration baseline 3c894763 with the two existing operation-scoped readiness waivers. The separate predecessor required-body break is recorded below.",
+    "packageVerification": "Passed",
+    "operationalBoundary": "No provider, shared-runtime, money, main, publication or deployment operation."
+  },
+  "compatibility": {
+    "integrationBaseline": "3c894763c4331bd62d16f9b096c717f84d71660b",
+    "predecessorVersion": "0.113.0",
+    "predecessorSource": "6debf7d2b97bad8626cdf85500709a9ac02263a3",
+    "operationId": "post_postsPostIdKaraokePlaybackAccess",
+    "exactPredecessorViolations": [
+      "required request body added on POST /posts/{postId}/karaoke/playback-access"
+    ],
+    "disposition": "0.113.0 Karaoke-grant callers are incompatible with this successor; coordinate the 0.114.0 Solid consumer before serving. Preserve the predecessor artifact. Coordinator reviewed the exact four unchanged main-baseline readiness diagnostics and the sole predecessor required-body break; only consumer wording in the two existing main-bound waivers changes to 0.114.0.",
+    "waiverSha256": "fb90ab7b630938f4e213b98bd4e9e72cbe8f7aa6d8b4214e9001c0748abc27b6"
+  },
+  "consumerRequirements": {
+    "task": "solid-karaoke-instrumental-playback",
+    "minimumClientVersion": "0.114.0",
+    "request": "Pin community_id, karaoke_revision_id and playback_ref from admitted readiness on every initial grant and renewal.",
+    "response": "Require post_id/community_id/karaoke_revision_id/playback_audio.kind/playback_audio.ref to match the admitted source before playback. Refuse changed source and keep full_mix sessions on ordinary song playback.",
+    "timeUnit": "expires_at and renew_after are integer Unix seconds; lifetime 900 seconds, renewal margin 60 seconds."
+  },
+  "rewardPolicyDependency": {
+    "task": "rewards-karaoke-instrumental-qualification-policy",
+    "requirement": "Prospective immutable instrumental qualification successor remains separate; no reward policy or session pin changed here."
+  }
+}

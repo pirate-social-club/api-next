@@ -10,6 +10,10 @@ import type {
 import { Data, Effect } from "effect";
 import { type Hex, hexToBytes, keccak256, toBytes } from "viem";
 import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
+import {
+  megapotReceiptIsFinalized,
+  requireMegapotFinalizedClaimOwner,
+} from "./megapot-finality.ts";
 import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   encodeMegapotClaimWinnings,
@@ -19,6 +23,7 @@ import {
 } from "./megapot-v2.ts";
 import { findMegapotV2ClaimRevert, type MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
+import { preparedTransactionLanded, type RewardRunAuthority } from "./reward-operations-control.ts";
 
 export class MegapotClaimCoordinatorFailed extends Data.TaggedError(
   "MegapotClaimCoordinatorFailed",
@@ -156,6 +161,7 @@ export function makeMegapotClaimCoordinator(input: {
   readonly store: MegapotClaimStore;
   readonly rpc: MegapotV2RpcClient;
   readonly signer: MegapotV2TransactionSigner;
+  readonly authority: RewardRunAuthority;
   readonly requiredConfirmations: number;
   readonly gasLimitMultiplierBps: number;
   readonly nativeGasReserveFloorWei: bigint;
@@ -181,7 +187,15 @@ export function makeMegapotClaimCoordinator(input: {
   const attest = Effect.fn("MegapotClaimCoordinator.attest")(function* (
     candidate: MegapotClaimCandidate,
   ) {
-    if (!isMegapotStepChainAllowed("claim", candidate.environment, candidate.chainId)) {
+    if (
+      !isMegapotStepChainAllowed(
+        "claim",
+        candidate.environment,
+        candidate.chainId,
+        input.rpc,
+        candidate,
+      )
+    ) {
       return yield* failed("production_disabled", "configuration");
     }
     if (!sameAddress(input.signer.address, candidate.custodyAddress)) {
@@ -190,6 +204,11 @@ export function makeMegapotClaimCoordinator(input: {
     yield* rpcEffect("preflight", "deployment_attestation_mismatch", () =>
       input.rpc.attestDeployment(),
     );
+    if (candidate.chainId === 8453) {
+      yield* rpcEffect("preflight", "receipt_evidence_invalid", () =>
+        requireMegapotFinalizedClaimOwner(input.rpc, candidate),
+      );
+    }
   });
 
   const requireReconciliation = Effect.fn("MegapotClaimCoordinator.requireReconciliation")(
@@ -252,6 +271,16 @@ export function makeMegapotClaimCoordinator(input: {
   const reconcilePrepared = Effect.fn("MegapotClaimCoordinator.reconcilePrepared")(function* (
     claim: MegapotPreparedClaim,
   ) {
+    // A landed claim burns its NFT. Reattest deployment without requiring the
+    // pre-send owner again, and never admit public-RPC mainnet reconciliation.
+    if (claim.chainId === 8453) {
+      if (!isMegapotStepChainAllowed("claim", claim.environment, claim.chainId, input.rpc, claim)) {
+        return yield* failed("production_disabled", "configuration");
+      }
+      yield* rpcEffect("preflight", "deployment_attestation_mismatch", () =>
+        input.rpc.attestDeployment(),
+      );
+    }
     const transactionHash = claim.transactionHash ?? claim.signedTransactionHash;
     const receiptAttempt = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       input.rpc.readReceipt(transactionHash),
@@ -265,6 +294,13 @@ export function makeMegapotClaimCoordinator(input: {
         : ({ kind: "submitted", effectId: claim.effectId, transactionHash } as const);
     }
     const receipt = receiptAttempt.receipt;
+    if (
+      !(yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
+        megapotReceiptIsFinalized(input.rpc, claim.chainId, receipt.blockNumber),
+      ))
+    ) {
+      return { kind: "submitted", effectId: claim.effectId, transactionHash } as const;
+    }
     if (receipt.status !== "success") {
       return yield* requireReconciliation(claim, "claim_receipt_reverted");
     }
@@ -368,6 +404,23 @@ export function makeMegapotClaimCoordinator(input: {
     claim: MegapotPreparedClaim,
   ) {
     if (claim.state !== "prepared") return yield* reconcilePrepared(claim);
+    // A stored signature does not show the transaction was never sent: the send can
+    // succeed and the record of it fail. If the chain already holds it, that is
+    // recorded and nothing is signed or sent again. This comes before any check
+    // that applies only to a fresh send.
+    if (yield* preparedTransactionLanded(input.rpc, claim.signedTransactionHash)) {
+      yield* input.store.recordSubmission({
+        effectId: claim.effectId,
+        transactionHash: claim.signedTransactionHash,
+        submittedAt: new Date(now()).toISOString(),
+        outcome: "accepted",
+      });
+      return yield* reconcilePrepared({
+        ...claim,
+        state: "broadcast_pending",
+        transactionHash: claim.signedTransactionHash,
+      });
+    }
     yield* attest(claim);
     const calldata = encodeMegapotClaimWinnings([claim.ticketId]);
     const calldataHash = yield* sha256Hex(hexToBytes(calldata));
@@ -378,6 +431,9 @@ export function makeMegapotClaimCoordinator(input: {
     ) {
       return yield* failed("receipt_evidence_invalid", "prepare");
     }
+    // Sending needs authority. It is asked outside the handling below, so a refusal
+    // is never taken for a broadcast of unknown outcome.
+    yield* input.authority.ensure();
     const submission = yield* rpcEffect("receipt", "receipt_evidence_invalid", () =>
       input.rpc.sendRawTransaction(claim.signedTransaction as Hex),
     ).pipe(
@@ -479,6 +535,8 @@ export function makeMegapotClaimCoordinator(input: {
     if (nativeBalance < gas * feeQuote.maxFeePerGas + input.nativeGasReserveFloorWei) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
+    // Signing needs authority, on a resumed reservation as much as a new one.
+    yield* input.authority.ensure();
     const signed = yield* rpcEffect("prepare", "signer_mismatch", () =>
       input.signer.sign({
         chainId: reservation.chainId,

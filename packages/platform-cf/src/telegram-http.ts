@@ -23,8 +23,13 @@ export async function telegramResponseBytes(
       chunks.push(chunk.value);
     }
   } finally {
-    await reader.cancel();
-    reader.releaseLock();
+    try {
+      await reader.cancel();
+    } catch {
+      // An already errored provider stream cannot be cancelled again.
+    } finally {
+      reader.releaseLock();
+    }
   }
   const bytes = new Uint8Array(size);
   let offset = 0;

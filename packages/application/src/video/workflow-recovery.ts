@@ -63,7 +63,9 @@ export async function recoverVideoWorkflowLaunches(
         authority.state.videoRevision !== record.videoRevision ||
         authority.state.video?.canonicalSha256 !== record.canonicalVideoSha256 ||
         authority.state.status !== "processing" ||
-        (authority.state.decision !== null && authority.state.phase !== "publish")
+        (authority.state.decision !== null &&
+          authority.state.phase !== "publish" &&
+          authority.state.phase !== "render")
       )
         continue;
       const observation = await services.launcher.inspect(

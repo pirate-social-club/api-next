@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.111.0",
+  "sourceBranch": "feat/spaces-community-route-attachment",
+  "sourceBase": "7fd3b6e9456f070002462fc55c501724a0453a76",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Add the browser-session Spaces community route attachment ceremony under /communities/:communityId/spaces-route-attachments: start, current, prove and commit. Responses carry the route-only owner message to sign and the attachment state. Additive; no existing operation changes.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.111.0.tgz",
+    "sha256": "7dd2c1269a897734b9c2b18c370410738a4b8e1f876deb2c10b41f383fb29933"
+  },
+  "validation": {
+    "status": "Focused local gates passed; full check, full test, hosted gates, independent review and staging acceptance pending",
+    "passed": [
+      "4 PostgreSQL 17 tests for two-root attachment, replay and expiry refusal, read-time lease expiry and renewal",
+      "Frozen owner-message vector test",
+      "Contract freshness and immutable client 0.111.0 package verification",
+      "Dependency matrix, HTTP import boundary, migration worktree and knip checks"
+    ],
+    "remaining": [
+      "Full bun run check including main, Worker and script type checks, which exceed the local 1 GB limit",
+      "Full bun run test",
+      "Hosted required check, postgres17 and secret-boundary checks",
+      "Independent source review, Solid binding and staging acceptance"
+    ],
+    "operationalBoundary": "Source only. No staging deployment, production, wallet, credential or route binding."
+  }
+}

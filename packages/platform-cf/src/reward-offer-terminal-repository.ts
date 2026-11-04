@@ -5,6 +5,8 @@ import {
   type RewardOfferTerminalStore,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { isMegapotLocalForkClient } from "./megapot-local-fork.ts";
+import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -57,7 +59,7 @@ const TERMINAL_DRAWING_STATUSES = [
   "closed_purchase_unavailable",
 ] as const;
 
-export function makeControlPlaneRewardOfferTerminalRepository() {
+function terminalRepository(localClock?: () => number) {
   return {
     closeExpired: (limit: number) =>
       mapped(
@@ -66,6 +68,7 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
             return yield* failed("invalid-row");
           }
           const db = yield* ControlPlaneDb;
+          const localAt = localClock === undefined ? null : new Date(localClock()).toISOString();
           return yield* db.withTransaction((transaction) =>
             Effect.gen(function* () {
               const candidates = yield* transaction.execute<Row>({
@@ -73,7 +76,7 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
                 text: `SELECT offer.offer_id, offer.status
                          FROM song_reward_offers offer
                         WHERE offer.status IN ('draft','active','paused','operational_hold')
-                          AND offer.ends_at <= clock_timestamp()
+                          AND offer.ends_at <= COALESCE($3::timestamptz,clock_timestamp())
                           AND NOT EXISTS (
                             SELECT 1 FROM song_reward_offer_legs leg
                              WHERE leg.offer_id=offer.offer_id AND leg.reserved_atomic <> 0
@@ -96,7 +99,7 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
                           )
                         ORDER BY offer.ends_at,offer.offer_id
                         LIMIT $2 FOR UPDATE OF offer SKIP LOCKED`,
-                values: [TERMINAL_DRAWING_STATUSES, limit],
+                values: [TERMINAL_DRAWING_STATUSES, limit, localAt],
                 readonly: false,
               });
               const results = [];
@@ -105,8 +108,8 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
                 const priorStatus = text(candidate, "status");
                 const clock = yield* transaction.execute<Row>({
                   label: "reward-offer-terminal.clock.read",
-                  text: "SELECT clock_timestamp() AS terminal_at",
-                  values: [],
+                  text: "SELECT COALESCE($1::timestamptz,clock_timestamp()) AS terminal_at",
+                  values: [localAt],
                   readonly: false,
                 });
                 if (clock.rows.length !== 1) return yield* failed("invalid-row");
@@ -115,11 +118,11 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
                   label: "reward-offer-terminal.unbound-funding.close",
                   text: `UPDATE song_reward_leg_funding_effects funding
                             SET state='reclaimable_failed', failure_reason='offer_ended_unbound',
-                                updated_at=$2::timestamptz
+                                updated_at=CASE WHEN $3::boolean THEN clock_timestamp() ELSE $2::timestamptz END
                            FROM song_reward_offer_legs leg
                           WHERE leg.offer_id=$1 AND funding.leg_id=leg.leg_id
                             AND funding.state='planned'`,
-                  values: [offerId, terminalAt],
+                  values: [offerId, terminalAt, localClock !== undefined],
                   readonly: false,
                 });
                 const legs = yield* transaction.execute<Row>({
@@ -129,11 +132,11 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
                                 participation_ends_at=GREATEST(
                                   $2::timestamptz, participation_starts_at + INTERVAL '1 microsecond'
                                 ),
-                                updated_at=$2::timestamptz
+                                updated_at=CASE WHEN $3::boolean THEN clock_timestamp() ELSE $2::timestamptz END
                           WHERE offer_id=$1
                             AND status IN ('draft','funding','active','paused','operational_hold')
                       RETURNING leg_id`,
-                  values: [offerId, terminalAt],
+                  values: [offerId, terminalAt, localClock !== undefined],
                   readonly: false,
                 });
                 const terminalStatus =
@@ -142,9 +145,15 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
                   label: "reward-offer-terminal.offer.close",
                   text: `UPDATE song_reward_offers
                             SET status=$2, terminal_at=$3::timestamptz,
-                                updated_at=$3::timestamptz
+                                updated_at=CASE WHEN $5::boolean THEN clock_timestamp() ELSE $3::timestamptz END
                           WHERE offer_id=$1 AND status=$4`,
-                  values: [offerId, terminalStatus, terminalAt, priorStatus],
+                  values: [
+                    offerId,
+                    terminalStatus,
+                    terminalAt,
+                    priorStatus,
+                    localClock !== undefined,
+                  ],
                   readonly: false,
                 });
                 if (offer.rowCount !== 1) return yield* failed("constraint");
@@ -161,6 +170,20 @@ export function makeControlPlaneRewardOfferTerminalRepository() {
         }),
       ),
   };
+}
+
+export const makeControlPlaneRewardOfferTerminalRepository = () => terminalRepository();
+
+/** Local fork acceptance clock only; the normal store always uses database time. */
+export function makeLocalRewardOfferTerminalStore(
+  layer: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  rpc: MegapotV2RpcClient,
+  now: () => number,
+): RewardOfferTerminalStore {
+  if (!isMegapotLocalForkClient(rpc))
+    throw new Error("local_terminal_clock_requires_registered_fork");
+  const repository = terminalRepository(now);
+  return { closeExpired: (limit) => mapped(Effect.provide(layer)(repository.closeExpired(limit))) };
 }
 
 export const makeControlPlaneRewardOfferTerminalStore = (

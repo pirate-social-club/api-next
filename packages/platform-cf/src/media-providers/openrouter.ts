@@ -121,6 +121,15 @@ export type OpenRouterAttemptEvidence = Readonly<{
   readonly selected_provider?: string;
   readonly completion_id?: string;
   readonly provider_status?: number;
+  readonly failure_stage?:
+    | "response_headers"
+    | "response_body"
+    | "response_json"
+    | "envelope_schema"
+    | "response_identity"
+    | "model_json"
+    | "model_schema"
+    | "result_binding";
 }>;
 
 export type OpenRouterEvidenceSink = (
@@ -190,6 +199,19 @@ const ModelOutput = Schema.Struct({
 type ModelOutputValue = Schema.Schema.Type<typeof ModelOutput>;
 
 const BoundedProviderText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+// Identity is diagnostic metadata, never a place to retain arbitrary provider
+// prose, URLs, controls or an echoed credential. These checks affect evidence
+// only; provider identity and classification acceptance stay unchanged.
+const EvidenceModel = BoundedProviderText.check(
+  Schema.isPattern(/^(?![A-Za-z][A-Za-z0-9+.-]*:\/\/)[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/u),
+);
+const EvidenceProvider = BoundedProviderText.check(
+  Schema.isTrimmed(),
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9 ._()-]*$/u),
+);
+const EvidenceCompletion = BoundedProviderText.check(
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u),
+);
 const ProviderInteger = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000_000_000 }));
 const ProviderPolicySchema = Schema.Struct({
   require_parameters: Schema.Boolean,
@@ -271,9 +293,7 @@ const ProviderEnvelope = Schema.Struct({
   model: Schema.optional(Schema.NullOr(BoundedProviderText)),
   provider: Schema.optional(Schema.NullOr(BoundedProviderText)),
   system_fingerprint: Schema.optional(Schema.NullOr(BoundedProviderText)),
-  service_tier: Schema.optional(
-    Schema.NullOr(Schema.Literals(["default", "flex", "priority", "scale", "auto"])),
-  ),
+  service_tier: Schema.optional(Schema.NullOr(BoundedProviderText)),
   usage: Schema.optional(
     Schema.Struct({
       prompt_tokens: Schema.optional(ProviderInteger),
@@ -918,12 +938,24 @@ function makeClassifiedResult(
   }
 }
 
+function evidenceIdentityValue(
+  value: string | undefined,
+  schema: Schema.Decoder<string>,
+  apiKey: string | undefined,
+): string | undefined {
+  const decoded = Schema.decodeUnknownOption(schema)(value);
+  if (Option.isNone(decoded) || (apiKey !== undefined && decoded.value.includes(apiKey)))
+    return undefined;
+  return decoded.value;
+}
+
 function recordEvidence(
   configuration: Configuration,
   attempt_id: string,
   outcome: "classified" | MediaProviderFailureTag,
   identity?: Partial<OpenRouterResponseIdentity>,
   provider_status?: number,
+  failure_stage?: OpenRouterAttemptEvidence["failure_stage"],
 ): void {
   const sink = configuration.evidence_sink;
   if (
@@ -936,6 +968,32 @@ function recordEvidence(
   ) {
     return;
   }
+  const servedModel = evidenceIdentityValue(
+    identity?.served_model,
+    EvidenceModel,
+    configuration.api_key,
+  );
+  const providerName = evidenceIdentityValue(
+    identity?.selected_provider,
+    EvidenceProvider,
+    configuration.api_key,
+  );
+  // The request already carries an explicit provider restriction. Permit its
+  // display spelling (for example Google Vertex / google-vertex), not unknown
+  // provider prose. This remains evidence-only and grants no routing authority.
+  const providerKey = (value: string) => value.toLowerCase().replaceAll(/[ ._()-]/gu, "");
+  const selectedProvider =
+    providerName !== undefined &&
+    configuration.provider_policy?.only.some(
+      (provider) => providerKey(provider) === providerKey(providerName),
+    )
+      ? providerName
+      : undefined;
+  const completionId = evidenceIdentityValue(
+    identity?.completion_id,
+    EvidenceCompletion,
+    configuration.api_key,
+  );
   const evidence: OpenRouterAttemptEvidence = {
     version: "openrouter-classifier-evidence-v1",
     provider: "openrouter",
@@ -947,12 +1005,11 @@ function recordEvidence(
     policy_revision: configuration.policy_revision,
     classifier_revision: configuration.classifier_revision,
     outcome,
-    ...(identity?.served_model === undefined ? {} : { served_model: identity.served_model }),
-    ...(identity?.selected_provider === undefined
-      ? {}
-      : { selected_provider: identity.selected_provider }),
-    ...(identity?.completion_id === undefined ? {} : { completion_id: identity.completion_id }),
+    ...(servedModel === undefined ? {} : { served_model: servedModel }),
+    ...(selectedProvider === undefined ? {} : { selected_provider: selectedProvider }),
+    ...(completionId === undefined ? {} : { completion_id: completionId }),
     ...(provider_status === undefined ? {} : { provider_status }),
+    ...(failure_stage === undefined ? {} : { failure_stage }),
   };
   try {
     const result = sink(evidence);
@@ -1020,6 +1077,7 @@ async function invoke(
   let responseClaimed = false;
   let responseStatus: number | undefined;
   let responseIdentityEvidence: Partial<OpenRouterResponseIdentity> | undefined;
+  let failureStage: OpenRouterAttemptEvidence["failure_stage"];
   try {
     const request = buildOpenRouterClassifierRequest(
       input,
@@ -1075,6 +1133,7 @@ async function invoke(
       const selected = failureForStatus(inputAttemptId, response.status, response.headers);
       throw new OpenRouterFailure(selected);
     }
+    failureStage = "response_headers";
     const declaredLength = headerValue(response.headers, "content-length");
     if (declaredLength !== null && /^[0-9]+$/u.test(declaredLength)) {
       const length = Number(declaredLength);
@@ -1088,6 +1147,7 @@ async function invoke(
       throw new OpenRouterFailure(failure(inputAttemptId, "malformed_response"));
     }
 
+    failureStage = "response_body";
     const bodyPromise = readBoundedBody(
       response.body,
       configuration.limits.max_response_bytes,
@@ -1116,14 +1176,17 @@ async function invoke(
       throw new OpenRouterFailure(failure(inputAttemptId, abortReason));
     }
 
+    failureStage = "response_json";
     const document = parseJson(bytes);
     if (document === null)
       throw new OpenRouterFailure(failure(inputAttemptId, "malformed_response"));
+    failureStage = "envelope_schema";
     const envelopeResult = providerEnvelope(document);
     if ("failure" in envelopeResult) {
       throw new OpenRouterFailure(failure(inputAttemptId, envelopeResult.failure));
     }
     const envelope = envelopeResult.envelope;
+    failureStage = "response_identity";
     responseIdentityEvidence = {
       ...(typeof envelope.model !== "string" ? {} : { served_model: envelope.model }),
       ...(typeof envelope.id !== "string" ? {} : { completion_id: envelope.id }),
@@ -1144,12 +1207,14 @@ async function invoke(
       throw new OpenRouterFailure(failure(inputAttemptId, "ambiguous_result"));
     }
     responseIdentityEvidence = identity;
+    failureStage = "model_json";
     const message = envelope.choices[0]?.message;
     if (message === undefined)
       throw new OpenRouterFailure(failure(inputAttemptId, "malformed_response"));
     const modelDocument = parseJson(new TextEncoder().encode(message.content));
     if (modelDocument === null)
       throw new OpenRouterFailure(failure(inputAttemptId, "unparseable_result"));
+    failureStage = "model_schema";
     const modelDecoded = Schema.decodeUnknownOption(ModelOutput, { onExcessProperty: "error" })(
       modelDocument,
     );
@@ -1157,6 +1222,7 @@ async function invoke(
       const tag = modelShapeLooksComplete(modelDocument) ? "out_of_policy" : "unparseable_result";
       throw new OpenRouterFailure(failure(inputAttemptId, tag));
     }
+    failureStage = "result_binding";
     const result = makeClassifiedResult(input, modelDecoded.value, configuration);
     if (typeof result === "string") throw new OpenRouterFailure(failure(inputAttemptId, result));
     recordEvidence(configuration, inputAttemptId, "classified", identity, response.status);
@@ -1169,6 +1235,7 @@ async function invoke(
         error.failure._tag,
         responseIdentityEvidence,
         responseStatus,
+        failureStage,
       );
       throw error;
     }
@@ -1180,6 +1247,7 @@ async function invoke(
         selected._tag,
         responseIdentityEvidence,
         responseStatus,
+        failureStage,
       );
       throw new OpenRouterFailure(selected);
     }
@@ -1190,6 +1258,7 @@ async function invoke(
       selected._tag,
       responseIdentityEvidence,
       responseStatus,
+      failureStage,
     );
     throw new OpenRouterFailure(selected);
   } finally {

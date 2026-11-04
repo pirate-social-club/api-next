@@ -1,7 +1,8 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { withWorkspacePublicAliases } from "../workspace-public-aliases.ts";
 
-const alias = {
+const alias = withWorkspacePublicAliases({
   "@pirate/contracts": new URL("../../packages/contracts/src/index.ts", import.meta.url).pathname,
   "@pirate/domain": new URL("../../packages/domain/src/index.ts", import.meta.url).pathname,
   "@pirate/application/data/registration-workflow": new URL(
@@ -32,7 +33,7 @@ const alias = {
     "../../packages/platform-cf/src/song-source-recording-consumer.ts",
     import.meta.url,
   ).pathname,
-};
+});
 
 export default defineConfig({
   resolve: { alias },

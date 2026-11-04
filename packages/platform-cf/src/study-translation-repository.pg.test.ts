@@ -10,7 +10,9 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { applyPostgresTestBaselineConnection } from "../../../scripts/postgres-test-baseline.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
+import { makeOwnedOrdinaryAccountBirthFixture } from "./ordinary-study-account-birth.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 import { makeControlPlaneStudyLanguageProfileRepository } from "./study-language-profile-repository.ts";
 import {
   makeControlPlaneStudyTranslationPolicyResolver,
@@ -55,11 +57,13 @@ suite("Study translation generation", () => {
       const lyrics = lines.join("\n");
       const lyricsHash = await digest(lyrics);
       const lineHashes = await Promise.all(lines.map(digest));
+      const birthAccount = makeOwnedOrdinaryAccountBirthFixture(
+        makeDirectPostgresControlPlaneLayer(scoped),
+      );
+      await birthAccount("study-account");
+      await birthAccount("study-other-account");
       await admin.query("SET session_replication_role = replica");
       try {
-        await admin.query(
-          "INSERT INTO users (user_id) VALUES ('study-account'), ('study-other-account')",
-        );
         await admin.query(
           `INSERT INTO communities (
                community_id, display_name, status, created_by_user_id, created_at, updated_at
@@ -161,6 +165,13 @@ suite("Study translation generation", () => {
                'ready','registered','not_required',clock_timestamp(),'study-persona','ready',1,$2)`,
           ["2".repeat(64), lyrics],
         );
+        await insertSongStemPairFixture(admin, {
+          submissionId: "study-submission",
+          communityId: "study-community",
+          actorUserId: "study-account",
+          operationId: "study-operation",
+          personaId: "study-persona",
+        });
         for (const [index, line] of lines.entries()) {
           const ordinal = index + 1;
           await admin.query(
@@ -414,7 +425,7 @@ suite("Study translation generation", () => {
         postId: "study-post",
         requestHash: "5".repeat(64),
         sessionId: "study-session-translation",
-        timezone: "UTC",
+        timezone: "Asia/Tbilisi",
       };
       const start = (input: Parameters<typeof study.startSession>[0]) =>
         Effect.runPromise(Effect.scoped(study.startSession(input).pipe(Effect.provide(runtime))));
@@ -463,9 +474,16 @@ suite("Study translation generation", () => {
           sessionId: "study-session-wrong-community-persona",
         }),
       ).rejects.toMatchObject({ reason: "not-found" });
+      await admin.query(
+        `INSERT INTO account_streak_clocks (
+           account_id, timezone, timezone_updated_at, next_change_allowed_at
+         ) VALUES ('study-account', 'UTC', now(),
+           now() + interval '7 days')`,
+      );
       const session = await Effect.runPromise(
         Effect.scoped(study.startSession(baseStart).pipe(Effect.provide(runtime))),
       );
+      expect(session.timezone).toBe("UTC");
       expect(await start(baseStart)).toEqual(session);
       await admin.query(
         `UPDATE community_memberships SET status='left'
@@ -500,27 +518,16 @@ suite("Study translation generation", () => {
           )
         ).rows,
       ).toEqual([{ timezone: "UTC" }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT timezone FROM study_sessions_v2 WHERE session_id='study-session-translation'`,
+          )
+        ).rows,
+      ).toEqual([{ timezone: "UTC" }]);
       await expect(
-        Effect.runPromise(
-          Effect.scoped(
-            study
-              .startSession({
-                accountId: "study-account",
-                communityId: "study-community",
-                createdAt: "2026-08-29T12:02:01.000Z",
-                targetLanguage: "es",
-                idempotencyKey: "study-session-timezone-conflict",
-                learnerBand: "B1",
-                personaId: "study-persona",
-                postId: "study-post",
-                requestHash: "4".repeat(64),
-                sessionId: "study-session-timezone-conflict",
-                timezone: "Asia/Tbilisi",
-              })
-              .pipe(Effect.provide(runtime)),
-          ),
-        ),
-      ).rejects.toMatchObject({ reason: "invalid-input" });
+        start({ ...baseStart, timezone: "UTC", requestHash: "4".repeat(64) }),
+      ).rejects.toMatchObject({ reason: "idempotency-conflict" });
       expect(session.items).toHaveLength(4);
       for (const item of session.items) {
         expect(item.exercise_type).toBe("translation_choice");

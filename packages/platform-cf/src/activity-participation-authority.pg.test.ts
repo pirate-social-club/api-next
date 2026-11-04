@@ -120,7 +120,8 @@ suite("Activity participation authority implementation baseline", () => {
       expect(study.failure._tag).toBe("StudyV2CommandRejected");
       if (study.failure._tag !== "StudyV2CommandRejected")
         throw new Error("Unexpected storage failure");
-      expect(study.failure.reason).toBe("insufficient-exercises");
+      // The absent source fails the accepted-stem gate before exercise selection.
+      expect(study.failure.reason).toBe("not-found");
       const presentation = await Effect.runPromise(
         Effect.scoped(
           makeControlPlaneActivityQualificationRepository()

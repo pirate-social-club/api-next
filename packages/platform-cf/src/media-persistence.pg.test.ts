@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
-import type { ControlPlaneDb } from "@pirate/application";
+import { ControlPlaneAcquireFailed, ControlPlaneDb } from "@pirate/application";
 import { MODERATION_POLICY_CATEGORIES_V1, NotFound } from "@pirate/contracts";
 import { canonicalTextModerationInput } from "@pirate/domain";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { Client } from "pg";
 import { makeMediaUploadHandlers } from "../../../apps/http-worker/src/media-upload-handlers.ts";
 import {
@@ -12,6 +12,7 @@ import {
   makeMediaOutboxDispatchSource,
 } from "../../../apps/jobs-worker/src/media-outbox-dispatch.ts";
 import { sweepMissingMediaWorkflows } from "../../../apps/jobs-worker/src/media-workflow-sweep.ts";
+import { collectSongPipelineTerminalAlerts } from "../../../apps/jobs-worker/src/song-pipeline-terminal-alerts.ts";
 import {
   type MediaProcessingWorkflowStep,
   makeMediaProcessingWorkflowRunner,
@@ -22,6 +23,10 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import {
+  alignmentRecoveryTerminalMessage,
+  readAlignmentRecoveryTerminalMessage,
+} from "../../application/src/media/alignment-recovery-diagnostics.ts";
 import { mediaRecoveryRequiredSql } from "../../application/src/media/media-recovery-eligibility.ts";
 import type {
   MediaProcessingProviders,
@@ -47,13 +52,17 @@ import type {
   SongTerms,
   TrustedSongAnalysis,
 } from "../../domain/src/media-submission.ts";
+import { alertTick, makeLocalAlertSink, type PipelineLogFields } from "./alerts.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture";
 import { makeControlPlaneKaraokeReadinessStore } from "./karaoke-readiness-repository";
 import { reprocessMediaSubmission } from "./media-operator-reprocess-repository.ts";
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
 import { makeMediaProcessingStore } from "./media-processing-store";
 import { makeMediaReferenceResolver } from "./media-reference-resolver";
-import { songInterpreterProviders } from "./media-song-interpreter.pg-fixture";
+import {
+  songInterpreterProviders,
+  songModerationFixtureHash,
+} from "./media-song-interpreter.pg-fixture";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
 import { makeMediaUploadApplicationCommands, makeMediaUploadStore } from "./media-upload-store";
 import { makeControlPlanePersonaStore } from "./persona-repository";
@@ -75,7 +84,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 75;
+const testCount = 84;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -95,6 +104,38 @@ function personaFor(connection: string, accountId = actor): string {
   const personaId = personaIdsByConnection.get(connection)?.get(accountId);
   if (personaId === undefined) throw new Error(`missing test persona for ${accountId}`);
   return personaId;
+}
+async function seedAcceptedStemPairFixture(
+  admin: Client,
+  connection: string,
+  fixture: { submission: string; operation: string } = { submission, operation },
+): Promise<void> {
+  await admin.query("SET session_replication_role = replica");
+  try {
+    for (const slot of ["instrumental_audio", "vocal_audio"] as const) {
+      await admin.query(
+        `INSERT INTO media_song_stems (
+           submission_id,slot,community_id,actor_user_id,operation_id,
+           reservation_id,immutable_ref,destination_ref,etag,object_version,
+           size_bytes,content_type,canonical_sha256,author_persona_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'etag','version',16,'audio/mpeg',$9,$10)`,
+        [
+          fixture.submission,
+          slot,
+          community,
+          actor,
+          `${fixture.operation}-stem-${slot}`,
+          `${fixture.submission}-reservation-${slot}`,
+          `media://immutable/${fixture.operation}-stem-${slot}/audio/1`,
+          `r2://immutable/${fixture.operation}-stem-${slot}/audio/1`,
+          slot === "instrumental_audio" ? "8".repeat(64) : "9".repeat(64),
+          personaFor(connection),
+        ],
+      );
+    }
+  } finally {
+    await admin.query("SET session_replication_role = origin");
+  }
 }
 const termsFor = (recipientId: string): SongTerms => ({
   licensePreset: "non-commercial",
@@ -128,7 +169,7 @@ const analysis: TrustedSongAnalysis = {
   contentModeration: {
     decision: "allow",
     resultingContentRating: "general",
-    inputSha256: "b".repeat(64),
+    inputSha256: songModerationFixtureHash("Fixture song"),
     matchedCategories: [],
     policyRevision: "moderation_policy_1",
     platformPolicyRevision: "platform_policy_1",
@@ -447,6 +488,14 @@ async function createThroughDecision(
     ).toEqual({ kind: "committed", submissionId: submission });
   }
   if (stopBeforeAnalysis) return;
+  if (selectedAnalysis.contentModeration !== undefined)
+    selectedAnalysis = {
+      ...selectedAnalysis,
+      contentModeration: {
+        ...selectedAnalysis.contentModeration,
+        inputSha256: songModerationFixtureHash("Fixture song", initialLyrics ?? null),
+      },
+    };
   expect(
     await run(connection, (store) =>
       store.acceptAnalysis({
@@ -703,7 +752,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 60_000);
 
-  test("publishes an allowed instrumental once when the runtime role gains only the missing INSERT grants", async () => {
+  test("publishes once while private owner-policy INSERT remains denied", async () => {
     const role = `runtime_publication_${process.pid}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
     const rolePassword = randomUUID().replaceAll("-", "");
     const quotedRole = quoteIdentifier(role);
@@ -727,8 +776,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         roleCreated = true;
         // Mirror the ratified shared-runtime model: schema USAGE, product
         // table DML and sequence SELECT/UPDATE/USAGE. Staging's live grants
-        // make the two song-owner tables SELECT-only, so reproduce that exact
-        // drift instead of a broader denial.
+        // keep the two private song-owner tables SELECT-only. The canonical
+        // initializer must work without exposing those writes to runtime.
         await admin.query(`GRANT USAGE ON SCHEMA ${quoted} TO ${quotedRole}`);
         await admin.query(
           `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quoted} TO ${quotedRole}`,
@@ -758,34 +807,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         const authority = await processing.loadAuthority(submission, operation);
         if (authority === null) throw new Error("missing regression authority");
 
-        const failure = await processing.commitPublication(authority).then(
-          () => null,
-          (error: unknown) =>
-            error as {
-              readonly _tag?: unknown;
-              readonly label?: unknown;
-              readonly sqlState?: unknown;
-            },
-        );
-        expect(failure?._tag).toBe("ControlPlaneStatementFailed");
-        expect(failure?.label).toBe("media-publish.projection");
-        expect(failure?.sqlState).toBe("42501");
-        const blocked = await admin.query<{
-          status: string;
-          phase: string | null;
-          post_id: string | null;
-        }>("SELECT status,phase,post_id FROM media_post_submissions WHERE submission_id=$1", [
-          submission,
-        ]);
-        expect(blocked.rows[0]).toMatchObject({
-          status: "processing",
-          phase: "publish",
-          post_id: null,
-        });
-
-        // Only the two demonstrated INSERT grants, never broader DML.
-        await admin.query(`GRANT INSERT ON ${quoted}.song_owner_policies TO ${quotedRole}`);
-        await admin.query(`GRANT INSERT ON ${quoted}.song_owner_policy_revisions TO ${quotedRole}`);
+        // The canonical trigger owns initialization; runtime never receives
+        // direct INSERT on either private policy ledger.
         expect(["committed", "replay"]).toContain(await processing.commitPublication(authority));
         expect(["committed", "replay"]).toContain(await processing.commitPublication(authority));
         const posts = await admin.query<{ count: number }>(
@@ -799,6 +822,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           [`media-post-${operation}`],
         );
         expect(policies.rows[0]).toMatchObject({ heads: 1, revisions: 1 });
+        const privateWrites = await admin.query<{ heads: boolean; revisions: boolean }>(
+          "SELECT has_table_privilege($1::text,format('%I.song_owner_policies',$2::text),'INSERT') AS heads, has_table_privilege($1::text,format('%I.song_owner_policy_revisions',$2::text),'INSERT') AS revisions",
+          [role, schema],
+        );
+        expect(privateWrites.rows).toEqual([{ heads: false, revisions: false }]);
         const operations = await admin.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM data_registration_operations WHERE submission_id=$1",
           [submission],
@@ -969,6 +997,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             store: processing,
             workerId: "http-composed-consumer",
             workflow: {
+              getRecoveryFailure: async () => null,
               get: async () => "missing",
               create: async (instanceId, payload) => {
                 launches.push({ instanceId, payload });
@@ -1057,6 +1086,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             false,
             "accepted fixture lyrics",
           );
+          if (stage === "alignment" || stage === "alignment_commit") {
+            await seedAcceptedStemPairFixture(admin, connection);
+          }
           const current = await store.loadAuthority(submission, operation);
           if (current === null) throw new Error("missing publication fixture");
           if (stage !== "publication_commit")
@@ -4638,6 +4670,37 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40000);
 
+  test("Karaoke playback grants the accepted instrumental while song playback grants the master", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection);
+      const postId = `media-post-${operation}`;
+      const stemRef = `media://immutable/${operation}-stem-instrumental_audio/audio/1`;
+      await seedAcceptedStemPairFixture(admin, connection);
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "publish-stems-playback",
+          ),
+          expectedCreationRevision: 2,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId,
+        }),
+      );
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const read = (kind: "full_mix" | "instrumental") =>
+        Effect.runPromise(
+          Effect.scoped(authorizeSongPlayback({ postId, kind }).pipe(Effect.provide(runtime))),
+        );
+      expect(await read("full_mix")).toEqual({ immutableRef: "media_pg_immutable" });
+      expect(await read("instrumental")).toEqual({ immutableRef: stemRef });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
   test("publishes explicit classified lyrics with their truthful label", async () => {
     await withCurrentSchema(async (admin, connection) => {
       const longDialogue = Array.from({ length: 33 }, (_, index) => `dialogue${index + 1}`).join(
@@ -4678,6 +4741,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         false,
         explicitLyrics,
       );
+      await seedAcceptedStemPairFixture(admin, connection);
       const postId = `media-post-${operation}`;
       await run(connection, (store) =>
         store.publish({
@@ -4761,6 +4825,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       ];
       const timedLyricsArtifact = {
         version: "media-timed-lyrics-artifact-v1",
+        alignment_source_ref: `media://immutable/${operation}-stem-vocal_audio/audio/1`,
+        alignment_source_sha256: "9".repeat(64),
         mode: "word",
         segments: timedTokens.map((text, index) => ({
           text,
@@ -4798,7 +4864,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           "Hold on!",
         ]);
         expect(readiness.karaoke_lines[0]?.id).not.toBe(readiness.karaoke_lines[3]?.id);
-        expect(readiness.playback_kind).toBe("full_mix");
+        expect(readiness.playback_kind).toBe("instrumental");
       }
       await admin.query("BEGIN");
       await expect(
@@ -5163,6 +5229,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         lyricsRevision: 1,
       };
       await createThroughDecision(connection, allowDecision, lyricsAnalysis, false, lyrics);
+      await seedAcceptedStemPairFixture(admin, connection);
       const postId = `media-post-${operation}`;
       await run(connection, (store) =>
         store.publish({
@@ -5253,6 +5320,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
 
       const artifact = {
         version: "media-timed-lyrics-artifact-v1",
+        alignment_source_ref: `media://immutable/${operation}-stem-vocal_audio/audio/1`,
+        alignment_source_sha256: "9".repeat(64),
         mode: "word",
         segments: [
           { text: "[Verse", start_ms: 0, end_ms: 40 },
@@ -6267,7 +6336,10 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ),
         ).toBe(true);
       };
-      const missing = { store: processing, workflow: { get: async () => "missing" as const } };
+      const missing = {
+        store: processing,
+        workflow: { getRecoveryFailure: async () => null, get: async () => "missing" as const },
+      };
       for (let sequence = 0; sequence < 3; sequence += 1) {
         await deliver();
         expect(await sweepMissingMediaWorkflows(missing)).toMatchObject({
@@ -6283,7 +6355,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await sweepMissingMediaWorkflows({
           store: processing,
-          workflow: { get: async () => "finished" },
+          workflow: { getRecoveryFailure: async () => null, get: async () => "finished" },
         }),
       ).toMatchObject({ escalated: 1, limitReached: 0 });
       const historical = (
@@ -7031,6 +7103,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           false,
           fixture,
         );
+        await seedAcceptedStemPairFixture(admin, connection, fixture);
         const postId = `media-post-${fixture.operation}`;
         const alignmentOutboxId = `media_pg_recovery_alignment_outbox_${input.suffix}`;
         await run(connection, (store) =>
@@ -7822,6 +7895,828 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 120_000);
 });
+async function createRequestedAlignmentRecovery(admin: Client, connection: string) {
+  const lyrics = "Recovery lyrics";
+  const ready: TrustedSongAnalysis = {
+    ...analysis,
+    lyricsSafety: "allow",
+    lyricsAnalysis: {
+      status: "ready",
+      lyricsRevision: 1,
+      explicitness: "not_explicit",
+      primaryLanguageBcp47: "en",
+      secondaryLanguageBcp47: null,
+      evidenceRef: "recovery-lyrics",
+      policyRevision: "fixture-v1",
+      adapterRevision: "fixture-v1",
+    },
+  };
+  await createThroughDecision(
+    connection,
+    { ...decision, creationRevision: 3, lyricsRevision: 1 },
+    ready,
+    false,
+    lyrics,
+  );
+  await seedAcceptedStemPairFixture(admin, connection);
+  const postId = `media-post-${operation}`;
+  await run(connection, (store) =>
+    store.publish({
+      ...command(connection, "/media-post-submissions/:submissionId/publish", "recovery-publish"),
+      expectedCreationRevision: 3,
+      expectedAudioRevision: 1,
+      expectedAnalysisRevision: 1,
+      expectedDecisionRevision: 1,
+      postId,
+      outbox: {
+        outboxEventId: "recovery-alignment-outbox",
+        effectIdentity: "recovery-alignment-effect",
+        payload: {
+          kind: "alignment",
+          submission_id: submission,
+          operation_id: operation,
+          post_id: postId,
+          lyrics_revision: 1,
+          workflow_revision: 2,
+          workflow_instance_id: `media-${operation}-r2`,
+        },
+      },
+    }),
+  );
+  const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection), {
+    retryBaseMs: 0,
+  });
+  const authority = await processing.loadAuthority(submission, operation);
+  if (authority === null) throw new Error("missing recovery fixture");
+  expect(
+    await processing.commitAlignment(authority, {
+      kind: "alignment",
+      status: "unavailable",
+      failureCode: "alignment_failed",
+    }),
+  ).toBe("committed");
+  const principal = (await admin.query<{ principal: string }>("SELECT session_user AS principal"))
+    .rows[0]?.principal;
+  const request = {
+    communityId: community,
+    submissionId: submission,
+    actorUserId: actor,
+    personaId: personaFor(connection),
+    operatorPrincipalId: `postgres:${principal}`,
+    idempotencyKey: "bounded-recovery-request",
+    evidenceRef: "fixture://bounded-recovery",
+    expectedWorkflowRevision: 2,
+    expected: {
+      postId,
+      audioRevision: 1,
+      analysisRevision: 1,
+      lyricsRevision: 1,
+      canonicalAudioSha256: audioSha256,
+      lyricsSha256: sha256(new TextEncoder().encode(lyrics)),
+    },
+  };
+  const requested = await run(connection, (store) => store.requestAlignmentRecovery(request));
+  const launch = await processing.claimOutbox(requested.outboxEventId, "recovery-launch-worker");
+  if (launch === null) throw new Error("missing recovery launch claim");
+  expect(await processing.completeOutbox(launch)).toBe(true);
+  return {
+    processing,
+    request,
+    payload: {
+      outboxId: requested.outboxEventId,
+      submissionId: submission,
+      operationId: operation,
+      workflowRevision: 3,
+    },
+  };
+}
+
+suite("bounded alignment recovery persistence", () => {
+  test("alerts and deduplicates ordinary published alignment failures without a recovery-action row", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(
+        connection,
+        {
+          ...decision,
+          creationRevision: 3,
+          lyricsRevision: 1,
+        },
+        {
+          ...analysis,
+          lyricsAnalysis: {
+            status: "ready",
+            lyricsRevision: 1,
+            explicitness: "not_explicit",
+            primaryLanguageBcp47: "en",
+            secondaryLanguageBcp47: null,
+            evidenceRef: "ordinary_alignment_alert_lyrics",
+            policyRevision: "fixture-v1",
+            adapterRevision: "fixture-v1",
+          },
+          lyricsSafety: "allow",
+        },
+        false,
+        "Ordinary alignment alert fixture lyrics",
+      );
+      const outboxEventId = "ordinary_alignment_alert_outbox";
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "ordinary-alignment-alert",
+          ),
+          expectedCreationRevision: 3,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId: `media-post-${operation}`,
+          outbox: {
+            outboxEventId,
+            effectIdentity: "ordinary_alignment_alert_effect",
+            payload: {
+              kind: "alignment",
+              submission_id: submission,
+              operation_id: operation,
+              post_id: `media-post-${operation}`,
+              lyrics_revision: 1,
+              workflow_revision: 2,
+              workflow_instance_id: `media-${operation}-r2`,
+            },
+          },
+        }),
+      );
+      const controlPlane = makeDirectPostgresControlPlaneLayer(connection);
+      const processing = makeMediaProcessingStore(controlPlane);
+      const launch = await processing.claimOutbox(outboxEventId, "ordinary-alignment-alert-worker");
+      if (launch === null) throw new Error("missing ordinary alignment launch");
+      expect(await processing.completeOutbox(launch)).toBe(true);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM media_alignment_recovery_actions WHERE operation_id=$1",
+            [operation],
+          )
+        ).rows,
+      ).toEqual([{ count: 0 }]);
+      expect(
+        (await processing.listWorkflowCandidates()).map((candidate) => candidate.operationId),
+      ).toContain(operation);
+      const sweepCursor = (
+        await admin.query(
+          "SELECT last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+        )
+      ).rows;
+      expect(
+        (
+          await admin.query(
+            "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts'",
+          )
+        ).rows,
+      ).toEqual([]);
+      const diagnostic = alignmentRecoveryTerminalMessage({
+        outcome: "alignment_recovery_lookup_failed",
+        reason: {
+          errorClass: "ControlPlaneStatementFailed",
+          code: "57014",
+          query: "media-processing.alignment-recovery-authorization",
+        },
+      });
+      const logs: PipelineLogFields[] = [];
+      const sink = {
+        ...makeLocalAlertSink("development"),
+        log: (_event: string, fields: PipelineLogFields) => logs.push(fields),
+      };
+      // Exercise first-run initialization with runtime metadata privileges,
+      // rather than the schema owner's implicit authority. No migration seeds
+      // the new cursor, and the role cannot write any submission or launch.
+      const alertRole = `media_alignment_alert_${randomUUID().replaceAll("-", "")}`;
+      const schema = (await admin.query<{ name: string }>("SELECT current_schema() AS name"))
+        .rows[0]?.name;
+      if (schema === undefined) throw new Error("missing alert test schema");
+      await admin.query(`CREATE ROLE "${alertRole}" NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+      try {
+        await admin.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${alertRole}"`);
+        await admin.query(`GRANT SELECT ON ALL TABLES IN SCHEMA "${schema}" TO "${alertRole}"`);
+        await admin.query(`GRANT INSERT, UPDATE ON recovery_inspection_cursors TO "${alertRole}"`);
+        const runtimeConnection = new URL(connection);
+        runtimeConnection.searchParams.set(
+          "options",
+          `${runtimeConnection.searchParams.get("options") ?? ""} -c role=${alertRole}`.trim(),
+        );
+        const alertControlPlane = makeDirectPostgresControlPlaneLayer(runtimeConnection.toString());
+        const collect = () =>
+          collectSongPipelineTerminalAlerts(
+            alertControlPlane,
+            { media: true, data: false },
+            {
+              media: {
+                get: async (instanceId) => {
+                  expect(instanceId).toBe(`media-${operation}-r2`);
+                  // The page reservation committed before any Workflow I/O:
+                  // another connection can lock the row without waiting.
+                  const cursor = await admin.query<{ last_identifier: string }>(
+                    "SELECT last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media-alignment-alerts' FOR UPDATE NOWAIT",
+                  );
+                  expect(JSON.parse(cursor.rows[0]?.last_identifier ?? "null")).toEqual({
+                    operation_id: operation,
+                    workflow_instance_id: instanceId,
+                  });
+                  return {
+                    status: async () => ({
+                      status: "errored" as const,
+                      error: { name: "Error", message: diagnostic },
+                    }),
+                    sendEvent: async () => undefined,
+                  };
+                },
+                createBatch: async () => [],
+              },
+            },
+          );
+        expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+        // After initialization, a pre-seeded cursor requires only SELECT and
+        // UPDATE. PostgreSQL still checks INSERT for ON CONFLICT DO NOTHING,
+        // so revoking it catches any unconditional initialization attempt.
+        await admin.query(`REVOKE INSERT ON recovery_inspection_cursors FROM "${alertRole}"`);
+        expect(
+          await Effect.runPromise(
+            Effect.gen(function* () {
+              const db = yield* ControlPlaneDb;
+              return (yield* db.execute({
+                label: "alignment-alert.fixture.runtime-privileges",
+                text: "SELECT current_user AS role,has_table_privilege(current_user, 'recovery_inspection_cursors', 'INSERT') AS can_insert",
+                values: [],
+                readonly: true,
+              })).rows;
+            }).pipe(Effect.provide(alertControlPlane)),
+          ),
+        ).toEqual([{ role: alertRole, can_insert: false }]);
+        expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+        expect(logs.map((entry) => entry.event)).toEqual([
+          "pipeline.alert",
+          "pipeline.alert.suppression",
+        ]);
+        expect(logs[0]).toMatchObject({
+          severity: "high",
+          failure_class: "alignment_recovery_lookup_failed",
+          operation_id: operation,
+        });
+        expect(
+          (
+            await admin.query(
+              "SELECT last_updated_at,last_identifier FROM recovery_inspection_cursors WHERE cursor_key='media'",
+            )
+          ).rows,
+        ).toEqual(sweepCursor);
+      } finally {
+        await admin.query(`DROP OWNED BY "${alertRole}"`);
+        await admin.query(`DROP ROLE "${alertRole}"`);
+      }
+    });
+    completedTestCount += 1;
+  }, 60_000);
+
+  test("exhaustion completes the action, alerts after completion and preserves the one-recovery rule", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const { processing, request, payload } = await createRequestedAlignmentRecovery(
+        admin,
+        connection,
+      );
+      let calls = 0;
+      const workflow = {
+        store: processing,
+        providers: {
+          ...songInterpreterProviders,
+          alignment: {
+            align: async () => {
+              calls += 1;
+              return { status: "unavailable" as const, failureCode: "timeout" as const };
+            },
+          },
+        },
+        options: {
+          enabled: true,
+          workerId: "bounded-recovery-worker",
+          now: Date.now,
+          policyRevision: "fixture-v1",
+          transformAdapterRevision: "fixture-v1",
+          metadataAdapterRevision: "fixture-v1",
+          classifierTimeoutMs: 1_000,
+          transformRuntimeMs: 60_000,
+          maximumSampleBytes: 1_024,
+        },
+      };
+      const runner = makeMediaProcessingWorkflowRunner(
+        () => ({ queue: {} as MediaProcessingQueueDependencies, workflow }),
+        (message) => new Error(message),
+      );
+      const sleeps: string[] = [];
+      const step: MediaProcessingWorkflowStep = {
+        do: async (_name, _options, execute) => execute(),
+        sleep: async (name) => {
+          sleeps.push(name);
+        },
+        waitForEvent: async () => {
+          throw new Error("must finish");
+        },
+      };
+      expect(
+        await runner(
+          { MEDIA_PROCESSING_ENABLED: "true" },
+          { instanceId: `media-${operation}-r3`, payload },
+          step,
+        ),
+      ).toEqual({ outcome: "alignment_recorded" });
+      expect(calls).toBe(3);
+      expect(sleeps).toHaveLength(3);
+      expect(
+        (
+          await admin.query(
+            "SELECT state,result_kind,failure_code FROM media_alignment_recovery_actions WHERE operation_id=$1",
+            [operation],
+          )
+        ).rows,
+      ).toEqual([
+        { state: "completed", result_kind: "unavailable", failure_code: "provider_unavailable" },
+      ]);
+      expect(
+        (
+          await admin.query(
+            "SELECT attempt_number,state,retryable FROM media_processing_attempts WHERE operation_id=$1 AND stage='alignment_recovery' ORDER BY attempt_number",
+            [operation],
+          )
+        ).rows,
+      ).toEqual([
+        { attempt_number: 1, state: "failed", retryable: true },
+        { attempt_number: 2, state: "failed", retryable: true },
+        { attempt_number: 3, state: "exhausted", retryable: false },
+      ]);
+      expect(
+        (
+          await admin.query(
+            "SELECT status,failure_code,alignment_revision FROM media_alignment_projections WHERE operation_id=$1",
+            [operation],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "unavailable",
+        failure_code: "provider_unavailable",
+        alignment_revision: "2",
+      });
+      expect(
+        await runner(
+          { MEDIA_PROCESSING_ENABLED: "true" },
+          { instanceId: `media-${operation}-r3`, payload },
+          step,
+        ),
+      ).toEqual({ outcome: "alignment_recorded" });
+      expect(calls).toBe(3);
+      await expect(
+        run(connection, (store) =>
+          store.requestAlignmentRecovery({
+            ...request,
+            expectedWorkflowRevision: 3,
+            idempotencyKey: "second-after-exhaustion",
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "transition-rejected" });
+      const logs: PipelineLogFields[] = [];
+      const sink = {
+        ...makeLocalAlertSink("development"),
+        log: (_event: string, fields: PipelineLogFields) => logs.push(fields),
+      };
+      const collect = () =>
+        collectSongPipelineTerminalAlerts(
+          makeDirectPostgresControlPlaneLayer(connection),
+          { media: true, data: false },
+          {},
+        );
+      expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+      expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+      expect(logs.map((entry) => entry.event)).toEqual([
+        "pipeline.alert",
+        "pipeline.alert.suppression",
+      ]);
+      expect(logs[0]).toMatchObject({
+        failure_class: "alignment_recovery_exhausted",
+        operation_id: operation,
+        workflow_revision: 3,
+      });
+    });
+    completedTestCount += 1;
+  }, 60_000);
+
+  test("three failed lookups keep the recovery requested and the sweep preserves the terminal reason", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      const { processing, payload } = await createRequestedAlignmentRecovery(admin, connection);
+      let lookups = 0;
+      const unavailable = Layer.effect(
+        ControlPlaneDb,
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return ControlPlaneDb.of({
+            ...db,
+            execute: (statement) => {
+              if (statement.label === "media-processing.alignment-recovery-authorization") {
+                lookups += 1;
+                return Effect.fail(
+                  new ControlPlaneAcquireFailed({ phase: "acquisition", limitMs: 1, elapsedMs: 1 }),
+                );
+              }
+              return db.execute(statement);
+            },
+          });
+        }),
+      ).pipe(Layer.provide(makeDirectPostgresControlPlaneLayer(connection)));
+      const store = makeMediaProcessingStore(unavailable);
+      const workflow = {
+        store,
+        providers: songInterpreterProviders,
+        options: {
+          enabled: true,
+          workerId: "lookup-failure-worker",
+          now: Date.now,
+          policyRevision: "fixture-v1",
+          transformAdapterRevision: "fixture-v1",
+          metadataAdapterRevision: "fixture-v1",
+          classifierTimeoutMs: 1_000,
+          transformRuntimeMs: 60_000,
+          maximumSampleBytes: 1_024,
+        },
+      };
+      const runner = makeMediaProcessingWorkflowRunner(
+        () => ({ queue: {} as MediaProcessingQueueDependencies, workflow }),
+        (message) => new Error(message),
+      );
+      const sleeps: string[] = [];
+      const error = await runner(
+        { MEDIA_PROCESSING_ENABLED: "true" },
+        { instanceId: `media-${operation}-r3`, payload },
+        {
+          do: async (_name, _options, execute) => execute(),
+          sleep: async (name) => {
+            sleeps.push(name);
+          },
+          waitForEvent: async () => {
+            throw new Error("must terminate");
+          },
+        },
+      ).then(
+        () => null,
+        (cause: unknown) => cause,
+      );
+      if (!(error instanceof Error)) throw new Error("missing terminal error");
+      const diagnostic = readAlignmentRecoveryTerminalMessage(error.message);
+      expect(diagnostic).toMatchObject({
+        outcome: "alignment_recovery_lookup_failed",
+        reason: { errorClass: "ControlPlaneAcquireFailed" },
+      });
+      expect(lookups).toBe(3);
+      expect(sleeps).toEqual([
+        "media-processing-recovery-lookup-0",
+        "media-processing-recovery-lookup-1",
+      ]);
+      expect(
+        (
+          await admin.query(
+            "SELECT state,result_kind FROM media_alignment_recovery_actions WHERE operation_id=$1",
+            [operation],
+          )
+        ).rows,
+      ).toEqual([{ state: "requested", result_kind: null }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS count FROM media_processing_attempts WHERE stage='alignment_recovery'",
+          )
+        ).rows[0],
+      ).toEqual({ count: 0 });
+      const current = await processing.loadAuthority(submission, operation);
+      if (current === null || diagnostic === null) throw new Error("missing diagnostic authority");
+      const observations: unknown[] = [];
+      const sweep = await sweepMissingMediaWorkflows({
+        store: { ...processing, listWorkflowCandidates: async () => [current] },
+        workflow: { get: async () => "finished", getRecoveryFailure: async () => diagnostic },
+        observe: (entry) => observations.push(entry),
+      });
+      expect(sweep).toMatchObject({ finished: 1, recoveryFailed: 1, reconciled: 0, replaced: 0 });
+      expect(observations).toContainEqual(expect.objectContaining({ recoveryFailure: diagnostic }));
+      expect(
+        (
+          await admin.query(
+            "SELECT state,result_kind FROM media_alignment_recovery_actions WHERE operation_id=$1",
+            [operation],
+          )
+        ).rows,
+      ).toEqual([{ state: "requested", result_kind: null }]);
+      expect(
+        (
+          await admin.query(
+            "SELECT status,failure_code,alignment_revision FROM media_alignment_projections WHERE operation_id=$1",
+            [operation],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "unavailable",
+        failure_code: "alignment_failed",
+        alignment_revision: "1",
+      });
+      const logs: PipelineLogFields[] = [];
+      const sink = {
+        ...makeLocalAlertSink("development"),
+        log: (_event: string, fields: PipelineLogFields) => logs.push(fields),
+      };
+      const collect = () =>
+        collectSongPipelineTerminalAlerts(
+          makeDirectPostgresControlPlaneLayer(connection),
+          { media: true, data: false },
+          {
+            media: {
+              get: async () => ({
+                status: async () => ({
+                  status: "errored" as const,
+                  error: {
+                    name: error.name,
+                    message: alignmentRecoveryTerminalMessage(diagnostic),
+                  },
+                }),
+                sendEvent: async () => undefined,
+              }),
+              createBatch: async () => [],
+            },
+          },
+        );
+      expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+      expect(await Effect.runPromise(alertTick(sink, collect()))).toBe(1);
+      expect(logs[0]).toMatchObject({ failure_class: "alignment_recovery_lookup_failed" });
+      expect(logs.map((entry) => entry.event)).toEqual([
+        "pipeline.alert",
+        "pipeline.alert.suppression",
+      ]);
+    });
+    completedTestCount += 1;
+  }, 60_000);
+});
+
+suite("song moderation races finish through the real repository and runner", () => {
+  for (const firstSave of [false, true]) {
+    for (const window of ["during_moderation", "before_commit"] as const) {
+      test(`${firstSave ? "first" : "existing"} lyrics save ${window} retries to adult publication`, async () => {
+        await withCurrentSchema(async (admin, connection) => {
+          const initial = firstSave ? undefined : "Originally reviewed general lyrics";
+          const finalLyrics = "Adult sexual lyrics permitted for adult listeners";
+          await createThroughDecision(connection, decision, analysis, true, initial, true);
+          const processing = makeMediaProcessingStore(
+            makeDirectPostgresControlPlaneLayer(connection),
+          );
+          let saved = false;
+          const saveLyrics = async () => {
+            if (saved) return;
+            saved = true;
+            const current = await processing.loadAuthority(submission, operation);
+            if (current === null) throw new Error("missing race authority");
+            await run(connection, (store) =>
+              store.bindLyrics({
+                ...command(
+                  connection,
+                  "/media-post-submissions/:submissionId/lyrics",
+                  "race-lyrics-save",
+                ),
+                expectedCreationRevision: current.creationRevision,
+                expectedAudioRevision: 1,
+                lyrics: finalLyrics,
+                outbox: {
+                  outboxEventId: "race-lyrics-outbox",
+                  effectIdentity: "race-lyrics-effect",
+                  payload: {
+                    kind: "decision_wakeup",
+                    submission_id: submission,
+                    operation_id: operation,
+                    creation_revision: current.creationRevision + 1,
+                    lyrics_revision: firstSave ? 1 : 2,
+                    trigger: "lyrics",
+                    workflow_revision: 1,
+                    workflow_instance_id: `media-${operation}-r1`,
+                  },
+                },
+              }),
+            );
+          };
+          const checkedBodies: (string | null)[] = [];
+          const commits: string[] = [];
+          const store: MediaProcessingStore = {
+            ...processing,
+            readModerationPolicy: async (communityId) => {
+              const policy = await processing.readModerationPolicy(communityId);
+              return {
+                ...policy,
+                community_policy: { ...policy.community_policy, sexual: "permit" },
+              };
+            },
+            commitAnalysis: async (authority, proposed) => {
+              if (window === "before_commit") await saveLyrics();
+              const result = await processing.commitAnalysis(authority, proposed);
+              commits.push(result);
+              if (result === "stale") {
+                const current = await processing.loadAuthority(submission, operation);
+                expect(current?.analysis).toBeNull();
+                expect(current?.postId).toBeNull();
+                expect(
+                  (
+                    await admin.query(
+                      "SELECT count(*)::int AS count FROM media_analysis_evidence WHERE submission_id=$1",
+                      [submission],
+                    )
+                  ).rows[0],
+                ).toEqual({ count: 0 });
+                expect(
+                  (
+                    await admin.query("SELECT count(*)::int AS count FROM posts WHERE post_id=$1", [
+                      `media-post-${operation}`,
+                    ])
+                  ).rows[0],
+                ).toEqual({ count: 0 });
+              }
+              return result;
+            },
+          };
+          const providers: MediaProcessingProviders = {
+            ...songInterpreterProviders,
+            textModeration: {
+              evaluate: (input) =>
+                Effect.gen(function* () {
+                  checkedBodies.push(input.body);
+                  if (window === "during_moderation") yield* Effect.promise(saveLyrics);
+                  const evaluated = yield* songInterpreterProviders.textModeration.evaluate(input);
+                  return {
+                    ...evaluated,
+                    matched_categories: input.body === finalLyrics ? ["sexual" as const] : [],
+                  };
+                }),
+            },
+          };
+          const workflow = {
+            store,
+            providers,
+            options: {
+              enabled: true,
+              workerId: "moderation-race-worker",
+              now: Date.now,
+              policyRevision: "fixture-v1",
+              transformAdapterRevision: "fixture-v1",
+              metadataAdapterRevision: "fixture-v1",
+              classifierTimeoutMs: 1_000,
+              transformRuntimeMs: 60_000,
+              maximumSampleBytes: 1_024,
+            },
+          };
+          const runner = makeMediaProcessingWorkflowRunner(
+            () => ({
+              queue: {} as MediaProcessingQueueDependencies,
+              workflow,
+            }),
+            (message) => new Error(`non-retryable:${message}`),
+          );
+          const sleeps: string[] = [];
+          const passOutcomes: string[] = [];
+          const result = await runner(
+            { MEDIA_PROCESSING_ENABLED: "true" },
+            {
+              instanceId: `media-${operation}-r1`,
+              payload: {
+                outboxId: "media_pg_analysis_outbox",
+                submissionId: submission,
+                operationId: operation,
+                workflowRevision: 1,
+              },
+            },
+            {
+              do: async (_name, _options, execute) => {
+                const value = await execute();
+                passOutcomes.push((value as { result: { outcome: string } }).result.outcome);
+                return value;
+              },
+              sleep: async (name, duration) => {
+                expect(duration).toBe("10 seconds");
+                sleeps.push(name);
+              },
+              waitForEvent: async () => {
+                throw new Error("permitting song should finish without a user wait");
+              },
+            },
+          );
+          expect(result).toEqual({ outcome: "published" });
+          expect(commits).toEqual(["stale", "committed"]);
+          expect(passOutcomes).toEqual(["waiting_for_provider", "published"]);
+          expect(sleeps).toEqual(["media-processing-poll-0"]);
+          expect(checkedBodies).toEqual([initial ?? null, finalLyrics]);
+          expect(
+            (
+              await admin.query(
+                "SELECT attempt_number,input_revision::text,state FROM media_processing_attempts WHERE operation_id=$1 AND stage='classifier' ORDER BY attempt_number",
+                [operation],
+              )
+            ).rows,
+          ).toEqual(
+            window === "before_commit" && !firstSave
+              ? [
+                  { attempt_number: 1, input_revision: "1", state: "succeeded" },
+                  { attempt_number: 2, input_revision: "2", state: "succeeded" },
+                ]
+              : [
+                  {
+                    attempt_number: 1,
+                    input_revision: String(firstSave ? 1 : 2),
+                    state: "succeeded",
+                  },
+                ],
+          );
+          const current = await processing.loadAuthority(submission, operation);
+          expect(current).toMatchObject({
+            status: "published",
+            publishedLyricsRevision: firstSave ? 1 : 2,
+            lyrics: { text: finalLyrics, lyricsRevision: firstSave ? 1 : 2 },
+            analysis: {
+              lyricsAnalysis: { lyricsRevision: firstSave ? 1 : 2 },
+              contentModeration: {
+                inputSha256: songModerationFixtureHash("Fixture song", finalLyrics),
+                resultingContentRating: "adult_18",
+                matchedCategories: ["sexual"],
+              },
+            },
+          });
+          expect(
+            (
+              await admin.query("SELECT content_rating FROM posts WHERE post_id=$1", [
+                `media-post-${operation}`,
+              ])
+            ).rows[0],
+          ).toEqual({ content_rating: "adult_18" });
+          expect(
+            (
+              await admin.query(
+                "SELECT lyrics_revision,analysis_snapshot FROM media_analysis_evidence WHERE submission_id=$1",
+                [submission],
+              )
+            ).rows,
+          ).toMatchObject([
+            {
+              lyrics_revision: String(firstSave ? 1 : 2),
+              analysis_snapshot: {
+                contentModeration: {
+                  inputSha256: songModerationFixtureHash("Fixture song", finalLyrics),
+                  resultingContentRating: "adult_18",
+                },
+              },
+            },
+          ]);
+        });
+        completedTestCount += 1;
+      }, 60_000);
+    }
+  }
+  test("unchanged absent lyrics finish with title-only moderation", async () => {
+    await withCurrentSchema(async (_admin, connection) => {
+      await createThroughDecision(connection, decision, analysis, true, undefined, true);
+      const processing = makeMediaProcessingStore(makeDirectPostgresControlPlaneLayer(connection));
+      expect(
+        await Effect.runPromise(
+          runMediaProcessingWorkflow(
+            {
+              outboxId: "media_pg_analysis_outbox",
+              submissionId: submission,
+              operationId: operation,
+              workflowRevision: 1,
+            },
+            "analysis_launch",
+            {
+              store: processing,
+              providers: songInterpreterProviders,
+              options: {
+                enabled: true,
+                workerId: "title-only-worker",
+                now: Date.now,
+                policyRevision: "fixture-v1",
+                transformAdapterRevision: "fixture-v1",
+                metadataAdapterRevision: "fixture-v1",
+                classifierTimeoutMs: 1_000,
+                transformRuntimeMs: 60_000,
+                maximumSampleBytes: 1_024,
+              },
+            },
+          ),
+        ),
+      ).toEqual({ outcome: "published_without_alignment" });
+      expect(
+        (await processing.loadAuthority(submission, operation))?.analysis?.contentModeration
+          .inputSha256,
+      ).toBe(songModerationFixtureHash("Fixture song"));
+    });
+    completedTestCount += 1;
+  }, 60_000);
+});
+
 afterAll(async () => {
   if (completedTestCount === testCount) await Bun.write(sentinelPath, sentinelContents);
 });

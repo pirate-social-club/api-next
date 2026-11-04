@@ -246,6 +246,24 @@ describe("HNS parent-chain HSD observer", () => {
     expect(observed.result.transcript).toHaveLength(7);
   });
 
+  test("finds the challenge TXT among other records in any order", async () => {
+    // A wallet such as Bob keeps the name's existing delegation and other TXT
+    // records and may place the added challenge anywhere in the resource.
+    const observed = await observe({
+      records: [
+        { type: "GLUE4", ns: "ns1.jazleeuw.", address: "192.0.2.53" },
+        { type: "TXT", txt: ["unrelated owner note"] },
+        { type: "NS", ns: "ns2.jazleeuw." },
+        { type: "TXT", txt: ["pirate-verification=", "nvs_01"] },
+      ],
+    });
+    const decoded = await decodeHnsControlObservationResultBytes(
+      observed.result.result_bytes,
+      requestValue,
+    );
+    expect(decoded.result).toMatchObject({ status: "verified" });
+  });
+
   test("historical expiry never bypasses the current ownership TXT proof", async () => {
     const observed = await observe({ historicalExpired: true, records: [] });
     const decoded = await decodeHnsControlObservationResultBytes(

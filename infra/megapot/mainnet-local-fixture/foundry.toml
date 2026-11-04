@@ -1,0 +1,14 @@
+[profile.default]
+src = "src"
+test = "test"
+remappings = ["repeatable-e2e-fixture/=../repeatable-e2e-fixture/"]
+allow_paths = ["../repeatable-e2e-fixture"]
+out = "../../../.wrangler/rewards-source-agent/mainnet-foundry/out"
+cache_path = "../../../.wrangler/rewards-source-agent/mainnet-foundry/cache"
+solc_version = "0.8.30"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+bytecode_hash = "none"
+cbor_metadata = false

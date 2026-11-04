@@ -8,6 +8,11 @@ import type {
   KaraokeSessionAuthority,
 } from "../../packages/application/src/karaoke-service.ts";
 import type { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
+import {
+  deleteKaraokeAttemptCaptureFixture,
+  installKaraokeAttemptCaptureFixture,
+  recordDefiniteKaraokeFailureFixture,
+} from "./karaoke-attempt-captured.fixture.ts";
 
 const env = testEnv as unknown as {
   readonly KARAOKE_ATTEMPT: DurableObjectNamespace<KaraokeAttemptDO>;
@@ -92,11 +97,23 @@ const connect = async (stub: DurableObjectStub<KaraokeAttemptDO>, token: string)
   return response;
 };
 
+// Initialization now requires the original controlled audio capture before a
+// token is issued. Keep the real DO; substitute only its finite PG client.
+const initializeCaptured = async (
+  stub: DurableObjectStub<KaraokeAttemptDO>,
+  frozenAuthority: KaraokeSessionAuthority,
+) => {
+  await runInDurableObject(stub, async (instance, state) => {
+    installKaraokeAttemptCaptureFixture(instance, state, env.LEARNER_AUDIO, frozenAuthority);
+  });
+  return await stub.initialize(frozenAuthority);
+};
+
 describe("Karaoke attempt Durable Object", () => {
   it("invokes an overridden STT adapter factory instead of constructing the production adapter", async () => {
     const sessionId = `karaoke-override-${crypto.randomUUID()}`;
     const stub = env.RECORDING_KARAOKE_ATTEMPT.getByName(sessionId);
-    const initialized = await stub.initialize(authority(sessionId));
+    const initialized = await initializeCaptured(stub, authority(sessionId));
     await expect(connect(stub, initialized.token)).rejects.toThrow("harness_stt_adapter_override");
     await runInDurableObject(stub, async (instance) => {
       const recording = instance as unknown as { adapterFactoryCalls: number };
@@ -108,7 +125,7 @@ describe("Karaoke attempt Durable Object", () => {
     const sessionId = `karaoke-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
     const frozenAuthority = authority(sessionId);
-    const first = await stub.initialize(frozenAuthority);
+    const first = await initializeCaptured(stub, frozenAuthority);
 
     expect((await connect(stub, first.token)).status).toBe(101);
     expect((await connect(stub, first.token)).status).toBe(401);
@@ -129,7 +146,7 @@ describe("Karaoke attempt Durable Object", () => {
   it("orders and deduplicates accepted PCM by validated frame sequence", async () => {
     const sessionId = `karaoke-stored-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    const initialized = await stub.initialize(authority(sessionId));
+    const initialized = await initializeCaptured(stub, authority(sessionId));
     expect(initialized.providerRetention).toBe("stored");
     const chunk = new Uint8Array(256 * 1024);
     chunk.fill(7);
@@ -163,7 +180,7 @@ describe("Karaoke attempt Durable Object", () => {
   it("initializes provider retention as stored without a correction event", async () => {
     const sessionId = `karaoke-retention-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    const initialized = await stub.initialize(authority(sessionId));
+    const initialized = await initializeCaptured(stub, authority(sessionId));
     const response = await connect(stub, initialized.token);
     const socket = response.webSocket;
     if (socket === null) throw new TypeError("expected Karaoke WebSocket");
@@ -194,22 +211,30 @@ describe("Karaoke attempt Durable Object", () => {
     expect(events).toEqual([]);
   });
 
-  it("aborts an open multipart upload after archival fails", async () => {
+  it("aborts an open multipart upload only after captured deletion authority", async () => {
     const sessionId = `karaoke-failed-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    await stub.initialize(authority(sessionId));
+    await initializeCaptured(stub, authority(sessionId));
     const chunk = new Uint8Array(256 * 1024);
 
-    const result = await runInDurableObject(stub, async (instance, state) => {
+    await runInDurableObject(stub, async (instance) => {
       const archive = instance as unknown as ArchiveHarness;
       for (let index = 1; index <= 20; index += 1) {
         await archive.archiveFrame(index, chunk.buffer, index * 500);
       }
-      state.storage.sql.exec("UPDATE karaoke_archive SET state='failed' WHERE id=1");
-      return await archive.finishArchive();
+      // A mutable local state string cannot authorize abort. Use the actual
+      // captured deletion-stop protocol and retain its immutable original key.
+      await deleteKaraokeAttemptCaptureFixture(instance);
     });
 
-    expect(result).toEqual({ failureKind: "multipart_failed", state: "failed" });
+    await expect(
+      runInDurableObject(stub, async (instance) =>
+        (instance as unknown as ArchiveHarness).finishArchive(),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "LearnerAudioCaptureRejected",
+      reason: "deletion-in-progress",
+    });
     expect(
       await env.LEARNER_AUDIO.get(`karaoke/account-workerd/attempt-${sessionId}.pcm`),
     ).toBeNull();
@@ -218,7 +243,7 @@ describe("Karaoke attempt Durable Object", () => {
   it("keeps both outbox legs pending and rearms the alarm when Postgres is unavailable", async () => {
     const sessionId = `karaoke-alarm-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    await stub.initialize(authority(sessionId));
+    await initializeCaptured(stub, authority(sessionId));
 
     await runInDurableObject(stub, async (instance, state) => {
       await instance.enqueueFinalization("abandoned", abandonedSummary);
@@ -249,13 +274,43 @@ describe("Karaoke attempt Durable Object", () => {
       expect(terminal.snapshot_json).toBe("{}");
       expect(terminal.terminal).toBe(1);
       expect(terminal.payload_json).not.toContain("hold on");
+      // Retry acquisition says nothing about the original durable result.
+      // Native/mapped ControlPlane uncertainty must not exhaust at the limit.
+      for (let attempt = 1; attempt < 8; attempt += 1) {
+        state.storage.sql.exec(
+          "UPDATE karaoke_outbox SET score_next_attempt_at=0,recording_next_attempt_at=0 WHERE id=1",
+        );
+        await instance.alarm();
+      }
+      const held = state.storage.sql
+        .exec<{
+          score_state: string;
+          recording_state: string;
+          score_attempts: number;
+          recording_attempts: number;
+        }>(
+          "SELECT score_state,recording_state,score_attempts,recording_attempts FROM karaoke_outbox WHERE id=1",
+        )
+        .one();
+      expect(held).toEqual({
+        score_state: "pending",
+        recording_state: "pending",
+        score_attempts: row.score_attempts + 7,
+        recording_attempts: row.recording_attempts + 7,
+      });
+      // Enqueueing arms an immediate Workerd alarm alongside this explicit
+      // delivery. Count later deliveries from the observed initial baseline
+      // and prove uncertainty holds beyond the ordinary exhaustion limit.
+      expect(held.score_attempts).toBeGreaterThanOrEqual(8);
+      expect(held.recording_attempts).toBeGreaterThanOrEqual(8);
+      expect(await state.storage.getAlarm()).toBeGreaterThan(Date.now());
     });
   });
 
   it("ignores socket messages that arrive after finalization", async () => {
     const sessionId = `karaoke-terminal-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    const initialized = await stub.initialize(authority(sessionId));
+    const initialized = await initializeCaptured(stub, authority(sessionId));
     const response = await connect(stub, initialized.token);
     expect(response.webSocket).not.toBeNull();
 
@@ -286,7 +341,7 @@ describe("Karaoke attempt Durable Object", () => {
   it("keeps a legitimate finish while dropping duplicate and late messages", async () => {
     const sessionId = `karaoke-finish-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    const initialized = await stub.initialize(authority(sessionId));
+    const initialized = await initializeCaptured(stub, authority(sessionId));
     expect((await connect(stub, initialized.token)).status).toBe(101);
 
     const finishMessage = (sequence: number) =>
@@ -327,10 +382,10 @@ describe("Karaoke attempt Durable Object", () => {
     expect((await connect(stub, initialized.token)).status).toBe(410);
   });
 
-  it("exhausts locally, then centrally rearms each axis exactly once", async () => {
+  it("exhausts definite local failures, then centrally rearms each axis exactly once", async () => {
     const sessionId = `karaoke-exhausted-${crypto.randomUUID()}`;
     const stub = env.KARAOKE_ATTEMPT.getByName(sessionId);
-    await stub.initialize(authority(sessionId));
+    await initializeCaptured(stub, authority(sessionId));
     await runInDurableObject(stub, async (instance) => {
       await instance.enqueueFinalization("abandoned", abandonedSummary);
     });
@@ -346,7 +401,7 @@ describe("Karaoke attempt Durable Object", () => {
                 SET score_next_attempt_at=0,recording_next_attempt_at=0
               WHERE id=1`,
         );
-        await instance.alarm();
+        recordDefiniteKaraokeFailureFixture(instance);
       }
       const row = state.storage.sql
         .exec<{

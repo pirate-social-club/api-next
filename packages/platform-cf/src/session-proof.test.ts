@@ -15,6 +15,51 @@ describe("Privy server API routing", () => {
   });
 });
 
+describe("Taproot provider inventory attestation", () => {
+  test("binds an embedded wallet inventory to the signed Privy subject", async () => {
+    const key = await makeRsaKey("taproot-key");
+    const address = "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0";
+    const verifier = makeJwksSessionProofVerifier({
+      privy: {
+        jwksUrl: "https://provider.test/jwks.json",
+        issuer: "test-issuer",
+        audience: "test-audience",
+      },
+      privyApi: { apiUrl: "https://api.privy.test", appId: "app-id", appSecret: "app-secret" },
+      fetcher: async (input) =>
+        input.includes("/jwks")
+          ? jwksResponse([key])
+          : Response.json({
+              id: "did:privy:test-user",
+              linked_accounts: [
+                {
+                  type: "wallet",
+                  chain_type: "bitcoin-taproot",
+                  wallet_client: "privy",
+                  wallet_client_type: "privy",
+                  connector_type: "embedded",
+                  imported: false,
+                  id: "wallet_01",
+                  wallet_index: 0,
+                  address,
+                  public_key: `02${"11".repeat(32)}`,
+                },
+              ],
+            }),
+      nowMs: () => 1_000_000,
+    });
+    const result = await Effect.runPromise(
+      verifier.readPrivyEmbeddedTaprootInventory({
+        accessToken: await signToken(key),
+        identityToken: null,
+        network: "mainnet",
+      }),
+    );
+    expect(result.sourceUserId).toBe("did:privy:test-user");
+    expect(result.wallets.map((wallet) => wallet.providerId)).toEqual(["wallet_01"]);
+  });
+});
+
 const encoder = new TextEncoder();
 
 function encodeBase64Url(bytes: Uint8Array): string {

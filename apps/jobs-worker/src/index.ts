@@ -48,9 +48,12 @@ import {
   type DataRegistrationJobsBindings,
   makeDataRegistrationMaintenance,
 } from "./data-registration-runtime";
+import {
+  type HnsActiveLeaseRenewalBindings,
+  makeHnsActiveLeaseRenewalJob,
+} from "./hns-active-lease-renewal";
 import { makeHnsRootHealthRenewalJob } from "./hns-root-health-renewal";
 import {
-  type HnsRouteRevalidationBindings,
   type HnsRouteRevalidationComposition,
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
@@ -59,9 +62,15 @@ import { makeKaraokeFinalizationRecoveryJob } from "./karaoke-finalization-recov
 import { type MediaJobsBindings, makeMediaMaintenance } from "./media-runtime";
 import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
+import {
+  MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+  MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+} from "./megapot-rewards-cycle";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
+import { makeSerialStudyMegapotRecoveryJob } from "./serial-study-megapot-recovery.ts";
 import {
   collectSongPipelineOutboxAlerts,
   runSongPipelineOutboxAlertTick,
@@ -70,6 +79,15 @@ import {
   collectSongPipelineTerminalAlerts,
   handleSongPipelineDlqBatch,
 } from "./song-pipeline-terminal-alerts";
+import { makeSpacesReconciliationJob } from "./spaces-reconciliation";
+import {
+  makeSpacesReconciliationComposition,
+  type SpacesReconciliationBindings,
+  type SpacesReconciliationComposition,
+} from "./spaces-reconciliation-composition.ts";
+import { makeSpacesRootObservationJob } from "./spaces-root-observation";
+import { makeSpacesRouteRenewalJob } from "./spaces-route-renewal";
+import { type GuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 import { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
@@ -110,6 +128,7 @@ export {
   type CommunityCatalogIntegrityJobOptions,
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
+export { makeGuestStudyRecoveryComposition } from "./study-source-recovery-composition.ts";
 export { makeStudySpokenAnswerRecoveryJob } from "./study-spoken-answer-recovery";
 
 import {
@@ -123,9 +142,10 @@ export interface JobsWorkerEnv
   extends AlertSinkBindings,
     DataRegistrationJobsBindings,
     DanceReferenceJobsBindings,
-    HnsRouteRevalidationBindings,
+    HnsActiveLeaseRenewalBindings,
     MediaJobsBindings,
-    TelegramBindings {
+    TelegramBindings,
+    SpacesReconciliationBindings {
   readonly CF_VERSION_METADATA: MegapotRewardsJobOptions["workerVersion"];
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
@@ -146,6 +166,8 @@ export interface JobsWorkerEnv
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
   readonly MEGAPOT_CUSTODY_PRIVATE_KEY?: string;
+  readonly MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS?: string;
+  readonly MEGAPOT_GAS_TOPUP_PRIVATE_KEY?: string;
   readonly MEGAPOT_COMMITMENT_PUBLIC_ORIGIN?: string;
   readonly MEGAPOT_OBSERVATION_TTL_SECONDS?: string;
   readonly MEGAPOT_APPROVED_ALLOWANCE_ATOMIC?: string;
@@ -175,6 +197,8 @@ function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
       MEGAPOT_ATTESTATION_ID: env.MEGAPOT_ATTESTATION_ID,
       MEGAPOT_REQUIRED_CONFIRMATIONS: env.MEGAPOT_REQUIRED_CONFIRMATIONS,
       MEGAPOT_CUSTODY_PRIVATE_KEY: env.MEGAPOT_CUSTODY_PRIVATE_KEY,
+      MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS: env.MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS,
+      MEGAPOT_GAS_TOPUP_PRIVATE_KEY: env.MEGAPOT_GAS_TOPUP_PRIVATE_KEY,
       MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: env.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN,
       MEGAPOT_OBSERVATION_TTL_SECONDS: env.MEGAPOT_OBSERVATION_TTL_SECONDS,
       MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: env.MEGAPOT_APPROVED_ALLOWANCE_ATOMIC,
@@ -218,6 +242,7 @@ function makeMegapotOptions(
   }
   const custodyPrivateKey = Redacted.value(config.MEGAPOT_CUSTODY_PRIVATE_KEY);
   const commitmentPublicOrigin = Redacted.value(config.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN);
+  const gasTopupPrivateKey = Redacted.value(config.MEGAPOT_GAS_TOPUP_PRIVATE_KEY);
   let parsedCommitmentOrigin: URL;
   try {
     parsedCommitmentOrigin = new URL(commitmentPublicOrigin);
@@ -226,6 +251,9 @@ function makeMegapotOptions(
   }
   if (
     !/^0x[0-9a-f]{64}$/iu.test(custodyPrivateKey) ||
+    (gasTopupPrivateKey.length > 0 && !/^0x[0-9a-f]{64}$/iu.test(gasTopupPrivateKey)) ||
+    (gasTopupPrivateKey.length > 0 &&
+      gasTopupPrivateKey.toLowerCase() === custodyPrivateKey.toLowerCase()) ||
     parsedCommitmentOrigin.protocol !== "https:" ||
     parsedCommitmentOrigin.pathname !== "/" ||
     parsedCommitmentOrigin.search.length > 0 ||
@@ -248,10 +276,24 @@ function makeMegapotOptions(
   }
   return {
     environment: config.API_NEXT_ENV,
+    // Funding observation and the liveness projection run on a bounded session
+    // so that an interrupted transaction has a short, counted tail; see the
+    // cycle's deadlines.
+    ...(env.CONTROL_PLANE === undefined
+      ? {}
+      : {
+          boundedControlPlane: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
+            statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+            connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+            closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+          }),
+        }),
     workerVersion: env.CF_VERSION_METADATA,
     attestationId: config.MEGAPOT_ATTESTATION_ID,
     rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
     custodyPrivateKey,
+    retainedCustodyPrivateKeys: Redacted.value(config.MEGAPOT_RETAINED_CUSTODY_PRIVATE_KEYS),
+    gasTopupPrivateKey: gasTopupPrivateKey.length === 0 ? null : gasTopupPrivateKey,
     commitmentBucket: env.MEGAPOT_COMMITMENTS,
     commitmentPublicOrigin,
     requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
@@ -483,6 +525,7 @@ const runScheduledJob = Effect.fn("runScheduledJob")(function* <Failure, Require
   const runContext = {
     owner,
     attemptId: `${owner}:${job.name}`,
+    startedAtMs: Date.now(),
     lease: () => state.currentLease,
     adapterSafety: {
       markAbortedOrFenced: () => {
@@ -699,6 +742,8 @@ export function makeJobsWorkerDeclarations(
   }>,
   hnsRootHealthRenewalEnabled = false,
   avatars?: AvatarCleanupBuckets,
+  spacesReconciliation?: SpacesReconciliationComposition,
+  guestStudyRecovery?: GuestStudyRecoveryComposition,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [];
   if (communityMaintenanceEnabled) {
@@ -720,12 +765,32 @@ export function makeJobsWorkerDeclarations(
   }
   if (avatars) declarations.push(makeAvatarCleanupJob(sink, avatars));
   if (hnsRootHealthRenewalEnabled) declarations.push(makeHnsRootHealthRenewalJob(sink));
-  if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
-  if (learnerAudio !== undefined) {
-    declarations.push(makeStudySpokenAnswerRecoveryJob(sink, learnerAudio));
-  }
+  const megapotJob = megapot === null ? undefined : makeMegapotRewardsJob(sink, megapot);
+  const studyJob =
+    learnerAudio === undefined
+      ? undefined
+      : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
+  if (megapotJob !== undefined && studyJob !== undefined) {
+    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob));
+  } else if (megapotJob !== undefined) declarations.push(megapotJob);
+  else if (studyJob !== undefined) declarations.push(studyJob);
   if (karaokeFinalization !== undefined) {
     declarations.push(makeKaraokeFinalizationRecoveryJob(sink, karaokeFinalization.namespace));
+  }
+  if (spacesReconciliation !== undefined) {
+    declarations.push(
+      makeSpacesReconciliationJob(sink, spacesReconciliation.store, spacesReconciliation.verifier, {
+        overdueThresholdSeconds: spacesReconciliation.overdueThresholdSeconds,
+        measurementReference: spacesReconciliation.measurementReference,
+      }),
+      makeSpacesRootObservationJob(
+        sink,
+        spacesReconciliation.rootObservation.targets,
+        spacesReconciliation.rootObservation.observer,
+        spacesReconciliation.rootObservation.saleNamespaces,
+      ),
+      makeSpacesRouteRenewalJob(sink, spacesReconciliation.renewRoutes),
+    );
   }
   return declarations;
 }
@@ -785,6 +850,12 @@ export default {
             return { namespace: env.KARAOKE_ATTEMPT };
           })()
         : undefined;
+    const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
+    const spacesReconciliation = makeSpacesReconciliationComposition(
+      env,
+      runtime,
+      config.API_NEXT_ENV,
+    );
     const declarations = makeJobsWorkerDeclarations(
       sink,
       rpcUrl,
@@ -802,10 +873,12 @@ export default {
             return { ingress: env.AVATAR_INGRESS, sealed: env.AVATAR_SEALED };
           })()
         : undefined,
+      spacesReconciliation,
     );
+    const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
+    if (renewal !== null) declarations.push(renewal);
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
-    const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
     const mediaMaintenance = makeMediaMaintenance(env, runtime);
     const dataRegistrationMaintenance = makeDataRegistrationMaintenance(env, runtime);
     const danceReferenceMaintenance = makeDanceReferenceMaintenance(env, runtime);

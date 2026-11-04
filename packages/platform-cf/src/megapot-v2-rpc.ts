@@ -87,8 +87,32 @@ export function findMegapotV2ClaimRevert(value: unknown): MegapotV2ClaimRevert |
   return null;
 }
 
+/** The provider's response at this client's receipt-read boundary, before canonical-chain proof.
+ * Sequences are per bounded client/transaction, never a claim about the first read ever. */
+export type MegapotReceiptReadObservation = Readonly<{
+  rpcClientId: string;
+  clientReadSequence: number;
+  transactionReadSequence: number | null;
+  observedAt: string;
+  chainId: number;
+  attestationId: string;
+  requestedTransactionHash: string;
+  providerTransactionHash: string | null;
+  blockHash: string | null;
+  blockNumber: string | null;
+  result:
+    | "not_found"
+    | "provisional"
+    | "receipt_candidate"
+    | "invalid_response"
+    | "provider_failure";
+  failureReason: MegapotV2RpcFailed["reason"] | null;
+}>;
+
 export type MegapotV2RpcClientOptions = Readonly<{
   rpcUrl: string;
+  /** Synchronous best-effort observer; its failure cannot change RPC semantics. */
+  onReceiptRead?: (observation: MegapotReceiptReadObservation) => void;
   attestation: MegapotV2DeploymentAttestation;
   fetcher?: Fetcher;
   timeoutMs?: number;
@@ -107,6 +131,18 @@ export type MegapotV2FeeQuote = Readonly<{
   maxFeePerGas: bigint;
   observedBlockNumber: bigint;
   observedBlockHash: string;
+}>;
+
+/** A transaction as eth_getTransactionByHash returns it; unmined ones have no block. */
+export type MegapotV2Transaction = Readonly<{
+  transactionHash: string;
+  chainId: number | null;
+  from: string;
+  to: string | null;
+  nonce: bigint;
+  valueWei: bigint;
+  input: Hex;
+  blockNumber: bigint | null;
 }>;
 
 export interface MegapotV2RpcClient {
@@ -143,6 +179,10 @@ export interface MegapotV2RpcClient {
   readonly readUsdcAllowance: (owner: string, spender: string) => Promise<bigint>;
   readonly readTicketOwner: (ticketId: bigint, blockNumber?: bigint) => Promise<string>;
   readonly readPendingNonce: (account: string) => Promise<bigint>;
+  /** Mined transaction count at blockNumber, or at the latest block. Test doubles may omit it. */
+  readonly readTransactionCount?: (account: string, blockNumber?: bigint) => Promise<bigint>;
+  /** Any sender's transaction by hash, mined or not. Test doubles may omit it. */
+  readonly readTransaction?: (transactionHash: string) => Promise<MegapotV2Transaction | null>;
   readonly estimateGas: (input: {
     readonly from: string;
     readonly to: string;
@@ -153,6 +193,12 @@ export interface MegapotV2RpcClient {
   readonly sendRawTransaction: (signedTransaction: Hex) => Promise<string>;
   readonly readReceipt: (transactionHash: string) => Promise<MegapotTransactionReceipt | null>;
   readonly readHead: () => Promise<{
+    readonly blockNumber: bigint;
+    readonly blockHash: string;
+    readonly blockTimestamp?: bigint;
+  }>;
+  /** Finalized L2 block; a cancelled or reverted send may release a nonce only after this. */
+  readonly readFinalizedHead?: () => Promise<{
     readonly blockNumber: bigint;
     readonly blockHash: string;
     readonly blockTimestamp?: bigint;
@@ -270,7 +316,44 @@ function blockIdentity(value: unknown): {
   };
 }
 
-export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): MegapotV2RpcClient {
+export type MegapotV2FullRpcClient = MegapotV2RpcClient &
+  Required<
+    Pick<MegapotV2RpcClient, "readTransaction" | "readTransactionCount" | "readFinalizedHead">
+  >;
+
+function transactionFromRpc(value: unknown, requestedHash: string): MegapotV2Transaction {
+  const transaction = object(value);
+  const transactionHash = canonicalHash(transaction.hash);
+  if (transactionHash !== requestedHash) throw new MegapotV2RpcFailed("invalid-response");
+  let chainId: number | null = null;
+  if (transaction.chainId !== undefined && transaction.chainId !== null) {
+    const parsed = quantity(transaction.chainId);
+    if (parsed > BigInt(Number.MAX_SAFE_INTEGER)) throw new MegapotV2RpcFailed("invalid-response");
+    chainId = Number(parsed);
+  }
+  return {
+    transactionHash,
+    chainId,
+    from: canonicalAddress(transaction.from),
+    to:
+      transaction.to === null || transaction.to === undefined
+        ? null
+        : canonicalAddress(transaction.to),
+    nonce: quantity(transaction.nonce),
+    valueWei: quantity(transaction.value),
+    input: hexData(transaction.input),
+    blockNumber:
+      transaction.blockNumber === null || transaction.blockNumber === undefined
+        ? null
+        : quantity(transaction.blockNumber),
+  };
+}
+
+export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): MegapotV2FullRpcClient {
+  const rpcClientId = crypto.randomUUID();
+  let receiptReadSequence = 0;
+  const transactionReadSequences = new Map<string, number>();
+
   if (options.rpcUrl.trim().length === 0) throw new MegapotV2RpcFailed("invalid-config");
   const attestation = validateMegapotV2DeploymentAttestation(options.attestation);
   const timeoutMs = positiveBound(options.timeoutMs, MEGAPOT_V2_RPC_TIMEOUT_MS);
@@ -389,6 +472,8 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
   };
 
   const readHead = async () => blockIdentity(await rpc("eth_getBlockByNumber", ["latest", false]));
+  const readFinalizedHead = async () =>
+    blockIdentity(await rpc("eth_getBlockByNumber", ["finalized", false]));
 
   const performProductionDeploymentAttestation = async () => {
     const expectedImplementationAddress = attestation.usdcImplementationAddress;
@@ -575,6 +660,18 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       ),
     readPendingNonce: async (account) =>
       quantity(await rpc("eth_getTransactionCount", [canonicalAddress(account), "pending"])),
+    readTransactionCount: async (account, blockNumber) =>
+      quantity(
+        await rpc("eth_getTransactionCount", [
+          canonicalAddress(account),
+          blockNumber === undefined ? "latest" : quantityHex(blockNumber),
+        ]),
+      ),
+    readTransaction: async (transactionHash) => {
+      const requestedHash = canonicalHash(transactionHash);
+      const result = await rpc("eth_getTransactionByHash", [requestedHash]);
+      return result === null ? null : transactionFromRpc(result, requestedHash);
+    },
     estimateGas: async (input) =>
       quantity(
         await rpc("eth_estimateGas", [
@@ -606,49 +703,121 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
     sendRawTransaction: async (signedTransaction) =>
       canonicalHash(await rpc("eth_sendRawTransaction", [hexData(signedTransaction)])),
     readReceipt: async (transactionHash) => {
-      const result = await rpc("eth_getTransactionReceipt", [canonicalHash(transactionHash)]);
-      if (result === null) return null;
-      const receipt = object(result);
-      const receiptTransactionHash = canonicalHash(receipt.transactionHash);
-      const blockHash = canonicalHash(receipt.blockHash);
-      const blockNumber = quantity(receipt.blockNumber);
-      if (
-        receiptTransactionHash !== transactionHash.toLowerCase() ||
-        !Array.isArray(receipt.logs)
-      ) {
-        throw new MegapotV2RpcFailed("invalid-response");
-      }
-      const logs = receipt.logs.map((value) => {
-        const log = object(value);
-        if (log.removed === true) throw new MegapotV2RpcFailed("reorg");
-        const topics = Array.isArray(log.topics) ? log.topics.map(hexData) : [];
-        if (topics.length === 0) throw new MegapotV2RpcFailed("invalid-response");
-        return {
-          address: canonicalAddress(log.address),
-          topics: topics as [Hex, ...Hex[]],
-          data: hexData(log.data),
-          logIndex: Number(quantity(log.logIndex)),
-          transactionHash: canonicalHash(log.transactionHash),
-          blockHash: canonicalHash(log.blockHash),
-          blockNumber: quantity(log.blockNumber),
-          ...(log.removed === undefined ? {} : { removed: log.removed === true }),
-        };
-      });
-      if (logs.some((log) => !Number.isSafeInteger(log.logIndex))) {
-        throw new MegapotV2RpcFailed("invalid-response");
-      }
-      return {
-        chainId: attestation.chainId,
-        status: quantity(receipt.status) === 1n ? "success" : "reverted",
-        transactionHash: receiptTransactionHash,
-        from: canonicalAddress(receipt.from),
-        to: receipt.to === null ? null : canonicalAddress(receipt.to),
-        blockHash,
-        blockNumber,
-        logs,
+      const requestedTransactionHash = canonicalHash(transactionHash);
+      const clientReadSequence = ++receiptReadSequence;
+      const previous = transactionReadSequences.get(requestedTransactionHash);
+      // Saturation is explicit. Never evict and falsely label a later read as first.
+      const transactionReadSequence =
+        previous !== undefined || transactionReadSequences.size < 1024 ? (previous ?? 0) + 1 : null;
+      if (transactionReadSequence !== null)
+        transactionReadSequences.set(requestedTransactionHash, transactionReadSequence);
+      let providerTransactionHash: string | null = null;
+      let observedBlockHash: string | null = null;
+      let observedBlockNumber: string | null = null;
+      const observe = (
+        result: MegapotReceiptReadObservation["result"],
+        failureReason: MegapotV2RpcFailed["reason"] | null = null,
+      ) => {
+        try {
+          options.onReceiptRead?.({
+            rpcClientId,
+            clientReadSequence,
+            transactionReadSequence,
+            observedAt: new Date().toISOString(),
+            chainId: attestation.chainId,
+            attestationId: attestation.attestationId,
+            requestedTransactionHash,
+            providerTransactionHash,
+            blockHash: observedBlockHash,
+            blockNumber: observedBlockNumber,
+            result,
+            failureReason,
+          });
+        } catch {
+          /* Logging is best effort and cannot settle or fail a money effect. */
+        }
       };
+      try {
+        const result = await rpc("eth_getTransactionReceipt", [requestedTransactionHash]);
+        if (result === null) {
+          observe("not_found");
+          return null;
+        }
+        const receipt = object(result);
+        const receiptTransactionHash = canonicalHash(receipt.transactionHash);
+        providerTransactionHash = receiptTransactionHash;
+        if (typeof receipt.blockHash === "string" && /^0x[0-9a-f]{64}$/iu.test(receipt.blockHash))
+          observedBlockHash = receipt.blockHash.toLowerCase();
+        if (
+          typeof receipt.blockNumber === "string" &&
+          /^0x[0-9a-f]{1,64}$/iu.test(receipt.blockNumber)
+        )
+          observedBlockNumber = BigInt(receipt.blockNumber).toString();
+        if (receiptTransactionHash !== transactionHash.toLowerCase()) {
+          throw new MegapotV2RpcFailed("invalid-response");
+        }
+        // Some Base RPCs expose a preconfirmed receipt before its block is
+        // sealed. A zero or absent block hash cannot prove canonical inclusion.
+        // Leave the effect submitted and read the receipt again on the next pass.
+        if (
+          receipt.blockHash === null ||
+          receipt.blockHash === undefined ||
+          (typeof receipt.blockHash === "string" && /^0x0{64}$/iu.test(receipt.blockHash))
+        ) {
+          observe("provisional");
+          return null;
+        }
+        const blockHash = canonicalHash(receipt.blockHash);
+        const blockNumber = quantity(receipt.blockNumber);
+        observedBlockHash = blockHash;
+        observedBlockNumber = blockNumber.toString();
+        if (!Array.isArray(receipt.logs)) {
+          throw new MegapotV2RpcFailed("invalid-response");
+        }
+        const logs = receipt.logs.map((value) => {
+          const log = object(value);
+          if (log.removed === true) throw new MegapotV2RpcFailed("reorg");
+          const topics = Array.isArray(log.topics) ? log.topics.map(hexData) : [];
+          if (topics.length === 0) throw new MegapotV2RpcFailed("invalid-response");
+          return {
+            address: canonicalAddress(log.address),
+            topics: topics as [Hex, ...Hex[]],
+            data: hexData(log.data),
+            logIndex: Number(quantity(log.logIndex)),
+            transactionHash: canonicalHash(log.transactionHash),
+            blockHash: canonicalHash(log.blockHash),
+            blockNumber: quantity(log.blockNumber),
+            ...(log.removed === undefined ? {} : { removed: log.removed === true }),
+          };
+        });
+        if (logs.some((log) => !Number.isSafeInteger(log.logIndex))) {
+          throw new MegapotV2RpcFailed("invalid-response");
+        }
+        const parsed: MegapotTransactionReceipt = {
+          chainId: attestation.chainId,
+          status: quantity(receipt.status) === 1n ? "success" : "reverted",
+          transactionHash: receiptTransactionHash,
+          from: canonicalAddress(receipt.from),
+          to: receipt.to === null ? null : canonicalAddress(receipt.to),
+          blockHash,
+          blockNumber,
+          logs,
+        };
+        observe("receipt_candidate");
+        return parsed;
+      } catch (cause) {
+        const reason = cause instanceof MegapotV2RpcFailed ? cause.reason : "unavailable";
+        observe(
+          reason === "invalid-response" || reason === "reorg"
+            ? "invalid_response"
+            : "provider_failure",
+          reason,
+        );
+        throw cause;
+      }
     },
     readHead,
+    readFinalizedHead,
     readBlock: async (blockNumber) => {
       if (blockNumber < 0n) throw new MegapotV2RpcFailed("invalid-config");
       const identity = blockIdentity(

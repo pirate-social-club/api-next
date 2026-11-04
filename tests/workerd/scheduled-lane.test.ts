@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 
 import { env as testEnv } from "cloudflare:test";
-import { ControlPlaneDb } from "@pirate/application";
+import { ControlPlaneDb, ControlPlaneTransactionOutcomeUnknown } from "@pirate/application";
 import type { PipelineLogFields } from "@pirate/platform-cf";
 import { Cause, Effect, Exit, Layer, Option, Schedule } from "effect";
 import { describe, expect, it } from "vitest";
@@ -165,44 +165,89 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     expect(recovery?.requiresAdapterSafety).toBe(true);
   });
 
-  it("emits a persisted alert when expired spoken-answer object absence is unconfirmed", async () => {
+  it("alerts and stops later recovery when the closed-checkpoint transaction outcome is unknown", async () => {
     const logs: PipelineLogFields[] = [];
     const sink = { log: (_event: string, fields: PipelineLogFields) => logs.push(fields) };
-    const db = {
+    const failure = new ControlPlaneTransactionOutcomeUnknown({
+      phase: "commit",
+      label: "account-spoken.recovery.closed-checkpoints",
+      limitMs: 3000,
+      elapsedMs: 3000,
+    });
+    let transactions = 0;
+    let outsideTransactionReads = 0;
+    let bucketCalls = 0;
+    let guestCalls = 0;
+    let expiryCalls = 0;
+    let cleanupCalls = 0;
+    // This scheduled-runner fixture injects uncertainty at the Account
+    // transaction boundary. It does not simulate native PostgreSQL COMMIT.
+    const db: ControlPlaneDb["Service"] = {
       execute: () =>
-        Effect.succeed({
-          rows: [
-            {
-              command_id: "command-1",
-              account_id: "account-1",
-              learner_audio_artifact_id: "artifact-1",
-              expected_object_ref: "learner-audio/study/attempt-1/digest-1",
-            },
-          ],
-          rowCount: 1,
-        }),
-      withTransaction: () => Effect.die("storage failure must not reach finalization"),
-    } as unknown as ControlPlaneDb["Service"];
+        Effect.sync(() => {
+          outsideTransactionReads++;
+        }).pipe(Effect.andThen(Effect.die("recovery reads must remain transactional"))),
+      withTransaction: () =>
+        Effect.sync(() => {
+          transactions++;
+        }).pipe(Effect.andThen(Effect.fail(failure))),
+    };
     const job = {
-      ...makeStudySpokenAnswerRecoveryJob(sink, {
-        delete: async () => {
-          throw new Error("R2 unavailable");
+      ...makeStudySpokenAnswerRecoveryJob(
+        sink,
+        {
+          delete: async () => {
+            bucketCalls++;
+            throw new Error("registration bucket must not perform recovery I/O");
+          },
+          head: async () => {
+            bucketCalls++;
+            throw new Error("registration bucket must not perform recovery I/O");
+          },
         },
-        head: async () => null,
-      }),
+        () => ({
+          closed: Effect.sync(() => {
+            guestCalls++;
+            return { examined: 0, completed: 0, pending: 0, skipped: 0 };
+          }),
+          releaseNext: () =>
+            Effect.sync(() => {
+              expiryCalls++;
+              return { state: "idle" as const };
+            }),
+          maximumReleases: 4,
+          ephemeralCleanup: Effect.sync(() => {
+            cleanupCalls++;
+          }),
+        }),
+      ),
       lane: "workerd-study-spoken-answer-recovery-alert",
     };
 
-    const result = await handleScheduled(env, job.lane, job, Date.now(), {
-      runtime: Layer.succeed(ControlPlaneDb, db),
-    });
+    const result = await Effect.runPromise(
+      Effect.exit(
+        runScheduled(env, job.lane, job, Date.now(), {
+          runtime: Layer.succeed(ControlPlaneDb, db),
+        }),
+      ),
+    );
 
-    expect(result.acquired).toBe(true);
+    expect(Exit.isFailure(result)).toBe(true);
+    if (Exit.isFailure(result)) {
+      const error = Cause.findErrorOption(result.cause);
+      expect(Option.isSome(error) ? error.value : undefined).toBe(failure);
+    }
+    expect(transactions).toBe(1);
+    expect(outsideTransactionReads).toBe(0);
+    expect(bucketCalls).toBe(0);
+    expect(guestCalls).toBe(0);
+    expect(expiryCalls).toBe(0);
+    expect(cleanupCalls).toBe(0);
     expect(logs).toHaveLength(1);
     expect(logs[0]).toMatchObject({
       event: "pipeline.alert",
-      key: "study-spoken-answer-recovery:storage-failure",
-      severity: "medium",
+      key: "jobs:transaction-outcome-unknown",
+      severity: "high",
       count: 1,
     });
   });
@@ -237,6 +282,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
         attestationId: "megapot-base-sepolia-v2",
         rpcUrl: "https://megapot-rpc.test/",
         custodyPrivateKey: `0x${"1".repeat(64)}`,
+        gasTopupPrivateKey: null,
         commitmentBucket: {
           get: async () => null,
           put: async () => ({ uploaded: new Date() }),
@@ -332,6 +378,47 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     ]) {
       expect(binding in workerEnv).toBe(false);
     }
+  });
+
+  it("Telegram's real database setup failure does not abort later scheduled work", async () => {
+    const waits: Promise<unknown>[] = [];
+    const workerEnv = scheduledWorkerEnv({
+      CONTROL_PLANE: { connectionString: "postgres://fixture:fixture@127.0.0.1:1/fixture" },
+      TELEGRAM_CONFIG_JSON: JSON.stringify({
+        version: 1,
+        enabled: true,
+        linking_enabled: false,
+        practice_enabled: false,
+        public_origin: "https://pirate.test",
+        webhook_origin: "https://api.test",
+        credential_active_version: "fixture",
+      }),
+      TELEGRAM_SECRETS_JSON: JSON.stringify({ version: 1, credential_keys: {} }),
+      TELEGRAM_QUEUE: {
+        send: async () => {
+          throw Error("Unsafe Telegram must not run");
+        },
+      },
+    });
+    await jobsWorker.scheduled(nonDueScheduledEvent, workerEnv, recordingContext(waits));
+    // waitUntil is after Telegram setup and all remaining maintenance/snapshot scheduling.
+    expect(waits).toHaveLength(1);
+    await expect(Promise.all(waits)).resolves.toBeDefined();
+    let retries = 0;
+    await jobsWorker.queue(
+      {
+        queue: "pirate-community-telegram-fixture",
+        messages: [],
+        retryAll: () => {
+          retries++;
+        },
+        ackAll: () => {
+          throw Error("Unavailable Telegram must never acknowledge work");
+        },
+      } as unknown as MessageBatch<unknown>,
+      workerEnv,
+    );
+    expect(retries).toBe(1);
   });
 
   it("does not query song outbox alerts when both media runtimes are disabled", async () => {

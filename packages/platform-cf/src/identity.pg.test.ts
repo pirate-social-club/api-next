@@ -166,7 +166,7 @@ suite("Postgres 17 identity repository", () => {
     completedTestCount += 1;
   });
 
-  test("fences concurrent registration to one credential, account, and handle", async () => {
+  test("fences concurrent registration without creating or rewriting age assertions", async () => {
     await withSchema(async (connection, admin) => {
       await apply(connection);
       const repository = makeControlPlaneIdentityRepository();
@@ -181,11 +181,6 @@ suite("Postgres 17 identity repository", () => {
                 providerSubject: "did:privy:concurrent",
                 credentialId: `credential-${suffix}`,
                 userId: `user-${suffix}`,
-                minimumAgeAttestation: {
-                  version: "minimum-age-attestation-v1",
-                  minimum_age: 16,
-                  affirmed: true,
-                },
                 account: account(
                   `user-${suffix}`,
                   `handle-${suffix}`,
@@ -210,11 +205,31 @@ suite("Postgres 17 identity repository", () => {
         readonly users: string;
         readonly handles: string;
         readonly credentials: string;
+        readonly attestations: string;
       }>(`SELECT
             (SELECT count(*) FROM users)::text AS users,
             (SELECT count(*) FROM public_handle_index)::text AS handles,
-            (SELECT count(*) FROM identity_credentials)::text AS credentials`);
-      expect(counts.rows[0]).toEqual({ users: "1", handles: "0", credentials: "1" });
+            (SELECT count(*) FROM identity_credentials)::text AS credentials,
+            (SELECT count(*) FROM account_minimum_age_attestations)::text AS attestations`);
+      expect(counts.rows[0]).toEqual({
+        users: "1",
+        handles: "0",
+        credentials: "1",
+        attestations: "0",
+      });
+      expect((await register("a")).kind).toBe("already_registered");
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM account_minimum_age_attestations"))
+          .rows[0]?.n,
+      ).toBe(0);
+
+      const historical = await admin.query(
+        "INSERT INTO account_minimum_age_attestations(account_id,version,minimum_age,affirmed) VALUES($1,'minimum-age-attestation-v1',16,true) RETURNING *",
+        [canonicalIds[0]],
+      );
+      expect((await register("a")).kind).toBe("already_registered");
+      const afterReplay = await admin.query("SELECT * FROM account_minimum_age_attestations");
+      expect(afterReplay.rows).toEqual(historical.rows);
     });
     completedTestCount += 1;
   });

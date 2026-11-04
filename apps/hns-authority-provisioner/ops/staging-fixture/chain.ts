@@ -5,6 +5,7 @@ import {
   type HnsRootDelegationDsV1,
   hnsObservedResourceMatchesEncodedPlanV1,
   hsdSafeCommitmentHeightV1,
+  validateHnsRootResourceRecordsV1,
 } from "@pirate/application/namespace-ownership";
 import { makeHsdRootResourceObserver } from "@pirate/platform-cf/namespace-ownership-hns-root-resource-observer";
 import { Schema } from "effect";
@@ -17,6 +18,10 @@ import {
   hsdRegtestWalletUrl,
   requireHsdRegtestChain,
 } from "../../../../packages/platform-cf/src/hns-regtest-node.pg-fixture.ts";
+import type {
+  HnsAuthorityProvisionOutput,
+  HnsAuthorityProvisionPorts,
+} from "../../src/provision-root.ts";
 
 const Ds = Schema.Struct({
   type: Schema.Literal("DS"),
@@ -70,6 +75,9 @@ export async function publishFixtureResource(
   root: string,
   challenge: string,
   ds: readonly HnsRootDelegationDsV1[],
+  prepare?: (
+    observe: HnsAuthorityProvisionPorts["observe_current_resource"],
+  ) => Promise<HnsAuthorityProvisionOutput>,
 ) {
   await requireHsdRegtestChain();
   // getwalletinfo has no network field. Read the existing public receive address
@@ -110,13 +118,29 @@ export async function publishFixtureResource(
   const before = await observe(root, "current");
   assert.equal(before.kind, "observed");
   if (before.kind !== "observed") throw new Error("Registered fixture is unobservable");
-  const plan = await buildHnsRootImportPublishPlanV1({
+  const expectedPlan = await buildHnsRootImportPublishPlanV1({
     current_records: before.observation.records,
     challenge_txt_value: challenge,
     ds_records: ds,
   });
+  const prepared = await prepare?.((label) => {
+    assert.equal(label, root, "Provisioner may only observe this fixture root");
+    return observe(label, "current");
+  });
+  const plan =
+    prepared === undefined
+      ? expectedPlan
+      : Schema.decodeUnknownSync(
+          Schema.Struct({
+            replacement_records: Schema.Array(Schema.Unknown),
+            encoded_resource_sha256: Schema.String,
+          }),
+        )(JSON.parse(new TextDecoder().decode(prepared.publish_plan_bytes)));
+  const records = validateHnsRootResourceRecordsV1(plan.replacement_records);
+  assert.equal(plan.encoded_resource_sha256, expectedPlan.encoded_resource_sha256);
+  assert.ok(await hnsObservedResourceMatchesEncodedPlanV1(records, plan.encoded_resource_sha256));
   const update = Schema.decodeUnknownSync(Update)(
-    await hsdRegtestWallet("sendupdate", [root, { records: plan.replacement_records }]),
+    await hsdRegtestWallet("sendupdate", [root, { records }]),
   );
   assert.ok(
     update.outputs.some((output) => output.covenant.action === "UPDATE"),
@@ -162,6 +186,7 @@ export async function publishFixtureResource(
         safe_height: safe.observation.tip_height,
         commitment: safe.observation.commitment,
         encoded_resource_sha256: plan.encoded_resource_sha256,
+        provisioner_plan_sha256: prepared?.publish_plan_sha256 ?? null,
       },
     };
   }

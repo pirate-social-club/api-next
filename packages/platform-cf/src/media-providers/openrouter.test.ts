@@ -22,6 +22,7 @@ import {
   buildOpenRouterClassifierRequest,
   makeOpenRouterClassifierAdapter,
   OPENROUTER_CLASSIFIER_ENDPOINT,
+  type OpenRouterAttemptEvidence,
   type OpenRouterResponseBody,
   type OpenRouterTransportRequest,
   type OpenRouterTransportResponse,
@@ -204,6 +205,212 @@ describe("OpenRouter classifier scaffold", () => {
         configured(() => response(unboundedMetadataResponse)).classify(classifierInput, {
           signal: new AbortController().signal,
         }),
+      ),
+    ).toBe("malformed_response");
+  });
+
+  test("accepts bounded nullable response service tiers without accepting malformed tiers", async () => {
+    for (const service_tier of ["upstream-new-tier", "x".repeat(256), null]) {
+      const evidence: OpenRouterAttemptEvidence[] = [];
+      const result = await Effect.runPromise(
+        configured(() => response({ ...validProviderResponse, service_tier }), {
+          evidence_sink: (value: OpenRouterAttemptEvidence) => evidence.push(value),
+        }).classify(classifierInput, { signal: new AbortController().signal }),
+      );
+      expect(result.status).toBe("classified");
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]).not.toHaveProperty("failure_stage");
+    }
+    for (const service_tier of ["", "x".repeat(257), 1, [], {}]) {
+      const evidence: OpenRouterAttemptEvidence[] = [];
+      expect(
+        await failureTag(
+          configured(() => response({ ...validProviderResponse, service_tier }), {
+            evidence_sink: (value: OpenRouterAttemptEvidence) => evidence.push(value),
+          }).classify(classifierInput, { signal: new AbortController().signal }),
+        ),
+      ).toBe("malformed_response");
+      expect(evidence[0]?.failure_stage).toBe("envelope_schema");
+    }
+  });
+
+  test("records only the closed failure boundary after successful HTTP status", async () => {
+    const validModel = JSON.parse(validProviderResponse.choices[0].message.content);
+    const cases: readonly {
+      stage: NonNullable<OpenRouterAttemptEvidence["failure_stage"]>;
+      tag: string;
+      transport: () => OpenRouterTransportResponse;
+    }[] = [
+      {
+        stage: "response_headers",
+        tag: "malformed_response",
+        transport: () => response(validProviderResponse, 200, { "content-type": "text/plain" }),
+      },
+      {
+        stage: "response_body",
+        tag: "malformed_response",
+        transport: () => response("x".repeat(10_001)),
+      },
+      {
+        stage: "response_json",
+        tag: "malformed_response",
+        transport: () => response("{invalid JSON"),
+      },
+      {
+        stage: "envelope_schema",
+        tag: "malformed_response",
+        transport: () => response(unknownRootFieldResponse),
+      },
+      {
+        stage: "response_identity",
+        tag: "ambiguous_result",
+        transport: () => response(identityMismatchResponse),
+      },
+      {
+        stage: "model_json",
+        tag: "unparseable_result",
+        transport: () =>
+          response({
+            ...validProviderResponse,
+            choices: [
+              {
+                ...validProviderResponse.choices[0],
+                message: { role: "assistant", content: "provider prose must not be logged" },
+              },
+            ],
+          }),
+      },
+      {
+        stage: "model_schema",
+        tag: "unparseable_result",
+        transport: () => response(modelResponse({})),
+      },
+      {
+        stage: "result_binding",
+        tag: "out_of_policy",
+        transport: () =>
+          response(
+            modelResponse({
+              ...validModel,
+              secondary_language_bcp47: validModel.primary_language_bcp47,
+            }),
+          ),
+      },
+    ];
+    for (const entry of cases) {
+      const evidence: OpenRouterAttemptEvidence[] = [];
+      expect(
+        await failureTag(
+          configured(entry.transport, {
+            evidence_sink: (value: OpenRouterAttemptEvidence) => evidence.push(value),
+          }).classify(classifierInput, { signal: new AbortController().signal }),
+        ),
+      ).toBe(entry.tag);
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]?.failure_stage).toBe(entry.stage);
+      expect(JSON.stringify(evidence)).not.toContain("provider prose must not be logged");
+      expect(JSON.stringify(evidence)).not.toContain("fixture-secret-key");
+    }
+    for (const transport of [
+      () => response(validProviderResponse, 503),
+      () => {
+        throw new Error("fixture-secret-key: transport failed");
+      },
+    ]) {
+      const evidence: OpenRouterAttemptEvidence[] = [];
+      expect(
+        await failureTag(
+          configured(transport, {
+            evidence_sink: (value: OpenRouterAttemptEvidence) => evidence.push(value),
+          }).classify(classifierInput, { signal: new AbortController().signal }),
+        ),
+      ).toBe("provider_unavailable");
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]).not.toHaveProperty("failure_stage");
+      expect(JSON.stringify(evidence)).not.toContain("fixture-secret-key");
+    }
+  });
+
+  test("omits hostile provider identity from evidence without changing classification", async () => {
+    const evidence: OpenRouterAttemptEvidence[] = [];
+    const result = await Effect.runPromise(
+      configured(
+        () =>
+          response({
+            ...validProviderResponse,
+            id: "completion-fixture-secret-key",
+            openrouter_metadata: {
+              ...validProviderResponse.openrouter_metadata,
+              endpoints: {
+                total: 1,
+                available: [
+                  {
+                    selected: true,
+                    provider: "FixtureProvider\nX-Secret: fixture-secret-key",
+                    model: "https://host.invalid/unsafe-provider-content",
+                  },
+                ],
+              },
+            },
+          }),
+        { evidence_sink: (value: OpenRouterAttemptEvidence) => evidence.push(value) },
+      ).classify(classifierInput, { signal: new AbortController().signal }),
+    );
+    expect(result.status).toBe("classified");
+    expect(evidence[0]).not.toHaveProperty("served_model");
+    expect(evidence[0]).not.toHaveProperty("selected_provider");
+    expect(evidence[0]).not.toHaveProperty("completion_id");
+    expect(evidence[0]).not.toHaveProperty("failure_stage");
+    expect(JSON.stringify(evidence)).not.toContain("fixture-secret-key");
+    expect(JSON.stringify(evidence)).not.toContain("unsafe-provider-content");
+    expect(JSON.stringify(evidence)).not.toContain("X-Secret");
+    expect(JSON.stringify(evidence)).not.toContain(classifierInput.accepted_lyrics.lyrics);
+  });
+
+  test("logs only configured provider identifiers including their display spelling", async () => {
+    for (const provider of ["Fixture Provider", "provider prose must not be logged"]) {
+      const evidence: OpenRouterAttemptEvidence[] = [];
+      const result = await Effect.runPromise(
+        configured(
+          () =>
+            response({
+              ...validProviderResponse,
+              openrouter_metadata: {
+                ...validProviderResponse.openrouter_metadata,
+                endpoints: {
+                  total: 1,
+                  available: [{ selected: true, provider, model: "fixture/model" }],
+                },
+              },
+            }),
+          { evidence_sink: (value: OpenRouterAttemptEvidence) => evidence.push(value) },
+        ).classify(classifierInput, { signal: new AbortController().signal }),
+      );
+      expect(result.status).toBe("classified");
+      if (provider === "Fixture Provider") expect(evidence[0]?.selected_provider).toBe(provider);
+      else expect(evidence[0]).not.toHaveProperty("selected_provider");
+      expect(JSON.stringify(evidence)).not.toContain("provider prose must not be logged");
+    }
+  });
+
+  test("a synchronous evidence sink failure cannot replace classification or rejection", async () => {
+    const evidence_sink = () => {
+      throw new Error("private logging failure");
+    };
+    expect(
+      (
+        await Effect.runPromise(
+          configured(() => response(validProviderResponse), {
+            evidence_sink,
+          }).classify(classifierInput, { signal: new AbortController().signal }),
+        )
+      ).status,
+    ).toBe("classified");
+    expect(
+      await failureTag(
+        configured(() => response(unknownRootFieldResponse), {
+          evidence_sink,
+        }).classify(classifierInput, { signal: new AbortController().signal }),
       ),
     ).toBe("malformed_response");
   });

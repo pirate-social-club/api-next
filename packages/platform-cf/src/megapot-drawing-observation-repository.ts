@@ -152,7 +152,7 @@ export function makeControlPlaneMegapotDrawingObservationRepository() {
                           usdc_implementation_code_hash, ticket_nft_code_hash,
                           attestation_block_number, attestation_block_hash, verified_at
                      FROM megapot_deployment_attestations
-                    WHERE attestation_id=$1 AND status='active'`,
+                    WHERE attestation_id=$1`,
             values: [attestationId],
             readonly: true,
           });
@@ -174,7 +174,7 @@ export function makeControlPlaneMegapotDrawingObservationRepository() {
               const authority = yield* transaction.execute<Row>({
                 label: "megapot-drawing-observation.attestation.lock",
                 text: `SELECT chain_id FROM megapot_deployment_attestations
-                        WHERE attestation_id=$1 AND status='active' FOR SHARE`,
+                        WHERE attestation_id=$1 FOR SHARE`,
                 values: [observation.attestationId],
                 readonly: false,
               });

@@ -161,7 +161,13 @@ function oneRow<RowType>(result: ControlPlaneResult<RowType>): RowType | null | 
   return result.rows[0] ?? null;
 }
 
-function plan(environment: string): unknown {
+/**
+ * The Very human-membership plan. Reward claims reuse it unchanged, including
+ * the community_join purpose: Very derives the subject from a per-purpose
+ * external nullifier, so any other purpose would give the same palm a second
+ * reward subject.
+ */
+export function veryHumanMembershipPlan(environment: string): unknown {
   return {
     method: VERY_WEB_METHOD,
     scope: {
@@ -456,7 +462,9 @@ export function makeCommunityJoinIntentResolver(
   environment: string,
   options: CommunityJoinIntentResolverOptions = {},
 ): VerificationIntentResolver {
-  const decodedPlan = Schema.decodeUnknownOption(VerificationProviderPlanInput)(plan(environment));
+  const decodedPlan = Schema.decodeUnknownOption(VerificationProviderPlanInput)(
+    veryHumanMembershipPlan(environment),
+  );
   if (!validEnvironment(environment) || Option.isNone(decodedPlan)) {
     return { resolve: () => Effect.fail(storageFailure()) };
   }

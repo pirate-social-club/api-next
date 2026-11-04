@@ -31,6 +31,58 @@ const record = (overrides: Partial<VideoAnalysisOutboxRecord> = {}): VideoAnalys
 });
 
 describe("video analysis Queue ingress", () => {
+  test("launches a persisted render continuation without returning to provider analysis", async () => {
+    const pending = record({ continuation: 1 });
+    const claimed = {
+      ...pending,
+      state: "launching" as const,
+      claimOwner: "render-worker",
+      claimFence: 1,
+      launchAttempts: 1,
+    };
+    const calls: string[] = [];
+    const runtime = {
+      store: {
+        getSubmissionByOperation: async () => ({
+          state: {
+            videoRevision: 1,
+            creationRevision: 1,
+            status: "processing",
+            phase: "render",
+            decision: { outcome: { kind: "publish" } },
+            video: { canonicalSha256: pending.canonicalVideoSha256 },
+          },
+        }),
+      },
+    } as unknown as VideoAnalysisRuntimeServices;
+    const outbox = {
+      get: async () => pending,
+      claim: async () => claimed,
+      markLaunched: async () => {
+        calls.push("launched");
+        return true;
+      },
+    } as unknown as VideoAnalysisOutboxStore;
+    expect(
+      await consumeVideoAnalysisQueueMessage(
+        { kind: "video_analysis", outbox_id: pending.effectIdentity },
+        {
+          outbox,
+          runtime,
+          launcher: {
+            ...launcher,
+            create: async () => {
+              calls.push("create");
+              return "created";
+            },
+          },
+          workerId: "render-worker",
+        },
+      ),
+    ).toEqual({ disposition: "ack" });
+    expect(calls).toEqual(["create", "launched"]);
+  });
+
   test("a database failure after accepted create does not enter the create retry budget", async () => {
     const claimed = record({
       state: "launching",

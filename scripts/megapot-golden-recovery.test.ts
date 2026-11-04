@@ -52,6 +52,7 @@ for (const drawingId of [null, "101"]) {
         throw new Error("Unexpected mutation/provider/preflight call");
       };
       const deps: NonNullable<Parameters<typeof runMultiGolden>[2]> = {
+        adopt: async () => {},
         now: () => rehearsalTime + 30 * 60000,
         sleep: forbidden,
         readArtifact: forbidden,

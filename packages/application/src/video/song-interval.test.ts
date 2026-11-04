@@ -3,6 +3,7 @@ import {
   BadRequest,
   Conflict,
   EligibilityFailed,
+  IdempotencyConflict,
   NotFound,
   RetryableConflict,
   VideoUploadReservationV1,
@@ -34,6 +35,7 @@ import {
   type SongOwnerVideoPolicy,
   type SongVideoIntervalServices,
   type SongVideoIntervalStore,
+  type SongVideoPcmReferenceStore,
 } from "./song-interval.ts";
 
 const SECOND = SONG_VIDEO_SAMPLE_RATE_HZ;
@@ -106,13 +108,52 @@ function contentStoreFor(access: Access = "readable", songCommunity = "community
 const intervalServices = (
   store: SongVideoIntervalStore,
   access: Access = "readable",
+  pcmReference?: SongVideoPcmReferenceStore,
 ): SongVideoIntervalServices => ({
   store,
   contentStore: contentStoreFor(access).contentStore,
   measuringRetryAfterMs: 1_500,
+  ...(pcmReference === undefined ? {} : { pcmReference }),
+});
+
+const pcmReference = (ready: () => boolean): SongVideoPcmReferenceStore => ({
+  getReady: async (target, durationSamples) =>
+    ready()
+      ? {
+          songPostId: target.songPostId,
+          audioRevision: target.audioRevision,
+          canonicalAudioSha256: target.canonicalAudioSha256,
+          durationSamples,
+          objectKey: "song-video-pcm/song-r3.pcm",
+          objectVersion: "version-r3",
+          objectEtag: "etag-r3",
+          pcmSha256: "c".repeat(64),
+          byteLength: durationSamples * 4,
+          decoderRecipe: "pinned-ffmpeg-6.1.1",
+        }
+      : null,
 });
 
 describe("song-video interval preflight", () => {
+  test("keeps a measured song out of video until its exact PCM reference is ready", async () => {
+    const { store } = songStore();
+    let ready = false;
+    const services = intervalServices(
+      store,
+      "readable",
+      pcmReference(() => ready),
+    );
+    const input = { communityId: "community_video", actor, body: { song_post_id: "post_song" } };
+    expect(await preflightSongVideoInterval(input, services)).toEqual({
+      state: "measuring",
+      song_post_id: "post_song",
+      audio_revision: 3,
+      retry_after_ms: 1_500,
+    });
+    ready = true;
+    expect((await preflightSongVideoInterval(input, services)).state).toBe("ready");
+  });
+
   test("answers with the canonical song's own revision and probed duration", async () => {
     const { store } = songStore();
     const result = await preflightSongVideoInterval(
@@ -125,10 +166,10 @@ describe("song-video interval preflight", () => {
       audio_revision: 3,
       canonical_duration_samples: 214 * SECOND,
       interval_policy: {
-        policy_revision: 1,
+        policy_revision: 2,
         sample_rate_hz: 48_000,
         min_clip_duration_samples: 3 * SECOND,
-        max_clip_duration_samples: 180 * SECOND,
+        max_clip_duration_samples: 15 * SECOND,
       },
       interval: null,
     });
@@ -150,13 +191,13 @@ describe("song-video interval preflight", () => {
       );
       return result.state === "ready" ? result.interval : null;
     };
-    expect(await verdict(184 * SECOND, 30 * SECOND)).toEqual({ accepted: true });
-    expect(await verdict(184 * SECOND + 1, 30 * SECOND)).toEqual({
+    expect(await verdict(199 * SECOND, 15 * SECOND)).toEqual({ accepted: true });
+    expect(await verdict(199 * SECOND + 1, 15 * SECOND)).toEqual({
       accepted: false,
       reason: "canonical_song_interval_uncovered",
     });
     expect(await verdict(0, 2 * SECOND)).toEqual({ accepted: false, reason: "interval_too_short" });
-    expect(await verdict(0, 181 * SECOND)).toEqual({
+    expect(await verdict(0, 16 * SECOND)).toEqual({
       accepted: false,
       reason: "interval_too_long",
     });
@@ -241,7 +282,7 @@ const songBody = {
   selected_from: { kind: "library" as const },
   audio_revision: 3,
   clip_start_samples: 40 * SECOND,
-  clip_duration_samples: 45 * SECOND,
+  clip_duration_samples: 12 * SECOND,
 };
 
 describe("viewer access to the source song", () => {
@@ -327,8 +368,8 @@ describe("freezing the render plan at reservation", () => {
       songDurationSamples: 214 * SECOND,
       songAssetId: "asset_song_r3",
       clipStartSamples: 40 * SECOND,
-      clipDurationSamples: 45 * SECOND,
-      intervalPolicyRevision: 1,
+      clipDurationSamples: 12 * SECOND,
+      intervalPolicyRevision: 2,
       ownerPolicyRevision: 2,
       ownerPolicyHash: "b".repeat(64),
       derivativeVideo: "allowed",
@@ -357,7 +398,7 @@ describe("freezing the render plan at reservation", () => {
         actor,
         body: {
           song_post_id: "post_song",
-          interval: { clip_start_samples: 40 * SECOND, clip_duration_samples: 45 * SECOND },
+          interval: { clip_start_samples: 40 * SECOND, clip_duration_samples: 12 * SECOND },
         },
       },
       intervalServices(world.store),
@@ -380,7 +421,7 @@ describe("freezing the render plan at reservation", () => {
   test("refuses an interval the canonical song cannot cover", async () => {
     const error = await freeze(songStore().store, {
       ...songBody,
-      clip_start_samples: 214 * SECOND - 45 * SECOND + 1,
+      clip_start_samples: 214 * SECOND - 12 * SECOND + 1,
     }).catch((e) => e);
     expect(error).toBeInstanceOf(BadRequest);
     expect(error.details).toEqual({ reason_code: "canonical_song_interval_uncovered" });
@@ -425,6 +466,9 @@ function videoServices(input: {
   reservation?: VideoReservationRecord;
   frozen?: FrozenSongReservationPlan;
   submissions?: Parameters<VideoPublicationStore["createSubmission"]>[0][];
+  multipart?: VideoPublicationServices["multipart"];
+  replayStart?: VideoPublicationStore["replaySubmissionStart"];
+  reservationReads?: { count: number };
 }): VideoPublicationServices {
   const unused = async (): Promise<never> => {
     throw new Error("unused video publication method");
@@ -432,12 +476,18 @@ function videoServices(input: {
   const store = new Proxy({} as VideoPublicationStore, {
     get: (_target, key) => {
       if (key === "replayReservation") return async () => ({ kind: "none" });
+      if (key === "replaySubmissionStart")
+        return input.replayStart ?? (async () => ({ kind: "none" }));
       if (key === "createReservation")
         return async (value: Parameters<VideoPublicationStore["createReservation"]>[0]) => {
           input.created?.push(value);
           return { kind: "none" };
         };
-      if (key === "getReservationForAccount") return async () => input.reservation ?? null;
+      if (key === "getReservationForAccount")
+        return async () => {
+          if (input.reservationReads) input.reservationReads.count += 1;
+          return input.reservation ?? null;
+        };
       if (key === "getReservationSongPlan") return async () => input.frozen ?? null;
       if (key === "createSubmission")
         return async (value: Parameters<VideoPublicationStore["createSubmission"]>[0]) => {
@@ -449,7 +499,7 @@ function videoServices(input: {
   });
   return {
     store,
-    multipart: {
+    multipart: input.multipart ?? {
       create: async () => ({
         uploadId: "upload_song_video",
         partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
@@ -490,6 +540,33 @@ function videoServices(input: {
 }
 
 describe("song-reference reservation through the request path", () => {
+  test("rechecks PCM readiness after preflight and creates no upload when it disappeared", async () => {
+    const created: Parameters<VideoPublicationStore["createReservation"]>[0][] = [];
+    const { store } = songStore();
+    let ready = true;
+    const services = intervalServices(
+      store,
+      "readable",
+      pcmReference(() => ready),
+    );
+    expect(
+      (
+        await preflightSongVideoInterval(
+          { communityId: "community_video", actor, body: { song_post_id: "post_song" } },
+          services,
+        )
+      ).state,
+    ).toBe("ready");
+    ready = false;
+    await expect(
+      reserveVideoUpload(
+        { communityId: "community_video", actor, body: songBody },
+        videoServices({ songInterval: services, created }),
+      ),
+    ).rejects.toMatchObject({ details: { reason_code: "pcm_reference_pending" } });
+    expect(created).toHaveLength(0);
+  });
+
   test("stays an unavailable capability wherever song-backed video is not composed", async () => {
     const error = await reserveVideoUpload(
       { communityId: "community_video", actor, body: songBody },
@@ -525,7 +602,7 @@ describe("song-reference reservation through the request path", () => {
       },
       interval: {
         clip_start_samples: 40 * SECOND,
-        clip_duration_samples: 45 * SECOND,
+        clip_duration_samples: 12 * SECOND,
         song_duration_samples: 214 * SECOND,
       },
     });
@@ -547,6 +624,305 @@ describe("song-reference reservation through the request path", () => {
       ),
     ).rejects.toBeInstanceOf(RetryableConflict);
     expect(created).toHaveLength(0);
+  });
+
+  test("issues a fixed-count multipart reservation for a song video and preserves its snapshot", async () => {
+    const created: Parameters<VideoPublicationStore["createReservation"]>[0][] = [];
+    const base = videoServices({ songInterval: intervalServices(songStore().store), created });
+    const response = await reserveVideoUpload(
+      { communityId: "community_video", actor, body: songBody },
+      {
+        ...base,
+        multipart: {
+          ...base.multipart,
+          create: async ({ partCount, partSizeBytes }) => ({
+            uploadId: "upload-one",
+            partCount,
+            partSizeBytes,
+            expiresAt: "2026-09-10T13:00:00.000Z",
+            parts: Array.from({ length: partCount }, (_, index) => ({
+              partNumber: index + 1,
+              url: `https://upload.invalid/part/${index + 1}`,
+              expiresAt: "2026-09-10T13:00:00.000Z",
+            })),
+          }),
+        },
+      },
+    );
+    // The reservation's own deadline comes from its declared size, apart from
+    // each part URL's expiry.
+    expect(response.upload.expires_at).toBe("2026-09-10T13:05:21.000Z");
+    expect(response.upload.part_count).toBe(2);
+    expect(response.upload.part_size_bytes).toBe(VIDEO_MULTIPART_PART_SIZE_BYTES);
+    expect(response.upload.parts[0]?.expires_at).toBe("2026-09-10T13:00:00.000Z");
+    expect(response.author_persona_id).toBe("persona_video");
+    expect(created[0]?.record).toMatchObject({
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      uploadId: "upload-one",
+      partCount: 2,
+      state: "issued",
+    });
+  });
+
+  test.each([
+    ["missing", undefined, null],
+    ["empty", "", null],
+    ["whitespace", "  \n ", null],
+    ["present", "A caption", "A caption"],
+  ] as const)("a %s caption on a song video is stored as %p", async (label, caption, stored) => {
+    const reservation: VideoReservationRecord = {
+      reservationId: "media-reservation-song",
+      communityId: "community_video",
+      intent: "song_reference",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload_song_video",
+      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+      partCount: 2,
+      expiresAt: "2026-09-10T13:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const frozen: FrozenSongReservationPlan = {
+      songPostId: "post_song",
+      audioRevision: 3,
+      canonicalAudioSha256: "d".repeat(64),
+      songDurationSamples: 214 * SECOND,
+      songAssetId: "asset_song",
+      clipStartSamples: 12 * SECOND,
+      clipDurationSamples: 9 * SECOND,
+      intervalPolicyRevision: 1,
+      ownerPolicyRevision: 2,
+      ownerPolicyHash: "e".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const submissions: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+    await createVideoSubmission(
+      {
+        communityId: "community_video",
+        actor,
+        body: {
+          persona_id: persona.persona_id,
+          version: "video-start-input-v1",
+          video_reservation_id: reservation.reservationId,
+          idempotency_key: `create-song-video-${label}`,
+          ...(caption === undefined ? {} : { caption }),
+        },
+      },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen,
+        submissions,
+      }),
+    );
+    expect(submissions[0]?.state.caption).toBe(stored);
+  });
+
+  describe("a start whose answer was lost", () => {
+    const issued: VideoReservationRecord = {
+      reservationId: "media-reservation-song",
+      communityId: "community_video",
+      intent: "song_reference",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload_song_video",
+      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+      partCount: 2,
+      expiresAt: "2026-09-10T13:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const frozen: FrozenSongReservationPlan = {
+      songPostId: "post_song",
+      audioRevision: 3,
+      canonicalAudioSha256: "d".repeat(64),
+      songDurationSamples: 214 * SECOND,
+      songAssetId: "asset_song",
+      clipStartSamples: 12 * SECOND,
+      clipDurationSamples: 9 * SECOND,
+      intervalPolicyRevision: 1,
+      ownerPolicyRevision: 2,
+      ownerPolicyHash: "e".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const startBody = {
+      persona_id: persona.persona_id,
+      version: "video-start-input-v1",
+      video_reservation_id: issued.reservationId,
+      caption: "danced to a song",
+      idempotency_key: "start-lost-answer",
+    };
+    const claimed: VideoReservationRecord = {
+      ...issued,
+      state: "claimed",
+      submissionId: "media-submission-first",
+      operationId: "media-operation-first",
+    };
+
+    /** The accepted first start, and a store read that behaves as the real one. */
+    async function accepted() {
+      const submissions: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      const first = await createVideoSubmission(
+        { communityId: "community_video", actor, body: startBody },
+        videoServices({
+          songInterval: intervalServices(songStore().store),
+          reservation: issued,
+          frozen,
+          submissions,
+        }),
+      );
+      const saved = submissions[0];
+      if (saved === undefined) throw new Error("the first start was not saved");
+      const lookups: Parameters<VideoPublicationStore["replaySubmissionStart"]>[0][] = [];
+      const replayStart: VideoPublicationStore["replaySubmissionStart"] = async (input) => {
+        lookups.push(input);
+        if (
+          input.communityId !== "community_video" ||
+          input.actorAccountId !== actor.userId ||
+          input.idempotencyKey !== saved.idempotencyKey
+        )
+          return { kind: "none" };
+        return input.requestHash === saved.requestHash
+          ? { kind: "replay", bytes: saved.responseBytes, entityId: saved.state.submissionId }
+          : { kind: "conflict", entityId: saved.state.submissionId };
+      };
+      return { first, saved, submissions, lookups, replayStart };
+    }
+
+    test("a retry after the reservation was claimed gets the saved answer and starts nothing", async () => {
+      const { first, saved, replayStart, lookups } = await accepted();
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      const reads = { count: 0 };
+      const replayed = await createVideoSubmission(
+        { communityId: "community_video", actor, body: startBody },
+        videoServices({
+          songInterval: intervalServices(songStore().store),
+          reservation: claimed,
+          frozen,
+          submissions: retries,
+          replayStart,
+          reservationReads: reads,
+        }),
+      );
+      expect(replayed).toEqual(first);
+      expect(retries).toHaveLength(0);
+      expect(reads.count).toBe(0);
+      expect(lookups[0]).toEqual({
+        communityId: "community_video",
+        actorAccountId: actor.userId,
+        idempotencyKey: saved.idempotencyKey,
+        requestHash: saved.requestHash,
+      });
+    });
+
+    test("a retry after the reservation expired gets the saved answer", async () => {
+      const { first, replayStart } = await accepted();
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      const replayed = await createVideoSubmission(
+        { communityId: "community_video", actor, body: startBody },
+        videoServices({
+          songInterval: intervalServices(songStore().store),
+          reservation: { ...claimed, state: "expired", expiresAt: "2026-09-10T11:00:00.000Z" },
+          frozen,
+          submissions: retries,
+          replayStart,
+        }),
+      );
+      expect(replayed).toEqual(first);
+      expect(retries).toHaveLength(0);
+    });
+
+    test("the same key with another body is an idempotency conflict and starts nothing", async () => {
+      const { replayStart } = await accepted();
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      for (const changed of [
+        { ...startBody, caption: "another caption" },
+        { ...startBody, video_reservation_id: "media-reservation-other" },
+      ]) {
+        await expect(
+          createVideoSubmission(
+            { communityId: "community_video", actor, body: changed },
+            videoServices({
+              songInterval: intervalServices(songStore().store),
+              reservation: claimed,
+              frozen,
+              submissions: retries,
+              replayStart,
+            }),
+          ),
+        ).rejects.toBeInstanceOf(IdempotencyConflict);
+      }
+      expect(retries).toHaveLength(0);
+    });
+
+    test("a concurrent retry that reads the claimed reservation replays on its second read", async () => {
+      const { first, replayStart } = await accepted();
+      // The retry's first read ran before the winning start committed; by the
+      // time it reads the reservation, the claim and the answer are both there.
+      let calls = 0;
+      const racing: VideoPublicationStore["replaySubmissionStart"] = async (input) => {
+        calls += 1;
+        return calls === 1 ? { kind: "none" } : replayStart(input);
+      };
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      const reads = { count: 0 };
+      const replayed = await createVideoSubmission(
+        { communityId: "community_video", actor, body: startBody },
+        videoServices({
+          songInterval: intervalServices(songStore().store),
+          reservation: claimed,
+          frozen,
+          submissions: retries,
+          replayStart: racing,
+          reservationReads: reads,
+        }),
+      );
+      expect(replayed).toEqual(first);
+      expect(calls).toBe(2);
+      expect(reads.count).toBe(1);
+      expect(retries).toHaveLength(0);
+    });
+
+    test("a claimed reservation with no saved start under this key is still refused", async () => {
+      const retries: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+      await expect(
+        createVideoSubmission(
+          { communityId: "community_video", actor, body: startBody },
+          videoServices({
+            songInterval: intervalServices(songStore().store),
+            reservation: claimed,
+            frozen,
+            submissions: retries,
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "Conflict" });
+      expect(retries).toHaveLength(0);
+    });
   });
 
   test("a song-reference reservation starts only the song-reference path, with its frozen plan", async () => {
@@ -636,6 +1012,81 @@ describe("song-reference reservation through the request path", () => {
       reason_code: "capability_unavailable",
       capability: "song_reference",
     });
+  });
+
+  test("an existing 30 second revision-1 reservation is still claimed after the 15 second rule", async () => {
+    const reservation: VideoReservationRecord = {
+      reservationId: "media-reservation-song-r1",
+      communityId: "community_video",
+      intent: "song_reference",
+      actorAccountId: actor.userId,
+      authorPersonaId: persona.persona_id,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      expectedSha256: null,
+      ingestPolicyRevision: 1,
+      uploadId: "upload_song_video",
+      partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+      partCount: 2,
+      expiresAt: "2026-09-10T13:00:00.000Z",
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: new Uint8Array([1]),
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    };
+    const frozen = (intervalPolicyRevision: number): FrozenSongReservationPlan => ({
+      songPostId: "post_song",
+      audioRevision: 3,
+      canonicalAudioSha256: "d".repeat(64),
+      songDurationSamples: 214 * SECOND,
+      songAssetId: "asset_song",
+      clipStartSamples: 20 * SECOND,
+      clipDurationSamples: 30 * SECOND,
+      intervalPolicyRevision,
+      ownerPolicyRevision: 2,
+      ownerPolicyHash: "e".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: "2026-09-10T12:00:00.000Z",
+    });
+    const body = {
+      persona_id: persona.persona_id,
+      version: "video-start-input-v1",
+      video_reservation_id: "media-reservation-song-r1",
+      idempotency_key: "create-song-video-r1",
+    };
+    const submissions: Parameters<VideoPublicationStore["createSubmission"]>[0][] = [];
+    const created = await createVideoSubmission(
+      { communityId: "community_video", actor, body },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen: frozen(1),
+        submissions,
+      }),
+    );
+    expect(created).toMatchObject({ intent: "song_reference", status: "processing" });
+    expect(submissions[0]?.state.songPlan).toMatchObject({
+      clipDurationSamples: 30 * SECOND,
+      intervalPolicyRevision: 1,
+    });
+    // A revision-2 reservation could never hold 30 seconds; a plan claiming
+    // one is refused rather than started.
+    const refused = await createVideoSubmission(
+      { communityId: "community_video", actor, body },
+      videoServices({
+        songInterval: intervalServices(songStore().store),
+        reservation,
+        frozen: frozen(2),
+        submissions: [],
+      }),
+    ).catch((e) => e);
+    expect(refused).toBeInstanceOf(Error);
+    expect(String(refused.message)).toContain("song-reference submission plan is invalid");
   });
 });
 

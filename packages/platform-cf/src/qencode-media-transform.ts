@@ -49,7 +49,8 @@ export type QencodeTaskQuery = Readonly<{
 
 export type QencodeOutput = Readonly<{
   kind: "audio" | "image" | "metadata";
-  userTag: string;
+  userTag: string | null;
+  systemTag?: string | null;
   url: string;
   outputFormat: string | null;
   mediaFacts: Readonly<{
@@ -216,18 +217,20 @@ function outputList(value: unknown, kind: QencodeOutput["kind"]): QencodeOutput[
   return value.flatMap((entry) => {
     if (!Predicate.isObject(entry) || Array.isArray(entry)) return [];
     const userTag = typeof entry.user_tag === "string" ? entry.user_tag : null;
+    const systemTag = typeof entry.tag === "string" ? entry.tag : null;
     const url = typeof entry.url === "string" ? entry.url : null;
     const meta = Predicate.isObject(entry.meta) && !Array.isArray(entry.meta) ? entry.meta : {};
     const numeric = (candidate: unknown): number | null => {
       const parsed = typeof candidate === "number" ? candidate : Number(candidate);
       return Number.isFinite(parsed) ? parsed : null;
     };
-    return userTag === null || url === null
+    return url === null
       ? []
       : [
           {
             kind,
             userTag,
+            systemTag,
             url,
             outputFormat: typeof entry.output_format === "string" ? entry.output_format : null,
             mediaFacts: {
@@ -651,7 +654,7 @@ function formatsFor(
       {
         output: "metadata",
         metadata_version: QENCODE_METADATA_VERSION,
-        user_tag: "pirate-probe-v1",
+        tag: "pirate-probe-v1",
       },
     ];
   }
@@ -663,7 +666,7 @@ function formatsFor(
         audio_bitrate: 192,
         audio_sample_rate: 44_100,
         audio_channels_number: 2,
-        user_tag: "pirate-audio-v1",
+        tag: "pirate-audio-v1",
       },
       ...(["primary", "alternate"] as const).map((variant) => {
         const window = mediaTransformSampleWindow(input.sourceDurationMs, variant);
@@ -674,7 +677,7 @@ function formatsFor(
           audio_channels_number: 2,
           start_time: window.offsetMs / 1000,
           duration: window.durationMs / 1000,
-          user_tag: `pirate-acr-${variant}-v1`,
+          tag: `pirate-acr-${variant}-v1`,
         };
       }),
     ];
@@ -697,7 +700,7 @@ function formatsFor(
     height: boundedDimensions.height,
     image_format: "jpg",
     quality: 82,
-    user_tag: `pirate-frame-${String(role)}-v1`,
+    tag: `pirate-frame-${String(role)}-v1`,
   }));
 }
 
@@ -706,16 +709,33 @@ function oneOutput(
   kind: QencodeOutput["kind"],
   userTag: string,
   outputFormat: string,
+  allowLegacyUntaggedProbe = false,
 ): QencodeOutput {
   const matches = outputs.filter(
     (output) =>
       output.kind === kind && output.userTag === userTag && output.outputFormat === outputFormat,
   );
-  if (matches.length !== 1 || !validProviderOutputUrl(matches[0]?.url ?? "")) {
+  // The first live probe was submitted before we corrected Qencode's request
+  // field from user_tag to tag. Its completed job has exactly one metadata
+  // output with the provider's system tag, but no echoed user_tag. This narrow
+  // recovery accepts that one bound job only; multi-output audio and frames
+  // still require their exact application tags.
+  const legacy =
+    allowLegacyUntaggedProbe &&
+    matches.length === 0 &&
+    outputs.length === 1 &&
+    kind === "metadata" &&
+    outputFormat === "metadata" &&
+    outputs[0]?.kind === "metadata" &&
+    outputs[0].outputFormat === "metadata" &&
+    outputs[0].userTag === null &&
+    outputs[0].systemTag === "metadata-0-0"
+      ? outputs[0]
+      : undefined;
+  const selected = matches.length === 1 ? matches[0] : legacy;
+  if (selected === undefined || !validProviderOutputUrl(selected.url)) {
     throw new QencodeMalformedResponse();
   }
-  const selected = matches[0];
-  if (selected === undefined) throw new QencodeMalformedResponse();
   return selected;
 }
 
@@ -1059,7 +1079,7 @@ async function observeJob(
     const attempt = acceptedAttempt(input.attempt, providerJobId, "started");
     const transformContext = context(input.binding, adapterRevision);
     if (input.version === "media-transform-video-probe-input-v1") {
-      const output = oneOutput(status.outputs, "metadata", "pirate-probe-v1", "metadata");
+      const output = oneOutput(status.outputs, "metadata", "pirate-probe-v1", "metadata", true);
       const probe = parseProbeMetadata(
         await options.artifacts.readJson(output.url, QENCODE_MAX_RESPONSE_BYTES, signal),
         `qencode:metadata:${providerJobId}`,

@@ -1,0 +1,25 @@
+{
+  "version": "pirate-hns-control-observer-configuration-v1",
+  "provider_id": "hns.owner.v1",
+  "provider_configuration_reference": "hns-owner-staging-mainnet-v1",
+  "provider_configuration_version": "hns-owner-config-v1",
+  "environment": "staging",
+  "ownership_sources": ["hns_parent_chain_txt"],
+  "chain": {
+    "driver_reference": "hsd-json-rpc:production-primary",
+    "network": "main",
+    "genesis_block_hash": "5b6ef2d3c1f3cdcadfd9a030ba1811efdd17740f14e166489760741d075992e0",
+    "minimum_verification_progress_millionths": 999000,
+    "maximum_tip_age_seconds": 3600,
+    "maximum_future_tip_seconds": 7200,
+    "expected_block_interval_seconds": 600,
+    "minimum_safe_remaining_blocks": 144,
+    "expiry_safety_blocks": 144,
+    "response_max_bytes": 1048576
+  },
+  "authoritative_dns": null,
+  "evidence_lease_seconds": 2592000,
+  "observer_deadline_ms": 12000,
+  "observer_reservation_lease_seconds": 15,
+  "snapshot_store_reference": "postgres:hns-control-observer-v1"
+}

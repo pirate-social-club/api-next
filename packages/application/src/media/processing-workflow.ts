@@ -18,6 +18,7 @@ import {
   type MediaAcceptedLyrics,
   type MediaExplicitnessClassifierInput,
 } from "../media-provider-contracts.ts";
+import type { AlignmentRecoveryLookupDiagnostic } from "./alignment-recovery-diagnostics.ts";
 import {
   decodeMediaProcessingWorkflowPayload,
   type MediaProcessingAlignmentFailureEvidence,
@@ -36,6 +37,7 @@ import {
 } from "./processing-contracts.ts";
 
 export type MediaProcessingWorkflowResult =
+  | AlignmentRecoveryLookupDiagnostic
   | Readonly<{ readonly outcome: "waiting_for_terms" }>
   | Readonly<{
       readonly outcome: "waiting_for_provider";
@@ -1156,10 +1158,10 @@ function align(
     }
     const recovery = yield* promiseEffect(() => dependencies.store.readAlignmentRecovery(current));
     if (recovery.kind === "stale") {
-      return yield* Effect.fail(new DeferredAttempt("stale_fence"));
+      return { outcome: "alignment_recovery_lookup_stale", reason: recovery.reason } as const;
     }
     if (recovery.kind === "failed") {
-      return yield* Effect.fail(new DeferredAttempt("provider_progress"));
+      return { outcome: "alignment_recovery_lookup_failed", reason: recovery.reason } as const;
     }
     const recoveryAttemptId =
       recovery.kind === "recovery"
@@ -1190,9 +1192,6 @@ function align(
       return { outcome: "alignment_recorded" } as const;
     }
     if (started.kind === "exhausted") {
-      if (recovery.kind === "recovery") {
-        return yield* Effect.fail(new DeferredAttempt("provider_progress"));
-      }
       const exhaustedResult = {
         kind: "alignment",
         status: "unavailable",
@@ -1207,6 +1206,8 @@ function align(
     let result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
     if (current.lyrics === null) {
       result = { kind: "alignment", status: "unavailable", failureCode: "lyrics_missing" };
+    } else if (current.vocalStem == null) {
+      result = { kind: "alignment", status: "unavailable", failureCode: "audio_missing" };
     } else if (dependencies.providers === null || !dependencies.options.enabled) {
       result = {
         kind: "alignment",
@@ -1216,6 +1217,7 @@ function align(
     } else {
       const provider = dependencies.providers;
       const audio = current.audio;
+      const vocal = current.vocalStem;
       const lyrics = current.lyrics;
       const postId = current.postId;
       const aligned = yield* catchStageFailure(
@@ -1228,6 +1230,8 @@ function align(
             lyricsRevision: lyrics.lyricsRevision,
             canonicalAudioSha256: audio.canonicalSha256,
             audioArtifactRef: audio.immutableRef,
+            alignmentSourceRef: vocal.immutableRef,
+            alignmentSourceSha256: vocal.canonicalSha256,
             lyrics: lyrics.text,
             signal,
           }),

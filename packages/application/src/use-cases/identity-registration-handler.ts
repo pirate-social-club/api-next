@@ -55,7 +55,7 @@ type RegistrationFailure = AuthError | BadRequest | Conflict | InternalError | R
 
 type RegistrationRequest = {
   readonly privy_access_token: string;
-  readonly minimum_age_attestation: {
+  readonly minimum_age_attestation?: {
     readonly version: "minimum-age-attestation-v1";
     readonly minimum_age: 16;
     readonly affirmed: true;
@@ -185,7 +185,6 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
     {
       providerAppId: services.providerAppId,
       providerSubject: verified.sourceUserId,
-      minimumAgeAttestation: request.minimum_age_attestation,
     },
     services.registration,
   ).pipe(Effect.mapError(safeFailure));

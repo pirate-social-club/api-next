@@ -18,10 +18,22 @@ import {
 function runtime(
   execute: (statement: ControlPlaneStatement) => ReturnType<ControlPlaneDb["Service"]["execute"]>,
 ) {
+  const transactionExecute: ControlPlaneDb["Service"]["execute"] = ((statement) => {
+    if (statement.label.endsWith("alignment-recovery-cursor.initialize"))
+      return Effect.succeed({ rows: [], rowCount: 0 });
+    if (statement.label.endsWith("alignment-recovery-cursor"))
+      return Effect.succeed({
+        rows: [{ last_identifier: '{"operation_id":"","workflow_instance_id":""}' }],
+        rowCount: 1,
+      });
+    if (statement.label.endsWith("alignment-recovery-lookups"))
+      return Effect.succeed({ rows: [], rowCount: 0 });
+    return execute(statement);
+  }) as ControlPlaneDb["Service"]["execute"];
   return Layer.succeed(ControlPlaneDb, {
     execute,
-    withTransaction: () => Effect.die("terminal alert collectors are read-only"),
-  } as unknown as ControlPlaneDb["Service"]);
+    withTransaction: (use) => use({ execute: transactionExecute }),
+  } as ControlPlaneDb["Service"]);
 }
 
 const mediaWorkflow = (status: "running" | "errored"): CloudflareMediaWorkflowBinding => ({

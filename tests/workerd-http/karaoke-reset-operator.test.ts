@@ -21,6 +21,15 @@ import { KARAOKE_RESET_MARKER_KEY } from "../../packages/platform-cf/src/karaoke
 import { admitKaraokeResetOperator } from "../../packages/platform-cf/src/karaoke-reset-operator-auth.ts";
 import { KaraokeResetOperatorEntrypoint } from "../../packages/platform-cf/src/karaoke-reset-operator-entrypoint.ts";
 import { makeKaraokeReconciliationFixture } from "../../packages/testing/src/karaoke-reconciliation-fixture.ts";
+import {
+  admitCapturedArchiveFixture,
+  bounded,
+  enteredOrSettled,
+  finishArchive,
+  handled,
+  type Settlement,
+  succeeded,
+} from "./karaoke-reset-captured.fixture.ts";
 
 const network = setupNetwork();
 const bindings = {
@@ -79,6 +88,7 @@ function useFixtureIdentity(
     id: { toString: () => objectId },
     storage: {
       sql: state.storage.sql,
+      transactionSync: state.storage.transactionSync.bind(state.storage),
       get: state.storage.get.bind(state.storage),
       getAlarm: state.storage.getAlarm.bind(state.storage),
       async setAlarm(time: number | Date) {
@@ -515,75 +525,138 @@ describe("staging reset authenticated RPC", () => {
     });
   });
 
-  it("waits for in-flight multipart creation and records its late upload ID without uploading", async () => {
+  it("waits for an admitted multipart CREATE and retains its late ID without later R2 writes", async () => {
     const stub = env.KARAOKE_ATTEMPT.getByName(`drain-${crypto.randomUUID()}`);
     const token = await assertion();
     await runInDurableObject(stub, async (_instance, state) => {
-      const entered = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
-      const persisted = Promise.withResolvers<void>();
-      const calls = { pg: 0, part: 0, complete: 0, abort: 0, get: 0 };
+      const entered = Promise.withResolvers<void>(),
+        release = Promise.withResolvers<void>(),
+        persisted = Promise.withResolvers<void>();
+      const calls = { pg: 0, create: 0, part: 0, complete: 0, abort: 0, get: 0, delete: 0 };
+      let admitted: Awaited<ReturnType<typeof admitCapturedArchiveFixture>> | null = null;
+      const outsideTransaction = () => {
+        if (admitted === null) throw new Error("capture not admitted");
+        expect(admitted.inTransaction()).toBe(false);
+      };
+      const bucket = {
+        async delete() {
+          outsideTransaction();
+          calls.delete += 1;
+          throw new Error("unexpected_delete");
+        },
+        async createMultipartUpload() {
+          outsideTransaction();
+          calls.create += 1;
+          entered.resolve();
+          await release.promise;
+          return {
+            uploadId: "late-upload-id",
+            async uploadPart() {
+              outsideTransaction();
+              calls.part += 1;
+              throw new Error("unexpected_part");
+            },
+            async complete() {
+              outsideTransaction();
+              calls.complete += 1;
+              throw new Error("unexpected_complete");
+            },
+            async abort() {
+              outsideTransaction();
+              calls.abort += 1;
+              throw new Error("unexpected_abort");
+            },
+          };
+        },
+        resumeMultipartUpload(): never {
+          throw new Error("unexpected_resume");
+        },
+        async get() {
+          outsideTransaction();
+          calls.get += 1;
+          throw new Error("unexpected_get");
+        },
+      };
       const object = new KaraokeAttemptDO(state, {
         ...bindings,
         get CONTROL_PLANE(): never {
           calls.pg += 1;
           throw new Error("unexpected_pg");
         },
-        LEARNER_AUDIO: {
-          async createMultipartUpload() {
-            entered.resolve();
-            await release.promise;
-            return {
-              uploadId: "late-upload-id",
-              async uploadPart() {
-                calls.part += 1;
-                return { partNumber: 1, etag: "unexpected" };
-              },
-              async complete() {
-                calls.complete += 1;
-              },
-              async abort() {
-                calls.abort += 1;
-              },
-            };
-          },
-          resumeMultipartUpload(): never {
-            throw new Error("unexpected_resume");
-          },
-          async get() {
-            calls.get += 1;
-            return null;
-          },
-        },
+        LEARNER_AUDIO: bucket,
       });
-      await state.blockConcurrencyWhile(async () => {});
+      await bounded(
+        state.blockConcurrencyWhile(async () => {}),
+        "operator-constructor-barrier",
+      );
       const id = KARAOKE_RESET_OBJECT_IDS[0];
       useFixtureIdentity(object, state, id, { persisted: () => persisted.resolve() });
-      state.storage.sql.exec(`INSERT INTO karaoke_archive
-        (id,upload_id,object_key,next_part,parts_json,byte_size,duration_ms,state)
-        VALUES (1,NULL,'karaoke/fixture/attempt.pcm',1,'[]',2,1,'pending')`);
-      state.storage.sql.exec(
-        "INSERT INTO karaoke_audio_chunk VALUES (1,?,2)",
-        new Uint8Array([0, 0]).buffer,
-      );
-      const finish = Reflect.get(object, "finishArchive");
-      if (typeof finish !== "function") throw new Error("missing_archive_producer");
-      const rejected = expect(finish.call(object)).rejects.toThrow("karaoke_reset_fenced");
-      await entered.promise;
-      let completed = false;
-      const installation = object.applyReset(token, command(id)).then((receipt) => {
-        completed = true;
-        return receipt;
-      });
-      await persisted.promise;
-      expect(completed).toBe(false);
-      release.resolve();
-      await rejected;
-      const receipt = await installation;
-      expect(receipt.quiescenceEstablished).toBe(true);
-      expect(receipt.initial.uploadId).toBeNull();
-      expect(receipt.current.uploadId).toBe("late-upload-id");
-      expect(calls).toEqual({ pg: 0, part: 0, complete: 0, abort: 0, get: 0 });
+      admitted = await admitCapturedArchiveFixture(object, state, bucket);
+      let work: Promise<Settlement<unknown>> | null = null,
+        installation: Promise<Settlement<KaraokeResetReceipt>> | null = null,
+        completed = false,
+        primaryFailed = false;
+      let primaryError: unknown;
+      let cleanupErrors: unknown[] = [];
+      try {
+        work = handled(finishArchive(object));
+        await enteredOrSettled(entered.promise, work, "operator-CREATE-entry");
+        installation = handled(
+          object.applyReset(token, command(id)).then((receipt) => {
+            completed = true;
+            return receipt;
+          }),
+        );
+        await enteredOrSettled(persisted.promise, installation, "operator-marker-persisted");
+        expect(completed).toBe(false);
+        release.resolve();
+        const rejected = await bounded(work, "operator-original-producer-settlement");
+        expect(rejected.ok).toBe(false);
+        if (!rejected.ok) expect(String(rejected.error)).toContain("karaoke_reset_fenced");
+        const receipt = succeeded(await bounded(installation, "operator-reset-drain"));
+        expect(receipt.quiescenceEstablished).toBe(true);
+        expect(receipt.initial.uploadId).toBeNull();
+        expect(receipt.current.uploadId).toBe("late-upload-id");
+        expect(admitted.journal.load()).toMatchObject({
+          multipartId: "late-upload-id",
+          completed: false,
+          inFlight: null,
+          result: null,
+        });
+        expect(admitted.facts).toHaveLength(0);
+        // Native fixture calls came only from original admitted producer. Actual
+        // authenticated reset still never accesses the Hyperdrive/R2 bindings.
+        expect(calls).toEqual({
+          pg: 0,
+          create: 1,
+          part: 0,
+          complete: 0,
+          abort: 0,
+          get: 0,
+          delete: 0,
+        });
+      } catch (error) {
+        primaryFailed = true;
+        primaryError = error;
+      } finally {
+        release.resolve();
+        // Launch EVERY started-task drain before awaiting any one. A producer
+        // deadline must not skip draining the authenticated installation task.
+        const drains: Promise<unknown>[] = [];
+        if (work !== null) drains.push(bounded(work, "operator-producer-cleanup"));
+        if (installation !== null)
+          drains.push(bounded(installation, "operator-installation-cleanup"));
+        const outcomes = await Promise.allSettled(drains);
+        cleanupErrors = outcomes.flatMap((outcome) =>
+          outcome.status === "rejected" ? [outcome.reason] : [],
+        );
+      }
+      if (cleanupErrors.length > 0)
+        throw new AggregateError(
+          primaryFailed ? [primaryError, ...cleanupErrors] : cleanupErrors,
+          "Workerd started-task cleanup failed",
+        );
+      if (primaryFailed) throw primaryError;
     });
   });
 });

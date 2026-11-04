@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.119.0",
+  "sourceBranch": "fix/v1-study-provider-recovery-20261015",
+  "sourceBase": "aa7cf2e2d6c2ae74c67dfeec07ff133737640cd4",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds the persisted ordinary Study current-card spoken_submission projection. Unknown provider outcomes require operator review. Historical snapshots may omit the field; current ordinary reads always provide null or the blocked card. No guest or financial activation.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.119.0.tgz",
+    "sha256": "cfa545039c8640420d45c258e2c5b7d1a15e4ebc50b4beb70e0c53a9146654e1"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.119.0",
+    "sourceIdentifier": "api-next-contracts@f5e444bc0411d7ce719e04f996d04b4a27f157cbeca36378a8ba731d0bd45737",
+    "openapiSha256": "f5e444bc0411d7ce719e04f996d04b4a27f157cbeca36378a8ba731d0bd45737",
+    "clientSha256": "b77fd900a093ea6cf9a010652562c910c5380054cac78a1e810cffb93c873246"
+  },
+  "validation": {
+    "status": "Generated source candidate; exact source checks and independent acceptance remain pending."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.119.0",
+    "behavior": "Handle study_provider_outcome_unknown, study_provider_refused and study_recording_too_short details before generic conflict/input handling. Match persisted blocked card and attempt after reload."
+  }
+}

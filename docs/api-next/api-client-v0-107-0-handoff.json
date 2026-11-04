@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.107.0",
+  "sourceBranch": "fix/hns-owner-recovery-runtime-wiring",
+  "sourceBase": "da905bac26342d05d834b0c7963cb6597e5cba9e",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "The authenticated community HNS import read exposes optional attachment.binding_generation as a positive safe integer. The server supplies the canonical route binding generation, independently of import-session revision, for existing owner-recovery commands. Older responses remain valid; recovery clients must not infer a generation when it is absent. Existing endpoints are unchanged.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.107.0.tgz",
+    "sha256": "5310e31a4ee59708d7d25496eedf931545e33d32ea273bf172c4bfc2e102a6f2"
+  },
+  "validation": {
+    "status": "Local source and PostgreSQL gates passed; hosted and deployed checks pending",
+    "passed": [
+      "Focused HTTP composition/authentication suite: 37 tests, 128 assertions",
+      "PostgreSQL 17 recovery of activated/claimed roots: 2 cases, 117 assertions, including rollback/retry and preservation of owner pauses",
+      "Owner-read contract compatibility and safe-integer validation: 9 tests, 18 assertions",
+      "bun run check: types, lint, dependency boundaries, migration consistency and client package verification passed",
+      "Unit suite: 5386 passed, 1 skipped; Node suite passed",
+      "All six Worker suites passed after making the HNS fixture Content-Type explicit for Node and Bun"
+    ],
+    "remaining": [
+      "Hosted required checks",
+      "Matching Solid integration and deployed recovery acceptance"
+    ],
+    "operationalBoundary": "Isolated source preparation. No live database, runtime, wallet, or credential change.",
+    "testNotes": "The initial full test run hit an unrelated 5ms ACRCloud timeout flake; its focused rerun and the full unit rerun passed. A Worker fixture returned a Bun-specific JSON charset; the fixture now declares the exact production wire media type. The unit, Node and final Worker gates passed separately. PostgreSQL recovery uses the real HTTP/private-verifier stack with a synthetic chain observer, not a deployed chain proof."
+  }
+}

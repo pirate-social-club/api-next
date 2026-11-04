@@ -2,8 +2,10 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { FinalizeAvatarUpload, GetAvatar, RemoveAvatar, ReserveAvatarUpload } from "./avatars.ts";
 import { endpoint } from "./endpoint.ts";
-import { CreateSongPlaybackAccess } from "./song-playback.ts";
+import { guestParticipationRegistry } from "./guest-registry.ts";
+import { CreateKaraokePlaybackAccess, CreateSongPlaybackAccess } from "./song-playback.ts";
 import { telegramRegistry } from "./telegram.ts";
+import { telegramLinkingRegistry } from "./telegram-linking.ts";
 
 export const Health = endpoint({
   method: "GET",
@@ -19,6 +21,7 @@ import {
   GetCommunityCreationIntent,
   UpdateCommunityCreationIntent,
 } from "./community-creation.ts";
+import { ListMyModerationCommunities, ListPopularCommunities } from "./community-navigation.ts";
 import * as money from "./community-purchase-funding.ts";
 import { GetCanonicalCommunityRoute } from "./community-route-resolution.ts";
 import {
@@ -40,20 +43,23 @@ import {
   ReserveDanceSessionUpload,
   SubmitDanceSessionForGrading,
 } from "./dance-attempt.ts";
-import { handleSalesRegistry } from "./handle-sales.ts";
+import { handleSalesSpacesRegistry } from "./handle-sales-spaces-endpoints.ts";
 import { DeliverHnsEdgeAlert } from "./hns-edge-alerts.ts";
 import { PublishHnsEdgeStatusReport } from "./hns-edge-status.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
 import {
   ActivateHnsCommunityRootImport,
   ActivateHnsRootImport,
+  CheckHnsTxtAttachment,
   GetCurrentHnsCommunityRootImport,
+  GetCurrentHnsTxtAttachment,
   GetHnsCommunityRootImport,
   GetHnsRootImport,
   PollHnsCommunityRootImport,
   PollHnsRootImport,
   StartHnsCommunityRootImport,
   StartHnsRootImport,
+  StartHnsTxtAttachment,
 } from "./hns-root-import.ts";
 import {
   CreateKaraokeAttempt,
@@ -73,6 +79,7 @@ import {
   RetirePersona,
 } from "./personas.ts";
 import { platformPirateHandleRegistry } from "./platform-pirate-handles.ts";
+import { GetPublicProfileActivity } from "./profile-activity.ts";
 import {
   GetPublicPostBySlug,
   GetPublicPostCanonicalRouteById,
@@ -90,23 +97,55 @@ import {
 import {
   AddAssetBonusLeg,
   AddMegapotPoolLeg,
+  AttachRewardWinnerSendTransaction,
+  CancelRewardWinnerSend,
+  ClaimRewardCredit,
+  CreateRewardWinnerSend,
   GetAssetBonusFunding,
   GetMegapotPoolFunding,
   GetMegapotPoolStanding,
+  GetRewardCreditWinnerSend,
+  GetRewardGasTopup,
   GetRewardQualificationPolicies,
+  GetRewardWinnerSend,
   GetSongMegapotPool,
+  IssueRewardClaimVerificationIntent,
   ListAdmittedRewardAssets,
   ListMyRewardCredits,
   ListSongAssetBonuses,
   ObserveAssetBonusFunding,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
+  RequestRewardGasTopup,
 } from "./rewards-song-offers.ts";
+import { GetTrendingSongs, ListPersonaSongs } from "./song-library.ts";
 import {
   GetPublicSongOwnerPolicy,
   GetSongOwnerPolicy,
   UpdateSongOwnerPolicy,
 } from "./song-owner-video-policy.ts";
+import {
+  CommitSpacesRouteAttachment,
+  GetCurrentSpacesRouteAttachment,
+  ProveSpacesRouteAttachment,
+  StartSpacesRouteAttachment,
+} from "./spaces-community-route-attachment.ts";
+import {
+  ConfirmSpacesOperatorAssignment,
+  GetSpacesOperatorAssignments,
+} from "./spaces-operator-assignment.ts";
+import {
+  GetSpacesOwnershipProgress,
+  ListSpacesOwnershipRoots,
+  PollSpacesOwnership,
+  ResumeSpacesOwnership,
+  StartSpacesOwnership,
+} from "./spaces-owner-proof.ts";
+import {
+  ConfirmPersonaSpacesTaproot,
+  GetPersonaSpacesTaprootStatus,
+  PreparePersonaSpacesTaproot,
+} from "./spaces-taproot-wallet.ts";
 import {
   GetStudyAvailabilityV2,
   GetStudySessionV2,
@@ -118,13 +157,27 @@ import {
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
 import { CreateVideoPlaybackAccess, GetVideoPoster } from "./video-access.ts";
+import { ClaimVideoOutcome } from "./video-outcomes.ts";
+import {
+  CreateWalletSponsoredSend,
+  GetWalletSponsoredSend,
+  GetWalletSponsoredSendForPersona,
+  SubmitWalletSponsoredSend,
+} from "./wallet-sponsored-send.ts";
 
 export const registry = {
+  ...guestParticipationRegistry,
+  GetPublicProfileActivity,
+  ListPopularCommunities,
+  ListMyModerationCommunities,
+  ...telegramLinkingRegistry,
   ReserveAvatarUpload,
   FinalizeAvatarUpload,
   GetAvatar,
   RemoveAvatar,
   ...telegramRegistry,
+  ListPersonaSongs,
+  GetTrendingSongs,
   Health,
   CreateVideoPlaybackAccess,
   GetVideoPoster,
@@ -146,12 +199,18 @@ export const registry = {
   GetCurrentHnsCommunityRootImport,
   PollHnsCommunityRootImport,
   ActivateHnsCommunityRootImport,
-  ...handleSalesRegistry,
+  StartHnsTxtAttachment,
+  GetCurrentHnsTxtAttachment,
+  CheckHnsTxtAttachment,
+  ...handleSalesSpacesRegistry,
   ListMyPersonas,
   ListMyPendingPersonaWallets,
   CreatePersona,
   PreparePersonaEvmWallet,
   ConfirmPersonaEvmWallet,
+  PreparePersonaSpacesTaproot,
+  GetPersonaSpacesTaprootStatus,
+  ConfirmPersonaSpacesTaproot,
   RetirePersona,
   ...platformPirateHandleRegistry,
   ...v1Registry,
@@ -161,6 +220,17 @@ export const registry = {
   ...verification,
   ...money,
   StartNamespaceOwnership,
+  StartSpacesOwnership,
+  GetSpacesOwnershipProgress,
+  ListSpacesOwnershipRoots,
+  ResumeSpacesOwnership,
+  PollSpacesOwnership,
+  StartSpacesRouteAttachment,
+  GetCurrentSpacesRouteAttachment,
+  ProveSpacesRouteAttachment,
+  CommitSpacesRouteAttachment,
+  GetSpacesOperatorAssignments,
+  ConfirmSpacesOperatorAssignment,
   PollNamespaceOwnership,
   CreateKaraokeAttempt,
   GetKaraokeReadiness,
@@ -204,6 +274,19 @@ export const registry = {
   GetMegapotPoolStanding,
   ListAdmittedRewardAssets,
   ListMyRewardCredits,
+  ClaimRewardCredit,
+  IssueRewardClaimVerificationIntent,
+  RequestRewardGasTopup,
+  GetRewardGasTopup,
+  CreateRewardWinnerSend,
+  GetRewardCreditWinnerSend,
+  AttachRewardWinnerSendTransaction,
+  CancelRewardWinnerSend,
+  GetRewardWinnerSend,
+  CreateWalletSponsoredSend,
+  GetWalletSponsoredSend,
+  GetWalletSponsoredSendForPersona,
+  SubmitWalletSponsoredSend,
   AddAssetBonusLeg,
   ObserveAssetBonusFunding,
   GetAssetBonusFunding,
@@ -213,6 +296,8 @@ export const registry = {
   GetPublicPostSitemap,
   ListPostComments,
   CreateSongPlaybackAccess,
+  CreateKaraokePlaybackAccess,
+  ClaimVideoOutcome,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */

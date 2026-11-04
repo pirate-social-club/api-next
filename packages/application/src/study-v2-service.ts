@@ -5,17 +5,20 @@ import type {
   StudyLearnerBandV2,
   StudySessionItemV2,
   StudySessionV2,
+  StudySpokenLanguageProvenanceV2,
 } from "@pirate/contracts";
 import {
-  gradeTranscriptV2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V1,
   STUDY_TRANSCRIPT_GRADER_POLICY_V2,
   STUDY_TRANSCRIPT_GRADER_POLICY_V3,
+  STUDY_TRANSCRIPT_GRADER_POLICY_V4,
+  type StudySpokenRerecordAssessment,
   type StudyTranscriptGraderPolicyRevision,
   type StudyTranscriptGradeV2,
 } from "@pirate/domain";
 import { Data, Effect } from "effect";
 import { Clock, IdGen } from "./ports.ts";
+import { gradeStudySpokenTranscript } from "./study-shared-lesson-engine.ts";
 import { canonicalBodyHash } from "./use-cases/content/common.ts";
 
 export class StudyV2StoreFailed extends Data.TaggedError("StudyV2StoreFailed")<{
@@ -31,6 +34,9 @@ export class StudyV2CommandRejected extends Data.TaggedError("StudyV2CommandReje
     | "invalid-input"
     | "not-found"
     | "provider-unavailable"
+    | "provider-outcome-unknown"
+    | "provider-refused"
+    | "recording-too-short"
     | "submission-kind-mismatch"
     | "transcript-evidence-expired"
     | "transcript-evidence-mismatch"
@@ -43,6 +49,7 @@ export type StudySpokenAnswerContext = Readonly<{
   item: StudySessionItemV2;
   referenceText: string;
   dominantLanguage: string | null;
+  languageProvenance: StudySpokenLanguageProvenanceV2;
 }>;
 
 export type StudySpokenAnswerReservation =
@@ -63,9 +70,16 @@ export type StudyBatchTranscript = Readonly<{
 
 export type LearnerAudioProviderRetention = "not_stored" | "stored";
 
+/** Ordinary attempts may retry an explicitly unsuccessful response. This is
+ * not a billing assertion and does not change OwnerAware paid-call policy. */
+export type StudyProviderRefusalStatus = 400 | 401 | 403 | 413 | 415 | 422 | 429;
+export const STUDY_MIN_RECORDING_DURATION_MS = 1000;
+
 export class StudyBatchTranscriptionFailed extends Data.TaggedError(
   "StudyBatchTranscriptionFailed",
 )<{
+  readonly outcome?: "unknown" | "known_failed";
+  readonly httpStatus?: number;
   readonly reason:
     | "invalid-response"
     | "misconfigured"
@@ -180,6 +194,9 @@ export interface StudyV2Store {
     readonly leaseToken: string;
     readonly communityId: string;
     readonly grade: StudyTranscriptGradeV2;
+    readonly languageProvenance: StudySpokenLanguageProvenanceV2;
+    readonly rerecordAssessment: StudySpokenRerecordAssessment;
+    readonly rerecordEnabled: boolean;
     readonly providerDetectedLanguage: string | null;
     readonly providerDetectedLanguageConfidence: number | null;
     readonly qualificationId: string;
@@ -202,7 +219,8 @@ const transcriptGraderPolicy = (
 ): Effect.Effect<StudyTranscriptGraderPolicyRevision, StudyV2CommandRejected> =>
   revision === STUDY_TRANSCRIPT_GRADER_POLICY_V1 ||
   revision === STUDY_TRANSCRIPT_GRADER_POLICY_V2 ||
-  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V3
+  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V3 ||
+  revision === STUDY_TRANSCRIPT_GRADER_POLICY_V4
     ? Effect.succeed(revision as StudyTranscriptGraderPolicyRevision)
     : Effect.fail(rejected("submission-kind-mismatch"));
 
@@ -218,7 +236,11 @@ const sha256Hex = (bytes: Uint8Array) =>
 
 export const makeStudyV2Service = (
   store: StudyV2Store,
-  spoken?: Readonly<{ transcriber: StudyBatchTranscriber; archive: StudyAudioArchive }>,
+  spoken?: Readonly<{
+    transcriber: StudyBatchTranscriber;
+    archive: StudyAudioArchive;
+    rerecordEnabled?: boolean;
+  }>,
 ) => ({
   getAvailability: store.getAvailability,
   getSession: (input: Parameters<StudyV2Store["getSession"]>[0]) =>
@@ -346,6 +368,15 @@ export const makeStudyV2Service = (
       });
       const acceptedAt = instant(yield* clock.now);
       const graderPolicy = yield* transcriptGraderPolicy(context.item.grader_policy_revision);
+      const { grade, rerecordAssessment } = gradeStudySpokenTranscript({
+        referenceText: context.referenceText,
+        transcript: transcript.transcript,
+        dominantLanguage: context.dominantLanguage,
+        policy: graderPolicy,
+        languageProvenance: context.languageProvenance,
+        detectedLanguage: transcript.detectedLanguage,
+        detectedLanguageConfidence: transcript.detectedLanguageConfidence,
+      });
       return yield* store.completeSpokenAnswer({
         ...input,
         acceptedAt,
@@ -356,12 +387,10 @@ export const makeStudyV2Service = (
         audioDigest,
         commandId: reservedCommandId,
         leaseToken: reservedLeaseToken,
-        grade: gradeTranscriptV2(
-          context.referenceText,
-          transcript.transcript,
-          context.dominantLanguage,
-          graderPolicy,
-        ),
+        grade,
+        languageProvenance: context.languageProvenance,
+        rerecordAssessment,
+        rerecordEnabled: spoken.rerecordEnabled === true,
         providerDetectedLanguage: transcript.detectedLanguage,
         providerDetectedLanguageConfidence: transcript.detectedLanguageConfidence,
         qualificationId: `qualification_${yield* ids.next}`,

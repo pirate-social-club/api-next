@@ -60,6 +60,7 @@ function makeEvidence() {
 }
 
 const request = {
+  attemptId: "plan:submission-1:g1",
   outputObjectKey,
   source: {
     immutableRef: "media://immutable/capture/video/1",
@@ -115,7 +116,7 @@ describe("local host render output", () => {
     expect((await store.read(outputObjectKey))?.bytes).toEqual(foreign);
     // The refusal is derived from retained evidence, not from renderer state.
     const recreated = makeLocalSongVideoRenderer({ engine, output: store, evidence });
-    expect(await recreated.observe({ outputObjectKey })).toEqual({
+    expect(await recreated.observe({ attemptId: request.attemptId, outputObjectKey })).toEqual({
       status: "refused",
       reason: "output_conflict",
     });
@@ -145,7 +146,9 @@ describe("local host render output", () => {
     // A recreated renderer reads the same evidence and reaches the same answer:
     // the stored bytes match the recorded output, so the attempt completed.
     const recreated = makeLocalSongVideoRenderer({ engine, output: writer, evidence });
-    expect(await recreated.observe({ outputObjectKey })).toEqual({ status: "completed" });
+    expect(await recreated.observe({ attemptId: request.attemptId, outputObjectKey })).toEqual({
+      status: "completed",
+    });
     expect((await store.read(outputObjectKey))?.bytes).toEqual(masterBytes);
     expect(calls.render).toBe(1);
   });
@@ -171,7 +174,7 @@ describe("local host render output", () => {
     const recreated = makeLocalSongVideoRenderer({ engine, output: store, evidence });
     // Presence is not identity: the stored bytes do not match the recorded
     // output, so this address is refused rather than observed as completed.
-    expect(await recreated.observe({ outputObjectKey })).toEqual({
+    expect(await recreated.observe({ attemptId: request.attemptId, outputObjectKey })).toEqual({
       status: "refused",
       reason: "output_conflict",
     });
@@ -189,7 +192,9 @@ describe("local host render output", () => {
       output: store,
       evidence: makeEvidence().evidence,
     });
-    expect(await renderer.observe({ outputObjectKey })).toEqual({ status: "pending" });
+    expect(await renderer.observe({ attemptId: request.attemptId, outputObjectKey })).toEqual({
+      status: "pending",
+    });
     expect(calls.render).toBe(0);
   });
 });

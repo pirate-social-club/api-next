@@ -1,5 +1,6 @@
 import {
   Clock,
+  type ControlledAccountStudySpokenService,
   IdGen,
   makeStudyV2Service,
   type StudyAudioArchive,
@@ -48,6 +49,31 @@ const wireFailure = (failure: StudyV2Failure) => {
       return new Conflict({ message: "Study command conflicts" });
     case "command-in-flight":
       return new RetryableConflict({ message: "Study command is already processing" });
+    case "provider-outcome-unknown":
+      return new Conflict({
+        message: "Study recording needs operator review",
+        details: {
+          reason_code: "study_provider_outcome_unknown",
+          next_action: "operator_review",
+        },
+      });
+    case "provider-refused":
+      return new Conflict({
+        message: "Study recording was not accepted",
+        details: {
+          reason_code: "study_provider_refused",
+          next_action: "record_again",
+        },
+      });
+    case "recording-too-short":
+      return new BadRequest({
+        message: "Record for at least one second",
+        details: {
+          reason_code: "study_recording_too_short",
+          minimum_duration_ms: 1000,
+          next_action: "record_again",
+        },
+      });
     case "provider-unavailable":
       return new ProviderUnavailable({ message: "Study transcription is unavailable" });
     case "insufficient-exercises":
@@ -64,9 +90,11 @@ export const makeStudyV2Handlers = (services: {
   readonly clock: Clock["Service"];
   readonly ids: IdGen["Service"];
   readonly store: StudyV2Store;
+  readonly controlledSpoken?: ControlledAccountStudySpokenService;
   readonly spoken?: Readonly<{
     readonly archive: StudyAudioArchive;
     readonly transcriber: StudyBatchTranscriber;
+    readonly rerecordEnabled?: boolean;
   }>;
 }): StudyV2Handlers => {
   const study = makeStudyV2Service(services.store, services.spoken);
@@ -141,7 +169,7 @@ export const makeStudyV2Handlers = (services: {
           return Promise.reject(new BadRequest({ message: "Study audio duration is required" }));
         }
         return run(
-          study.submitSpokenAnswer({
+          (services.controlledSpoken ?? study).submitSpokenAnswer({
             accountId: accountId(request.principal),
             attemptNumber,
             audio: request.body,

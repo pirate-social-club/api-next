@@ -4,6 +4,11 @@ import {
   type SessionProofVerifier,
 } from "@pirate/application/use-cases/session-exchange";
 import { Effect } from "effect";
+import {
+  collectEmbeddedTaprootWallets,
+  type EmbeddedTaprootWallet,
+} from "./spaces-taproot-inventory.ts";
+import type { SpacesBitcoinNetwork } from "./spaces-taproot-recipient.ts";
 
 export const SESSION_PROOF_MAX_TOKEN_LENGTH = 16 * 1024;
 export const SESSION_PROOF_MAX_JWKS_BYTES = 64 * 1024;
@@ -486,7 +491,20 @@ function directPrivySubject(claims: JsonObject): string {
  */
 export function makeJwksSessionProofVerifier(
   options: SessionProofAdapterOptions,
-): SessionProofVerifier & PersonaWalletProofVerifier {
+): SessionProofVerifier &
+  PersonaWalletProofVerifier &
+  Readonly<{
+    readPrivyEmbeddedTaprootInventory: (
+      input: Readonly<{
+        accessToken: string;
+        identityToken: string | null;
+        network: SpacesBitcoinNetwork;
+      }>,
+    ) => Effect.Effect<
+      Readonly<{ sourceUserId: string; wallets: readonly EmbeddedTaprootWallet[] }>,
+      PersonaWalletProofRejected
+    >;
+  }> {
   const fetcher = options.fetcher ?? fetch;
   const nowMs = options.nowMs ?? Date.now;
   const fetchTimeoutMs = positiveBound(options.fetchTimeoutMs, SESSION_PROOF_FETCH_TIMEOUT_MS);
@@ -846,6 +864,34 @@ export function makeJwksSessionProofVerifier(
         }
         const wallet = wallets[0] as PrivyEmbeddedEvmWallet;
         return { sourceUserId: access.sourceUserId, ...wallet };
+      }),
+    readPrivyEmbeddedTaprootInventory: (input: {
+      readonly accessToken: string;
+      readonly identityToken: string | null;
+      readonly network: SpacesBitcoinNetwork;
+    }): Effect.Effect<
+      Readonly<{ sourceUserId: string; wallets: readonly EmbeddedTaprootWallet[] }>,
+      PersonaWalletProofRejected
+    > =>
+      runPersonaWalletProof(async (signal) => {
+        const access = await verifyProviderToken(input.accessToken, providers.privy, signal);
+        if (input.identityToken !== null) {
+          const identity = await verifyProviderToken(input.identityToken, providers.privy, signal);
+          if (identity.sourceUserId !== access.sourceUserId) {
+            throw new PersonaWalletProofRejected({ reason: "invalid" });
+          }
+        }
+        const document = await lookupPrivyUser(access.sourceUserId, signal);
+        if (document === undefined) {
+          throw new PersonaWalletProofRejected({ reason: "unavailable" });
+        }
+        let wallets: readonly EmbeddedTaprootWallet[];
+        try {
+          wallets = collectEmbeddedTaprootWallets(document, input.network);
+        } catch {
+          throw new PersonaWalletProofRejected({ reason: "unavailable" });
+        }
+        return { sourceUserId: access.sourceUserId, wallets };
       }),
   };
 }

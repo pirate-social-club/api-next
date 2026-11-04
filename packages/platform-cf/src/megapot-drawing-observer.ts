@@ -132,7 +132,13 @@ export function makeMegapotDrawingObserver(input: {
       }
       const candidate = yield* input.store.loadCandidate(attestationId);
       if (
-        !isMegapotStepChainAllowed("drawing-observation", candidate.environment, candidate.chainId)
+        !isMegapotStepChainAllowed(
+          "drawing-observation",
+          candidate.environment,
+          candidate.chainId,
+          input.rpc,
+          candidate,
+        )
       ) {
         return yield* rejected("production-disabled");
       }
@@ -155,7 +161,8 @@ export function makeMegapotDrawingObserver(input: {
         !Number.isFinite(observedMilliseconds) ||
         blockTimestamp === null ||
         drawingTime === null ||
-        observedMilliseconds < Date.parse(blockTimestamp)
+        observedMilliseconds < Date.parse(blockTimestamp) ||
+        observedMilliseconds - Date.parse(blockTimestamp) > input.observationTtlMs
       ) {
         return yield* rejected("invalid-block-time");
       }
@@ -165,6 +172,10 @@ export function makeMegapotDrawingObserver(input: {
         state.jackpotLock
       ) {
         return yield* rejected("drawing-closed");
+      }
+      const canonical = yield* rpcEffect(() => input.rpc.readBlock(head.blockNumber));
+      if (canonical.blockNumber !== head.blockNumber || canonical.blockHash !== head.blockHash) {
+        return yield* rejected("deployment-attestation-mismatch");
       }
       const canonicalInput = {
         attestationId,

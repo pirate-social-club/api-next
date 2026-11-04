@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import type { VideoStageFact } from "@pirate/application/video/stage-facts";
 import { Effect } from "effect";
-import type { Client } from "pg";
+import { Client } from "pg";
 import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
@@ -15,6 +16,7 @@ import {
   reserveVideoUpload,
   VIDEO_MULTIPART_PART_SIZE_BYTES,
   type VideoPublicationServices,
+  type VideoPublicationStore,
 } from "../../application/src/video/publication.ts";
 import { dispatchVideoPublicationWakeups } from "../../application/src/video/publication-wakeup.ts";
 import { consumeVideoStreamIngest } from "../../application/src/video/stream-ingest.ts";
@@ -22,6 +24,7 @@ import { consumeVideoThumbnail } from "../../application/src/video/thumbnail-enr
 import { recoverVideoWorkflowLaunches } from "../../application/src/video/workflow-recovery.ts";
 import {
   attachVideoDecision,
+  createOriginalVideoSubmission,
   decideOriginalAudioVideo,
   type OriginalAudioTrustedAnalysis,
   publishOriginalVideo,
@@ -33,6 +36,7 @@ import { makeDataRegistrationStore } from "./data-registration-repository.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
 import { makeControlPlanePersonaStore } from "./persona-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { makeControlPlaneSongVideoIntervalStore } from "./song-video-interval-repository.ts";
 import { makeVideoPublicationAuthorization } from "./video-access-authorization.ts";
 import { makeControlPlaneVideoAnalysisOutboxRepository } from "./video-analysis-outbox-repository.ts";
 import { makeVideoPlaybackAuthority } from "./video-playback-authority.ts";
@@ -47,7 +51,10 @@ import {
   persona,
   responseBytes,
   responseSha256,
+  seedPublishedSongFixture,
+  seedSongOwner,
   seedVideoActors,
+  songReferenceFinalizedFixture,
   submissionId,
   trustedAnalysis,
   videoSha256,
@@ -89,7 +96,531 @@ async function fixture<A>(use: (admin: Client, connection: string) => Promise<A>
   });
 }
 
+const sha256Hex = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * A measured, published song and an issued song-reference reservation for
+ * it, with application services over the real stores. Every upload and seal
+ * effect throws, so any second upload effect fails the test.
+ */
+async function songStartFixture(admin: Client, connection: string, label: string) {
+  await seedSongOwner(admin);
+  const song = {
+    songPostId: `post-start-replay-${label}`,
+    communityId: community,
+    audioAssetRef: `media://song/start-replay-${label}`,
+    canonicalAudioSha256: "a".repeat(64),
+    durationSamples: 30 * 48_000,
+    title: "Start replay fixture",
+    contentRating: "general" as const,
+    derivativeVideo: "allowed" as const,
+    licensePreset: "commercial-remix" as const,
+    commercialRemixShareBps: 1_000,
+  };
+  await seedPublishedSongFixture(admin, song);
+  const policy = await admin.query<{ policy_hash: string }>(
+    "SELECT policy_hash FROM song_owner_policy_revisions WHERE post_id=$1 AND policy_revision=1",
+    [song.songPostId],
+  );
+  const layer = makeDirectPostgresControlPlaneLayer(connection);
+  const store = makeControlPlaneVideoPublicationStore(layer);
+  const reservationId = `media-reservation-${crypto.randomUUID()}`;
+  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+  const reservationResponse = new TextEncoder().encode(`{"reservation_id":"${reservationId}"}`);
+  await store.createReservation({
+    record: {
+      reservationId,
+      communityId: community,
+      intent: "song_reference",
+      actorAccountId: actor,
+      authorPersonaId: persona,
+      requestHash: "c".repeat(64),
+      expectedContentType: "video/mp4",
+      expectedSizeBytes: 1_024,
+      expectedSha256: videoSha256,
+      ingestPolicyRevision: 1,
+      uploadId: `multipart-${reservationId}`,
+      partSizeBytes: 10 * 1024 * 1024,
+      partCount: 1,
+      expiresAt,
+      state: "issued",
+      submissionId: null,
+      operationId: null,
+      manifest: null,
+      responseBytes: reservationResponse,
+      updatedAt: new Date().toISOString(),
+    },
+    idempotencyKey: `reserve-start-replay-${label}`,
+    responseSha256: sha256Hex(reservationResponse),
+    parts: [{ partNumber: 1, url: "https://upload.invalid/part-one", expiresAt }],
+    songPlan: {
+      songPostId: song.songPostId,
+      audioRevision: 1,
+      canonicalAudioSha256: song.canonicalAudioSha256,
+      songDurationSamples: song.durationSamples,
+      songAssetId: song.audioAssetRef,
+      clipStartSamples: 0,
+      clipDurationSamples: 10 * 48_000,
+      intervalPolicyRevision: 1,
+      ownerPolicyRevision: 1,
+      ownerPolicyHash: policy.rows[0]?.policy_hash ?? "0".repeat(64),
+      derivativeVideo: "allowed",
+      selectedFrom: { kind: "library" },
+      originVerified: false,
+      observedAt: new Date().toISOString(),
+    },
+  });
+  const effect = async (): Promise<never> => {
+    throw new Error("a start must not cause an upload or seal effect");
+  };
+  const services = (overrides: Partial<VideoPublicationStore> = {}): VideoPublicationServices => ({
+    store: { ...store, ...overrides },
+    personaServices: {
+      personaStore: makeControlPlanePersonaStore(layer),
+      runEffect: (program, signal) =>
+        Effect.runPromise(program, signal === undefined ? undefined : { signal }),
+    },
+    songInterval: {
+      store: makeControlPlaneSongVideoIntervalStore(layer),
+      contentStore: makeControlPlaneContentStore(layer),
+    },
+    nowIso: () => new Date().toISOString(),
+    randomUuid: () => crypto.randomUUID(),
+    sealer: { inspect: effect, seal: effect },
+    multipart: { create: effect, renew: effect, completeOrInspect: effect, abort: effect },
+  });
+  const body = {
+    persona_id: persona,
+    version: "video-start-input-v1",
+    video_reservation_id: reservationId,
+    idempotency_key: `start-replay-${label}`,
+  };
+  const start = (withServices: VideoPublicationServices, startBody: unknown = body) =>
+    createVideoSubmission(
+      { communityId: community, actor: { kind: "user", userId: actor }, body: startBody },
+      withServices,
+    );
+  const submissions = async () =>
+    (
+      await admin.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM media_post_submissions WHERE actor_user_id=$1 AND media_kind='video'",
+        [actor],
+      )
+    ).rows[0]?.n ?? -1;
+  const reservationState = async () =>
+    (
+      await admin.query<{ state: string }>(
+        "SELECT state FROM media_upload_reservations WHERE reservation_id=$1",
+        [reservationId],
+      )
+    ).rows[0]?.state;
+  return { services, body, start, submissions, reservationState };
+}
+
+/** Holds the render-plan table so a start pauses inside its transaction,
+ * after its submission row is written and before the reservation is claimed. */
+async function pauseStartsInsideTheirTransaction(connection: string) {
+  const holder = new Client({ connectionString: connection });
+  await holder.connect();
+  await holder.query("BEGIN");
+  await holder.query("LOCK TABLE media_song_video_render_plans IN SHARE MODE");
+  return {
+    /** The statements now waiting on the held table, read from a fresh
+     * statistics snapshot (a transaction otherwise keeps its first one). */
+    waiting: async (): Promise<string[]> => {
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        await holder.query("SELECT pg_stat_clear_snapshot()");
+        const blocked = await holder.query<{ q: string }>(
+          `SELECT regexp_replace(query,'\\s+',' ','g') AS q FROM pg_stat_activity
+            WHERE wait_event_type='Lock' AND pid<>pg_backend_pid()`,
+        );
+        if (blocked.rows.length > 0) return blocked.rows.map((row) => row.q);
+        await Bun.sleep(10);
+      }
+      throw new Error("the start never reached the paused boundary");
+    },
+    release: async () => {
+      await holder.query("ROLLBACK");
+      await holder.end();
+    },
+  };
+}
+
 suite("video publication PostgreSQL", () => {
+  test("approved song-reference review wakes render without publishing an unsealed capture", async () => {
+    await fixture(async (admin, connection) => {
+      await seedSongOwner(admin);
+      const song = {
+        songPostId: "post-video-review-song",
+        communityId: community,
+        audioAssetRef: "media://song/video-review-audio",
+        canonicalAudioSha256: "f".repeat(64),
+        durationSamples: 30 * 48_000,
+        title: "Review render fixture",
+        contentRating: "general" as const,
+        derivativeVideo: "allowed" as const,
+        licensePreset: "commercial-remix" as const,
+        commercialRemixShareBps: 1_000,
+      };
+      await seedPublishedSongFixture(admin, song);
+      const { store, finalized } = await songReferenceFinalizedFixture(connection, {
+        identity: {
+          reservationId: "media-reservation-00000000-0000-4000-8000-000000000099",
+          submissionId,
+          operationId,
+        },
+        planId: `song-video-plan:${submissionId}`,
+        song,
+        clipStartSamples: 0,
+        clipDurationSamples: 10 * 48_000,
+        source: { sha256: videoSha256, sizeBytes: 1_024 },
+      });
+      const base = trustedAnalysis();
+      const analysis: VideoTrustedAnalysis = {
+        ...base,
+        audio: { intent: "song_reference" },
+        mediaSafety: "review_required",
+      };
+      const services = {
+        store,
+        nowIso: () => new Date().toISOString(),
+        randomUuid: () => crypto.randomUUID(),
+      };
+      expect(await acceptTrustedVideoAnalysis({ submissionId, analysis }, services)).toMatchObject({
+        status: "manual_review",
+      });
+      const held = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (held === null) throw new Error("held song video missing");
+      expect(held.state).toMatchObject({ status: "manual_review", phase: null, master: null });
+      expect(
+        await store.moderate({
+          submission: held.state,
+          actor: { kind: "user", userId: actor },
+          expectedCreationRevision: held.state.creationRevision,
+          action: { kind: "approve", hold: "safety", evidenceRef: null },
+          endpointTemplate: "/moderation/media-post-submissions/:submissionId/actions",
+          idempotencyKey: "approve-song-review-render",
+          requestHash: "8".repeat(64),
+          responseBytes,
+          responseSha256,
+        }),
+      ).toEqual({ kind: "none" });
+      const approved = await store.getSubmissionByOperation({ submissionId, operationId });
+      if (approved === null) throw new Error("approved song video missing");
+      expect(approved.state).toMatchObject({
+        status: "processing",
+        phase: "render",
+        master: null,
+        decision: { outcome: { kind: "publish" } },
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM media_video_publication_wakeups WHERE action_id=$1",
+            [`video-moderation:${actor}:approve-song-review-render`],
+          )
+        ).rows[0]?.n,
+      ).toBe(1);
+      expect(await acceptTrustedVideoAnalysis({ submissionId, analysis }, services)).toMatchObject({
+        status: "processing",
+        phase: "publish",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,phase FROM media_post_submissions WHERE submission_id=$1",
+            [submissionId],
+          )
+        ).rows[0],
+      ).toEqual({ status: "processing", phase: "render" });
+      const outbox = makeControlPlaneVideoAnalysisOutboxRepository(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const effectIdentity = `video-analysis:${operationId}:v1:c1`;
+      const claim = await outbox.claim(effectIdentity, "render-recovery-fixture");
+      if (claim === null) throw new Error("render recovery outbox claim missing");
+      expect(await outbox.markLaunched(claim, `vaw-${"a".repeat(64)}`)).toBe(true);
+      expect(
+        await recoverVideoWorkflowLaunches({
+          outbox,
+          store,
+          launcher: {
+            inspect: async () => ({ state: "terminal", status: "errored" }),
+            instanceId: async () => `vaw-${"a".repeat(64)}`,
+          },
+        }),
+      ).toMatchObject({ inspected: 1, recovered: 1, terminal: 0 });
+      expect((await outbox.get(effectIdentity))?.continuation).toBe(1);
+      expect(
+        (await admin.query("SELECT count(*)::int AS n FROM posts WHERE post_type='video'")).rows[0]
+          ?.n,
+      ).toBe(0);
+      expect(finalized.state.master).toBeNull();
+    });
+  });
+
+  test("persisted JSONB multipart manifest replays by ordered part identity, not object key order", async () => {
+    await fixture(async (admin, connection) => {
+      const store = makeControlPlaneVideoPublicationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const reservationId = "media-reservation-00000000-0000-4000-8000-000000000020";
+      const replaySubmissionId = "media-submission-video-manifest-replay";
+      const replayOperationId = "media-operation-video-manifest-replay";
+      const expiresAt = "2099-09-04T01:00:00.000Z";
+      await store.createReservation({
+        record: {
+          reservationId,
+          communityId: community,
+          intent: "original_audio",
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          requestHash: "c".repeat(64),
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: 6 * 1024 * 1024,
+          expectedSha256: videoSha256,
+          ingestPolicyRevision: 1,
+          uploadId: "multipart-upload-replay-fixture",
+          partSizeBytes: 5 * 1024 * 1024,
+          partCount: 2,
+          expiresAt,
+          state: "issued",
+          submissionId: null,
+          operationId: null,
+          manifest: null,
+          responseBytes,
+          updatedAt: "2026-09-04T00:00:00.000Z",
+        },
+        idempotencyKey: "reserve-manifest-replay",
+        responseSha256,
+        parts: [1, 2].map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/${partNumber}`,
+          expiresAt,
+        })),
+      });
+      const initial = createOriginalVideoSubmission({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+        communityId: community,
+        actorAccountId: actor,
+        authorPersonaId: persona,
+        reservationId,
+        caption: null,
+        authorDeclaredRating: "general",
+      });
+      await store.createSubmission({
+        state: initial,
+        idempotencyKey: "create-manifest-replay",
+        requestHash: "d".repeat(64),
+        startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
+        responseBytes,
+        responseSha256,
+      });
+      const manifest = [
+        { partNumber: 1, etag: "etag-one" },
+        { partNumber: 2, etag: "etag-two" },
+      ] as const;
+      const input = {
+        submission: initial,
+        expectedCreationRevision: 1,
+        posterTimestampMs: 1_000,
+        manifest,
+      };
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(false);
+      const persisted = await admin.query(
+        "SELECT multipart_manifest::text AS manifest FROM media_upload_reservations WHERE reservation_id=$1",
+        [reservationId],
+      );
+      expect(JSON.parse(persisted.rows[0]?.manifest)).toEqual(manifest);
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(false);
+      await expect(
+        store.beginFinalize({ ...input, manifest: [...manifest].reverse() }),
+      ).rejects.toThrow("video finalize manifest conflict");
+      await expect(
+        store.beginFinalize({
+          ...input,
+          manifest: [{ partNumber: 1, etag: "changed" }, manifest[1]],
+        }),
+      ).rejects.toThrow("video finalize manifest conflict");
+      await expect(store.beginFinalize({ ...input, manifest: [manifest[0]] })).rejects.toThrow(
+        "video finalize manifest conflict",
+      );
+      await store.recordMultipartCompleted({ submission: initial, manifest });
+      expect((await store.beginFinalize(input)).alreadyCompleted).toBe(true);
+      const completed = await store.getSubmissionByOperation({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+      });
+      expect(completed?.state.phase).toBe("finalize");
+      if (!completed) throw new Error("completed-source fixture missing");
+      const mismatch = {
+        submission: completed.state,
+        evidenceRef: `video-upload-expectation:${reservationId}`,
+        responseBytes,
+        responseSha256,
+        endpointTemplate: "/media-post-submissions/:submissionId/finalize",
+        idempotencyKey: "finalize-manifest-replay",
+        requestHash: "e".repeat(64),
+      };
+      const concurrent = await Promise.all([
+        store.abandonExpectationMismatch(mismatch),
+        store.abandonExpectationMismatch(mismatch),
+      ]);
+      expect(concurrent.map((result) => result.kind).sort()).toEqual(["none", "replay"]);
+      const terminal = await store.getSubmissionByOperation({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+      });
+      expect(terminal?.state.status).toBe("abandoned");
+      expect(terminal?.state.phase).toBeNull();
+      expect(terminal?.state.abandonmentReason).toBe("upload_expectation_mismatch");
+      if (terminal) {
+        expect(projectVideoSubmission(terminal)).toMatchObject({
+          status: "abandoned",
+          reason_code: "upload_expectation_mismatch",
+        });
+      }
+      const terminalRow = await admin.query(
+        "SELECT state,terminal_reason FROM media_upload_reservations WHERE reservation_id=$1",
+        [reservationId],
+      );
+      expect(terminalRow.rows[0]).toEqual({
+        state: "rejected",
+        terminal_reason: "expectation_mismatch",
+      });
+      const submissionRow = await admin.query(
+        `SELECT abandonment_reason,retention_disposition,response_snapshot_bytes IS NOT NULL AS has_response
+         FROM media_post_submissions WHERE submission_id=$1`,
+        [replaySubmissionId],
+      );
+      expect(submissionRow.rows[0]).toEqual({
+        abandonment_reason: "upload_expectation_mismatch",
+        retention_disposition: "retain_for_reconciliation",
+        has_response: true,
+      });
+      const outbox = await admin.query(
+        "SELECT count(*)::int AS count FROM media_video_analysis_outbox WHERE submission_id=$1",
+        [replaySubmissionId],
+      );
+      expect(outbox.rows[0]?.count).toBe(0);
+      const replay = await store.replayCommand({
+        submission: terminal?.state ?? initial,
+        actorAccountId: actor,
+        actorPersonaId: persona,
+        endpointTemplate: "/media-post-submissions/:submissionId/finalize",
+        idempotencyKey: "finalize-manifest-replay",
+        requestHash: "e".repeat(64),
+      });
+      expect(replay.kind).toBe("replay");
+      await expect(
+        store.abandonExpectationMismatch({ ...mismatch, idempotencyKey: "other-finalize-key" }),
+      ).rejects.toThrow("video finalization mismatch fence rejected");
+      const afterStale = await store.getSubmissionByOperation({
+        submissionId: replaySubmissionId,
+        operationId: replayOperationId,
+      });
+      expect(afterStale?.eventSequence).toBe(terminal?.eventSequence);
+    });
+  });
+
+  test("invalid multipart manifest persists a terminal, non-publishable upload mismatch", async () => {
+    await fixture(async (admin, connection) => {
+      const store = makeControlPlaneVideoPublicationStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const reservationId = "media-reservation-00000000-0000-4000-8000-000000000021";
+      const invalidSubmissionId = "media-submission-video-invalid-manifest";
+      const invalidOperationId = "media-operation-video-invalid-manifest";
+      const expiresAt = "2099-09-04T01:00:00.000Z";
+      await store.createReservation({
+        record: {
+          reservationId,
+          communityId: community,
+          intent: "original_audio",
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          requestHash: "c".repeat(64),
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: 6 * 1024 * 1024,
+          expectedSha256: videoSha256,
+          ingestPolicyRevision: 1,
+          uploadId: "multipart-upload-invalid-manifest",
+          partSizeBytes: 5 * 1024 * 1024,
+          partCount: 2,
+          expiresAt,
+          state: "issued",
+          submissionId: null,
+          operationId: null,
+          manifest: null,
+          responseBytes,
+          updatedAt: "2026-09-04T00:00:00.000Z",
+        },
+        idempotencyKey: "reserve-invalid-manifest",
+        responseSha256,
+        parts: [1, 2].map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/${partNumber}`,
+          expiresAt,
+        })),
+      });
+      const initial = createOriginalVideoSubmission({
+        submissionId: invalidSubmissionId,
+        operationId: invalidOperationId,
+        communityId: community,
+        actorAccountId: actor,
+        authorPersonaId: persona,
+        reservationId,
+        caption: null,
+        authorDeclaredRating: "general",
+      });
+      await store.createSubmission({
+        state: initial,
+        idempotencyKey: "create-invalid-manifest",
+        requestHash: "d".repeat(64),
+        startInput: { version: "video-start-input-v1", video_reservation_id: reservationId },
+        responseBytes,
+        responseSha256,
+      });
+      const reservation = await store.getReservationForAuthor({
+        reservationId,
+        actorAccountId: actor,
+        authorPersonaId: persona,
+      });
+      if (!reservation) throw new Error("invalid-manifest fixture reservation missing");
+      await store.abandonInvalidManifest({
+        submission: initial,
+        reservation,
+        evidenceRef: `video-invalid-manifest:${reservationId}`,
+      });
+      const terminal = await store.getSubmissionByOperation({
+        submissionId: invalidSubmissionId,
+        operationId: invalidOperationId,
+      });
+      expect(terminal?.state.status).toBe("abandoned");
+      expect(terminal?.state.abandonmentReason).toBe("upload_expectation_mismatch");
+      const rows = await admin.query(
+        `SELECT s.abandonment_reason,s.retention_disposition,r.state AS reservation_state,
+                r.terminal_reason,r.multipart_aborted_at IS NOT NULL AS multipart_aborted
+         FROM media_post_submissions s JOIN media_upload_reservations r
+           ON r.reservation_id=s.audio_reservation_id WHERE s.submission_id=$1`,
+        [invalidSubmissionId],
+      );
+      expect(rows.rows[0]).toEqual({
+        abandonment_reason: "upload_expectation_mismatch",
+        retention_disposition: "retain_for_reconciliation",
+        reservation_state: "rejected",
+        terminal_reason: "expectation_mismatch",
+        multipart_aborted: true,
+      });
+      const outbox = await admin.query(
+        "SELECT count(*)::int AS count FROM media_video_analysis_outbox WHERE submission_id=$1",
+        [invalidSubmissionId],
+      );
+      expect(outbox.rows[0]?.count).toBe(0);
+    });
+  });
+
   test("unresolved moderation abandonment is fenced, concurrent, and idempotent", async () => {
     await fixture(async (admin, connection) => {
       const { store, finalized } = await finalizedFixture(connection);
@@ -670,38 +1201,80 @@ suite("video publication PostgreSQL", () => {
         },
       };
       const author = { kind: "user" as const, userId: actor };
-      const reserved = await reserveVideoUpload(
-        {
-          communityId: community,
-          actor: author,
-          body: {
-            track: "video",
-            slot: "primary_video",
-            intent: "original_audio",
-            persona_id: persona,
-            idempotency_key: "reserve-renew",
-            expected_content_type: "video/mp4",
-            expected_size_bytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+      // New original-audio videos are refused before any row or upload exists.
+      await expect(
+        reserveVideoUpload(
+          {
+            communityId: community,
+            actor: author,
+            body: {
+              track: "video",
+              slot: "primary_video",
+              intent: "original_audio",
+              persona_id: persona,
+              idempotency_key: "reserve-renew-refused",
+              expected_content_type: "video/mp4",
+              expected_size_bytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+            },
           },
-        },
-        services,
+          services,
+        ),
+      ).rejects.toMatchObject({ details: { reason_code: "song_reference_required" } });
+      const refused = await admin.query(
+        "SELECT count(*)::int AS n FROM media_upload_reservations WHERE actor_user_id=$1 AND media_kind='video'",
+        [actor],
       );
-      expect(reserved.upload.expires_at).toBe(deadline);
-      expect(reserved.upload.parts[0]?.expires_at).toBe(partDeadline);
-      const id = reserved.reservation_id;
-      await createVideoSubmission(
-        {
+      expect(refused.rows[0]?.n).toBe(0);
+      // An original-audio submission started before the rule keeps renewing.
+      const id = `media-reservation-${crypto.randomUUID()}`;
+      await store.createReservation({
+        record: {
+          reservationId: id,
           communityId: community,
-          actor: author,
-          body: {
-            version: "video-start-input-v1",
-            persona_id: persona,
-            video_reservation_id: id,
-            idempotency_key: "start-renew",
-          },
+          intent: "original_audio",
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          requestHash: "e".repeat(64),
+          expectedContentType: "video/mp4",
+          expectedSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES + 1,
+          expectedSha256: null,
+          ingestPolicyRevision: 1,
+          uploadId: "renew-upload",
+          partSizeBytes: VIDEO_MULTIPART_PART_SIZE_BYTES,
+          partCount: 2,
+          expiresAt: deadline,
+          state: "issued",
+          submissionId: null,
+          operationId: null,
+          manifest: null,
+          responseBytes,
+          updatedAt: now,
         },
-        services,
-      );
+        idempotencyKey: "reserve-renew",
+        responseSha256,
+        parts: [1, 2].map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/original/${partNumber}`,
+          expiresAt: partDeadline,
+        })),
+      });
+      await store.createSubmission({
+        state: createOriginalVideoSubmission({
+          submissionId: `media-submission-${crypto.randomUUID()}`,
+          operationId: `media-operation-${crypto.randomUUID()}`,
+          communityId: community,
+          actorAccountId: actor,
+          authorPersonaId: persona,
+          reservationId: id,
+          caption: null,
+          authorDeclaredRating: "general",
+        }),
+        idempotencyKey: "start-renew",
+        requestHash: "f".repeat(64),
+        startInput: { version: "video-start-input-v1", video_reservation_id: id },
+        responseBytes,
+        responseSha256,
+      });
       await admin.query(
         "UPDATE media_video_upload_parts SET expires_at=clock_timestamp()-interval '1 second' WHERE reservation_id=$1 AND part_number=2",
         [id],
@@ -1113,12 +1686,13 @@ suite("video publication PostgreSQL", () => {
       );
       expect(await access()).toBe(false);
 
-      await admin.query(
-        `INSERT INTO home_feed_projection
-          (community_id,feed_item_id,post_id,rank_score,projected_at)
-         VALUES ($1,'feed-video-publication','post-video-publication',1,clock_timestamp())`,
+      // Publication itself projects the video into Home.
+      const projection = await admin.query(
+        `SELECT feed_item_id FROM home_feed_projection
+          WHERE community_id=$1 AND post_id='post-video-publication'`,
         [community],
       );
+      expect(projection.rows).toHaveLength(1);
       const contentStore = makeControlPlaneContentStore(layer);
       const feedStore = makeControlPlaneFeedStore(layer);
       const projectedPost = await Effect.runPromise(
@@ -1147,13 +1721,52 @@ suite("video publication PostgreSQL", () => {
         post: { post_type: "video", body: null },
         video: publicVideo,
       });
-      expect(projectedFeed.items[0]).toMatchObject({
+      // Home lists a video only once Stream can play it.
+      const feedIds = (feed: typeof projectedFeed) =>
+        feed.items.map((item) => (item as { post?: { post?: { id?: string } } }).post?.post?.id);
+      expect(feedIds(projectedFeed)).not.toContain("post-video-publication");
+      await admin.query(
+        `UPDATE media_video_stream_ingests
+            SET state='ready',creator_marker=$2,source_sha256=$3,provider_video_id=$4,
+                acceptance_deadline_ms=1000,encoding_deadline_ms=2000
+          WHERE operation_id=(SELECT operation_id FROM media_publication_projections
+                               WHERE community_id=$1 AND post_id='post-video-publication')`,
+        [community, "c".repeat(64), "d".repeat(64), "e".repeat(32)],
+      );
+      const readyFeed = await Effect.runPromise(
+        Effect.scoped(feedStore.listHome({ query: {}, viewerUserId: actor })),
+      );
+      expect(feedIds(readyFeed)).toContain("post-video-publication");
+      const readyItem = readyFeed.items.find(
+        (item) =>
+          (item as { post?: { post?: { id?: string } } }).post?.post?.id ===
+          "post-video-publication",
+      );
+      expect(readyItem).toMatchObject({
         post: {
           post: { id: "post-video-publication", post_type: "video", body: null },
-          video: publicVideo,
+          video: {
+            playback: { status: "ready", provider: "stream", playback_ref: "e".repeat(32) },
+          },
         },
       });
-      const publicProjection = JSON.stringify({ projectedPost, projectedFeed });
+      // Replayed publication must not add a second Home row.
+      await admin.query(
+        `INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at)
+         SELECT community_id, feed_item_id, post_id, 0, clock_timestamp() FROM home_feed_projection
+          WHERE community_id=$1 AND post_id='post-video-publication'
+         ON CONFLICT (community_id,post_id) DO NOTHING`,
+        [community],
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::int AS n FROM home_feed_projection WHERE community_id=$1 AND post_id='post-video-publication'",
+            [community],
+          )
+        ).rows[0],
+      ).toEqual({ n: 1 });
+      const publicProjection = JSON.stringify({ projectedPost, projectedFeed, readyFeed });
       for (const privateEvidence of [
         videoSha256,
         audioSha256,
@@ -1967,4 +2580,143 @@ suite("video publication wakeup delivery", () => {
       });
     });
   }
+  test("a lost start answer replays after the claim, after expiry, and never for another body", async () => {
+    await fixture(async (admin, connection) => {
+      const { services, body, start, submissions } = await songStartFixture(
+        admin,
+        connection,
+        "seq",
+      );
+      const first = await start(services());
+      expect(await submissions()).toBe(1);
+      // The response was lost; the reservation is claimed now.
+      expect(await start(services())).toEqual(first);
+      // Long after the reservation's deadline, the same start still gets its answer.
+      const later: VideoPublicationServices = {
+        ...services(),
+        nowIso: () => new Date(Date.now() + 86_400_000).toISOString(),
+      };
+      expect(await start(later)).toEqual(first);
+      // The same key with another body, or from another persona, is a conflict.
+      await expect(start(services(), { ...body, caption: "changed" })).rejects.toMatchObject({
+        _tag: "IdempotencyConflict",
+      });
+      expect(await submissions()).toBe(1);
+    });
+  });
+
+  test("a concurrent retry that sees the claimed reservation gets the winner's saved answer", async () => {
+    await fixture(async (admin, connection) => {
+      const { services, start, submissions, reservationState } = await songStartFixture(
+        admin,
+        connection,
+        "claimed-race",
+      );
+      const pause = await pauseStartsInsideTheirTransaction(connection);
+      const winner = start(services());
+      const paused = await pause.waiting();
+      expect(paused.join(" ")).toContain("INSERT INTO media_song_video_render_plans");
+      // Paused inside its transaction, the winner's submission and claim are
+      // both invisible: neither can be seen without the other.
+      expect(await reservationState()).toBe("issued");
+      expect(await submissions()).toBe(0);
+      let replayReads = 0;
+      let loserCreates = 0;
+      let firstReadDone!: () => void;
+      const firstRead = new Promise<void>((resolve) => {
+        firstReadDone = resolve;
+      });
+      let winnerCommitted!: () => void;
+      const committed = new Promise<void>((resolve) => {
+        winnerCommitted = resolve;
+      });
+      const base = services();
+      const loser = start(
+        services({
+          replaySubmissionStart: async (input) => {
+            replayReads += 1;
+            const outcome = await base.store.replaySubmissionStart(input);
+            if (replayReads === 1) firstReadDone();
+            return outcome;
+          },
+          // The loser reads the reservation only after the winner committed.
+          getReservationForAccount: async (input) => {
+            await committed;
+            return base.store.getReservationForAccount(input);
+          },
+          createSubmission: async (input) => {
+            loserCreates += 1;
+            return base.store.createSubmission(input);
+          },
+        }),
+      );
+      // The loser must be parked at the boundary, not finished early.
+      await Promise.race([
+        firstRead,
+        loser.then(
+          () => Promise.reject(new Error("the loser finished before its first replay read")),
+          (error) => Promise.reject(error),
+        ),
+      ]).catch(async (error) => {
+        await pause.release();
+        throw error;
+      });
+      await pause.release();
+      const won = await winner;
+      winnerCommitted();
+      expect(await loser).toEqual(won);
+      expect(replayReads).toBe(2);
+      expect(loserCreates).toBe(0);
+      expect(await submissions()).toBe(1);
+      expect(await reservationState()).toBe("claimed");
+    });
+  });
+
+  test("a concurrent retry that sees the issued reservation waits and replays the winner's answer", async () => {
+    await fixture(async (admin, connection) => {
+      const { services, start, submissions, reservationState } = await songStartFixture(
+        admin,
+        connection,
+        "issued-race",
+      );
+      const pause = await pauseStartsInsideTheirTransaction(connection);
+      const winner = start(services());
+      expect((await pause.waiting()).join(" ")).toContain(
+        "INSERT INTO media_song_video_render_plans",
+      );
+      const base = services();
+      let loserCreates = 0;
+      let loserWaiting!: () => void;
+      const atStore = new Promise<void>((resolve) => {
+        loserWaiting = resolve;
+      });
+      // The loser reads the reservation while the winner is still uncommitted,
+      // sees it issued, and goes on to the store, which serializes the key.
+      const loser = start(
+        services({
+          createSubmission: async (input) => {
+            loserCreates += 1;
+            loserWaiting();
+            return base.store.createSubmission(input);
+          },
+        }),
+      );
+      await Promise.race([
+        atStore,
+        loser.then(
+          () => Promise.reject(new Error("the loser finished before reaching the store")),
+          (error) => Promise.reject(error),
+        ),
+      ]).catch(async (error) => {
+        await pause.release();
+        throw error;
+      });
+      await pause.release();
+      const won = await winner;
+      expect(await loser).toEqual(won);
+      expect(loserCreates).toBe(1);
+      expect(await submissions()).toBe(1);
+      expect(await reservationState()).toBe("claimed");
+    });
+  });
 });

@@ -166,7 +166,7 @@ function harness() {
 
   const signed = async (
     path: string,
-    method: "GET" | "POST" | "PATCH",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     bodyText = "",
     requestOrigin = origin,
   ) => {
@@ -201,6 +201,53 @@ function harness() {
 }
 
 describe("interactive HNS community API transport", () => {
+  test("disabled PUT and DELETE guest recovery aliases refuse before HNS authority and body work", async () => {
+    const { worker, signed } = harness();
+    for (const [path, method] of [
+      ["/api/guest/learning-retention", "PUT"],
+      ["/api/guest/learner-audio", "DELETE"],
+    ] as const) {
+      const request = await signed(path, method);
+      const response = await worker.request(request.url, request.init);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.has("set-cookie")).toBe(false);
+      const wrongOrigin = await signed(path, method, "", "https://app.attacker");
+      const denied = await worker.request(wrongOrigin.url, wrongOrigin.init);
+      // The closed declaration refuses before Access, MAC and Origin checks.
+      expect(denied.status).toBe(404);
+      expect(denied.headers.has("set-cookie")).toBe(false);
+      expect(denied.headers.get("cache-control")).toBe("private, no-store");
+    }
+  });
+  test("refuses the protected API hostname while HNS is disabled without affecting the ordinary host", async () => {
+    const protectedOrigin = "https://hns-community-api-staging.pirate.sc";
+    const worker = createHttpWorker({
+      config: {
+        corsOrigin: "https://web-next-staging.pirate.sc",
+        hnsCommunityAppApiProtectedOrigin: protectedOrigin,
+      },
+    });
+    for (const path of [
+      "/health",
+      "/api/health",
+      "/internal/hns/solid-host-authority/v2/resolve",
+    ]) {
+      const denied = await worker.request(`${protectedOrigin}${path}`);
+      expect(denied.status).toBe(503);
+      expect(denied.headers.get("cache-control")).toBe("no-store");
+    }
+    expect((await worker.request("https://api-next-staging.pirate.sc/health")).status).toBe(200);
+    expect(() =>
+      createHttpWorker({
+        config: {
+          corsOrigin: "",
+          hnsCommunityAppApiProtectedOrigin: `${protectedOrigin}/path`,
+        },
+      }),
+    ).toThrow("HNS community API protected origin is invalid");
+  });
+
   test("keeps ordinary CORS static and dynamically admits only a verified host", async () => {
     const { worker, signed } = harness();
     const acceptedRequest = await signed("/api/health", "GET");

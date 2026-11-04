@@ -174,6 +174,37 @@ suite("private video safety evidence PostgreSQL fences", () => {
       ).rejects.toThrow();
   });
 
+  test("the v1 sampled-frame gate may persist allow only with its own evidence and no minor-safety claim", async () => {
+    const insert = (fact: Record<string, unknown>) =>
+      admin.query(
+        `INSERT INTO media_video_safety_evidence (submission_id,video_revision,creation_revision,request_id,input_sha256,evidence_ref,evidence_snapshot,platform_held) VALUES ($1,1,1,'safety-request',$2,$3,$4::jsonb,false)`,
+        [
+          submissionId,
+          "a".repeat(64),
+          `evidence_${"b".repeat(64)}`,
+          JSON.stringify({ ...evidence(), fact: { ...evidence().fact, ...fact } }),
+        ],
+      );
+    const gateAllow = {
+      mediaSafety: "allow",
+      gateKind: "sampled_frame_openai_v1",
+      sampledFrameEvidenceRef: `sampled_frame_openai_v1_${"b".repeat(64)}`,
+    };
+    for (const invalid of [
+      { ...gateAllow, minorSafetyEvidenceRef: "minor-safety:claimed" },
+      { ...gateAllow, sampledFrameEvidenceRef: "sampled_frame_openai_v1_short" },
+      { ...gateAllow, gateKind: "other_gate" },
+      { mediaSafety: "allow", sampledFrameEvidenceRef: gateAllow.sampledFrameEvidenceRef },
+    ])
+      await expect(insert(invalid)).rejects.toThrow();
+    await insert(gateAllow);
+    const stored = await admin.query(
+      "SELECT evidence_snapshot->'fact'->>'mediaSafety' AS media FROM media_video_safety_evidence WHERE submission_id=$1",
+      [submissionId],
+    );
+    expect(stored.rows[0]?.media).toBe("allow");
+  });
+
   test("direct writes reject null and malformed succeeded provider results", async () => {
     const insertSucceeded = (role: "poster" | "first", result: unknown, token: string) =>
       admin.query(

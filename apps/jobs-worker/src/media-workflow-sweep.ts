@@ -27,7 +27,7 @@ export type MediaWorkflowSweepDependencies = Readonly<{
     "listWorkflowCandidates" | "loadAuthority" | "replaceMissingWorkflow"
   > &
     Pick<MediaProcessingStore, "reconcileTerminalWorkflow">;
-  readonly workflow: Pick<MediaProcessingWorkflowLauncher, "get">;
+  readonly workflow: Pick<MediaProcessingWorkflowLauncher, "get" | "getRecoveryFailure">;
   readonly observe?: MediaProcessingObserver;
 }>;
 
@@ -115,6 +115,22 @@ export async function sweepMissingMediaWorkflows(
     if (workflowStatus === "finished") {
       result.finished += 1;
       try {
+        const recoveryFailure = await dependencies.workflow.getRecoveryFailure(
+          workflowInstanceId(candidate),
+        );
+        if (recoveryFailure !== null) {
+          // Lookup failure is not provider exhaustion. Keep the one recovery
+          // identity intact for operator repair and never synthesize unavailable.
+          dependencies.observe?.({
+            event: "workflow_terminal_recovery_failed",
+            operationId: candidate.operationId,
+            submissionId: candidate.submissionId,
+            workflowRevision: candidate.workflowRevision,
+            recoveryFailure,
+          });
+          result.recoveryFailed += 1;
+          continue;
+        }
         const authority = await dependencies.store.loadAuthority(
           candidate.submissionId,
           candidate.operationId,

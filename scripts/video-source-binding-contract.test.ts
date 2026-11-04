@@ -14,6 +14,7 @@ type GatewayConfig = {
   secrets?: unknown;
   workflows?: unknown;
   observability?: unknown;
+  routes?: unknown;
 };
 const config = BunRuntime.JSONC.parse(
   await BunRuntime.file(
@@ -37,6 +38,11 @@ test("video source gateway has only its two bindings and never persists invocati
     expect(block.vars).toBeUndefined();
     expect(block.secrets).toBeUndefined();
     expect(block.workflows).toBeUndefined();
+    expect(block.routes).toEqual(
+      environment === "production"
+        ? [{ pattern: "video-source.pirate.sc", custom_domain: true }]
+        : undefined,
+    );
     expect(block.observability).toEqual({
       enabled: true,
       logs: { enabled: true, head_sampling_rate: 1, invocation_logs: false, persist: true },
@@ -58,7 +64,15 @@ test("video source gateway has only its two bindings and never persists invocati
             "r2_buckets",
             "observability",
           ]
-        : ["name", "workers_dev", "preview_urls", "hyperdrive", "r2_buckets", "observability"]
+        : [
+            "name",
+            "workers_dev",
+            "preview_urls",
+            "hyperdrive",
+            "r2_buckets",
+            "observability",
+            ...(environment === "production" ? ["routes"] : []),
+          ]
       ).sort(),
     );
   }

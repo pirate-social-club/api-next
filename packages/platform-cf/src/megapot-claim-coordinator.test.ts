@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  MegapotClaimCandidate,
-  MegapotClaimProgress,
-  MegapotClaimStore,
+import {
+  type MegapotClaimCandidate,
+  type MegapotClaimProgress,
+  MegapotClaimStorageFailed,
+  type MegapotClaimStore,
+  RewardOperationsPaused,
 } from "@pirate/application";
 import { Effect } from "effect";
 import {
@@ -161,6 +163,10 @@ function harness(
     readonly owner?: string;
     readonly estimateFailureAt?: number;
     readonly estimateRevert?: "no_tickets_to_claim" | "not_ticket_owner";
+    /** A run lease the test can let lapse, optionally right after a store step. */
+    lease?: { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined };
+    /** Makes the record of a submission fail, as a lost database write would. */
+    record?: { fail: boolean };
   } = {},
 ) {
   let progress: MegapotClaimProgress | null = null;
@@ -168,6 +174,7 @@ function harness(
   let sendCalls = 0;
   let signCalls = 0;
   let estimateCalls = 0;
+  const submissions: string[] = [];
   const reviews: Parameters<MegapotClaimStore["requireReview"]>[0][] = [];
   const store = {
     findProgress: () => Effect.succeed(progress),
@@ -189,10 +196,12 @@ function harness(
         preflightBlockHash: request.observedBlockHash,
       } as const;
       progress = { state: "nonce_reserved", reservation };
+      if (options.lease?.lapseAfter === "reserve") options.lease.live = false;
       return Effect.succeed(reservation);
     },
     prepare: (request) => {
       prepared = true;
+      if (options.lease?.lapseAfter === "prepare") options.lease.live = false;
       progress = {
         ...request.reservation,
         state: "prepared",
@@ -205,6 +214,9 @@ function harness(
       return Effect.void;
     },
     recordSubmission: (request) => {
+      if (options.record?.fail)
+        return Effect.fail(new MegapotClaimStorageFailed({ reason: "outcome-unknown" }));
+      submissions.push(request.outcome);
       if (
         progress === null ||
         progress.state === "confirmed" ||
@@ -301,7 +313,8 @@ function harness(
       if (options.uncertain) throw new Error("unknown");
       return SIGNED_TRANSACTION_HASH;
     },
-    readReceipt: async () => (prepared ? receipt() : null),
+    // A receipt exists only for a transaction that was sent.
+    readReceipt: async () => (prepared && sendCalls > 0 ? receipt() : null),
     readHead: async () => ({ blockNumber: 202n, blockHash: hash("d") }),
     readBlock: async (blockNumber) => ({
       blockNumber,
@@ -320,6 +333,14 @@ function harness(
   } satisfies MegapotV2TransactionSigner;
   return {
     coordinator: makeMegapotClaimCoordinator({
+      authority: {
+        ensure: () =>
+          Effect.suspend(() =>
+            options.lease === undefined || options.lease.live
+              ? Effect.void
+              : Effect.fail(new RewardOperationsPaused({ reason: "paused" })),
+          ),
+      },
       store,
       rpc,
       signer,
@@ -330,6 +351,8 @@ function harness(
     }),
     sendCalls: () => sendCalls,
     signCalls: () => signCalls,
+    state: () => progress?.state ?? null,
+    submissions: () => submissions,
     reviews: () => reviews,
   };
 }
@@ -434,5 +457,64 @@ describe("Megapot claim coordinator", () => {
     expect(testHarness.reviews()).toHaveLength(0);
     expect(testHarness.signCalls()).toBe(0);
     expect(testHarness.sendCalls()).toBe(0);
+  });
+});
+
+describe("Megapot claim under a run lease", () => {
+  const command = { poolLegId: candidate.poolLegId, drawingId: 101n };
+  const attempt = (fixture: ReturnType<typeof harness>) =>
+    Effect.runPromise(
+      fixture.coordinator.claim(command).pipe(
+        Effect.map((value) => value.kind as string),
+        Effect.catch((error) => Effect.succeed(`failed:${(error as { _tag: string })._tag}`)),
+      ),
+    );
+  type Lease = { live: boolean; lapseAfter?: "reserve" | "prepare" | undefined };
+
+  test("a reservation made before expiry is not signed after it", async () => {
+    const lease: Lease = { live: true, lapseAfter: "reserve" };
+    const fixture = harness({ lease });
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.state()).toBe("nonce_reserved");
+    // Resumed after expiry: still neither signed nor sent.
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.signCalls()).toBe(0);
+    expect(fixture.sendCalls()).toBe(0);
+    lease.lapseAfter = undefined;
+    lease.live = true;
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.signCalls()).toBe(1);
+    expect(fixture.sendCalls()).toBe(1);
+  });
+
+  test("a signature stored before expiry is not sent after it, and is not recorded as uncertain", async () => {
+    const lease: Lease = { live: true, lapseAfter: "prepare" };
+    const fixture = harness({ lease });
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(await attempt(fixture)).toBe("failed:RewardOperationsPaused");
+    expect(fixture.state()).toBe("prepared");
+    expect(fixture.signCalls()).toBe(1);
+    expect(fixture.sendCalls()).toBe(0);
+    expect(fixture.submissions()).toEqual([]);
+    lease.lapseAfter = undefined;
+    lease.live = true;
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.signCalls()).toBe(1);
+    expect(fixture.sendCalls()).toBe(1);
+  });
+
+  test("a send that succeeded but was never recorded is recovered after expiry with no signature or send", async () => {
+    const lease: Lease = { live: true };
+    const record = { fail: true };
+    const fixture = harness({ lease, record });
+    expect(await attempt(fixture)).toBe("failed:MegapotClaimStorageFailed");
+    expect(fixture.sendCalls()).toBe(1);
+    expect(fixture.state()).toBe("prepared");
+    record.fail = false;
+    lease.live = false;
+    expect(await attempt(fixture)).toBe("confirmed");
+    expect(fixture.signCalls()).toBe(1);
+    expect(fixture.sendCalls()).toBe(1);
+    expect(fixture.submissions()).toHaveLength(1);
   });
 });

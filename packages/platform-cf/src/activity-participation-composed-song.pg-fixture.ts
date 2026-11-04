@@ -12,11 +12,16 @@ import {
   POST_ID,
   SUBMISSION_ID,
 } from "./activity-participation-composed.pg-fixture.ts";
+import { insertSongStemPairFixture } from "./song-stems.pg-fixture.ts";
 
-export async function seedActivitySong(admin: Client): Promise<void> {
+export async function seedActivitySong(
+  admin: Client,
+  options?: { readonly accountAlreadyBorn?: boolean },
+): Promise<void> {
   const lyrics = LYRIC_LINES.join("\n");
   const lineHashes = await Promise.all(LYRIC_LINES.map((line) => digest(line)));
-  await admin.query("INSERT INTO users (user_id) VALUES ($1)", [AUTHOR_ID]);
+  if (options?.accountAlreadyBorn !== true)
+    await admin.query("INSERT INTO users (user_id) VALUES ($1)", [AUTHOR_ID]);
   await admin.query(
     `INSERT INTO communities (
        community_id, display_name, status, created_by_user_id, created_at, updated_at
@@ -26,8 +31,8 @@ export async function seedActivitySong(admin: Client): Promise<void> {
   await admin.query(
     `INSERT INTO personas (
        persona_id, account_id, status, is_first_persona, created_at, retired_at
-     ) VALUES ($1,$2,'active',true,clock_timestamp(),NULL)`,
-    [AUTHOR_PERSONA_ID, AUTHOR_ID],
+     ) VALUES ($1,$2,'active',$3,clock_timestamp(),NULL)`,
+    [AUTHOR_PERSONA_ID, AUTHOR_ID, options?.accountAlreadyBorn !== true],
   );
   await admin.query(
     `INSERT INTO persona_community_bindings (
@@ -93,6 +98,13 @@ export async function seedActivitySong(admin: Client): Promise<void> {
       lyrics,
     ],
   );
+  await insertSongStemPairFixture(admin, {
+    submissionId: SUBMISSION_ID,
+    communityId: COMMUNITY_ID,
+    actorUserId: AUTHOR_ID,
+    operationId: OPERATION_ID,
+    personaId: AUTHOR_PERSONA_ID,
+  });
   for (const [index, line] of LYRIC_LINES.entries()) {
     const ordinal = index + 1;
     const lineId = `composed-line-${ordinal}`;
@@ -185,6 +197,8 @@ export async function seedActivitySong(admin: Client): Promise<void> {
   const artifact = {
     version: "media-timed-lyrics-artifact-v1",
     mode: "word",
+    alignment_source_ref: `media://immutable/${OPERATION_ID}-stem-vocal_audio/audio/1`,
+    alignment_source_sha256: "9".repeat(64),
     segments,
   };
   await admin.query(

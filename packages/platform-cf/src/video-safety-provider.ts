@@ -172,7 +172,16 @@ export function validateVideoSafetyFrameProviderFailure(
   return value as VideoSafetyFrameProviderFailure;
 }
 
-/** OpenAI is a signal provider; without the separate visual gate media allow is unreachable. */
+/**
+ * OpenAI is a signal provider. Without the separate visual gate, media allow is
+ * reachable only through the owner-enabled `sampled_frame_openai_v1` gate
+ * (Spec 013 v1 automatic video publication amendment, 2026-09-25): every
+ * sampled frame evaluated with a `permit` resolution, nothing blocked, and the
+ * caption, if any, allowed. That allow names the gate and carries
+ * sampled-frame evidence; minor-safety evidence stays null. Only three stills
+ * are examined, `sexual/minors` is text-only, and OpenAI moderation is not
+ * dedicated child-safety detection, so this is an accepted v1 risk.
+ */
 export function makeVideoSafetyProvider(
   options: Readonly<{
     image: ImageModerationProviderServiceV1 | null;
@@ -180,6 +189,7 @@ export function makeVideoSafetyProvider(
     readFrame: (reference: string, sha256: string) => Promise<Uint8Array>;
     readPolicy: (communityId: string) => Promise<TextModerationPolicySnapshotV2>;
     evidence: VideoSafetyEvidenceStore;
+    sampledFrameGate?: boolean;
   }>,
 ): VideoAnalysisProviders["moderate"] {
   return async (input) => {
@@ -209,7 +219,16 @@ export function makeVideoSafetyProvider(
       ),
     );
     const retained = await options.evidence.load(input, inputDigest);
-    if (retained !== null) return retained;
+    if (retained !== null) {
+      // Turning the gate off revokes a retained gate allow: the replayed fact
+      // falls back to review and loses the gate evidence. The stored evidence
+      // itself is unchanged.
+      if (retained.gateKind !== undefined && options.sampledFrameGate !== true) {
+        const { gateKind: _gate, sampledFrameEvidenceRef: _evidence, ...rest } = retained;
+        return rest.mediaSafety === "allow" ? { ...rest, mediaSafety: "review_required" } : rest;
+      }
+      return retained;
+    }
     let policy: TextModerationPolicySnapshotV2 | null = null;
     let unavailable = false;
     try {
@@ -222,6 +241,7 @@ export function makeVideoSafetyProvider(
     const inputs: unknown[] = [];
     const unavailableFrames: VideoSafetyFrameClaimInput[] = [];
     let mediaSafety: VideoSafetyFact["mediaSafety"] = "review_required";
+    let permittedFrames = 0;
     let captionSafety: VideoSafetyFact["captionSafety"] =
       caption === null ? "not_applicable" : "review_required";
     const resolve = (categories: readonly string[]) => {
@@ -361,6 +381,7 @@ export function makeVideoSafetyProvider(
         result.matched_categories.includes("sexual/minors")
       )
         mediaSafety = "blocked";
+      if (resolution.effective_policy_decision === "permit") permittedFrames += 1;
       inputs.push({
         role: frame.role,
         sha256: frame.sha256,
@@ -422,10 +443,31 @@ export function makeVideoSafetyProvider(
         ]),
       ),
     );
+    // Fail closed: any unavailable frame, caption or policy, any hold or block,
+    // or any frame short of `permit` keeps the video out of allow.
+    const sampledFrameAllow =
+      options.sampledFrameGate === true &&
+      options.image !== null &&
+      policy !== null &&
+      !unavailable &&
+      !platformHeld &&
+      mediaSafety === "review_required" &&
+      input.frames.length > 0 &&
+      permittedFrames === input.frames.length &&
+      (captionSafety === "allow" || captionSafety === "not_applicable");
+    if (sampledFrameAllow) mediaSafety = "allow";
     const fact: VideoSafetyFact = {
       requestId,
       evidenceRef: `evidence_${evidenceDigest}`,
       minorSafetyEvidenceRef: null,
+      // The gate kind records that the v1 gate evaluated this video, allowed or
+      // not; only an allow carries the gate's evidence reference.
+      ...(options.sampledFrameGate === true
+        ? { gateKind: "sampled_frame_openai_v1" as const }
+        : {}),
+      ...(sampledFrameAllow
+        ? { sampledFrameEvidenceRef: `sampled_frame_openai_v1_${evidenceDigest}` }
+        : {}),
       mediaSafety,
       captionSafety,
       automatedRating,

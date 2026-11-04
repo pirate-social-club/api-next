@@ -1,7 +1,16 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { withWorkspacePublicAliases } from "../workspace-public-aliases.ts";
 
-const alias = {
+const alias = withWorkspacePublicAliases({
+  "@pirate/application/telegram-study": new URL(
+    "../../packages/application/src/telegram-study.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/telegram-linking": new URL(
+    "../../packages/application/src/telegram-linking.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/telegram": new URL(
     "../../packages/application/src/telegram/index.ts",
     import.meta.url,
@@ -31,7 +40,7 @@ const alias = {
     "../../packages/domain/src/verification/index.ts",
     import.meta.url,
   ).pathname,
-};
+});
 
 export default defineConfig({
   plugins: [

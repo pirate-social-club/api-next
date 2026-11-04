@@ -2,6 +2,10 @@
  * Deterministic evidence at the chain-store boundary, not RPC/signing coverage.
  * Every economic row is written by the production stores. The caller supplies
  * a drawing frozen and committed by the production coordinators.
+ *
+ * Spec 015 §5.2a: a participant credit is paid only after an accepted claim.
+ * The caller's `claim` hook runs per allocation and reports whether the claim
+ * was accepted; unclaimed credits must be refused by payout and stay owed.
  */
 import { expect } from "bun:test";
 import { Effect } from "effect";
@@ -24,6 +28,8 @@ export async function completeComposedWinningChain(input: {
   poolLegId: string;
   drawingId: bigint;
   settlementAtMs: number;
+  expectedAllocationsAtomic: readonly bigint[];
+  claim: (row: { readonly creditId: string; readonly accountId: string }) => Promise<boolean>;
 }) {
   const layer = makeDirectPostgresControlPlaneLayer(input.scopedConnection);
   const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
@@ -164,7 +170,9 @@ export async function completeComposedWinningChain(input: {
   });
   const allocation = await run(allocator.allocate(key));
   expect(await run(allocator.allocate(key))).toEqual(allocation);
-  expect(allocation.allocations.map((row) => row.amountAtomic)).toEqual([301n, 300n, 300n]);
+  expect(allocation.allocations.map((row) => row.amountAtomic)).toEqual([
+    ...input.expectedAllocationsAtomic,
+  ]);
 
   const solvencyStore = makeControlPlaneCustodySolvencyStore(layer);
   const solvency = await run(
@@ -185,9 +193,22 @@ export async function completeComposedWinningChain(input: {
   });
   const payout = makeControlPlaneRewardPayoutStore(layer);
   const payoutEffectIds: string[] = [];
+  const heldCreditIds: string[] = [];
   let custodyBalance = 90901n;
-  for (const [index, row] of allocation.allocations.entries()) {
+  let paidCount = 0;
+  for (const row of allocation.allocations) {
     if (row.creditId === null) throw new Error("missing participant credit");
+    await expect(run(payout.loadCandidate(row.creditId))).rejects.toMatchObject({
+      reason: "credit-not-payable",
+    });
+    if (!(await input.claim({ creditId: row.creditId, accountId: row.accountId }))) {
+      await expect(run(payout.loadCandidate(row.creditId))).rejects.toMatchObject({
+        reason: "credit-not-payable",
+      });
+      heldCreditIds.push(row.creditId);
+      continue;
+    }
+    const index = paidCount++;
     const candidate = await run(payout.loadCandidate(row.creditId));
     const effectId = `composed-payout-${index}-${suffix}`;
     const nonce = BigInt(index + 3);
@@ -244,7 +265,13 @@ export async function completeComposedWinningChain(input: {
     expect(await run(payout.findProgress(effectId))).toMatchObject({ state: "confirmed" });
     payoutEffectIds.push(effectId);
   }
-  expect(custodyBalance).toBe(90000n);
   expect(await run(allocator.allocate(key))).toEqual(allocation);
-  return { allocation, purchaseEffectId, claimEffectId, payoutEffectIds, custodyBalance };
+  return {
+    allocation,
+    purchaseEffectId,
+    claimEffectId,
+    payoutEffectIds,
+    heldCreditIds,
+    custodyBalance,
+  };
 }

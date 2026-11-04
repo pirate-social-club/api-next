@@ -69,11 +69,6 @@ export type IdentityRegistrationInput = {
   readonly provider: "privy";
   readonly providerAppId: string;
   readonly providerSubject: string;
-  readonly minimumAgeAttestation: {
-    readonly version: "minimum-age-attestation-v1";
-    readonly minimum_age: 16;
-    readonly affirmed: true;
-  };
   readonly credentialId: string;
   readonly userId: string;
   readonly account: unknown;
@@ -403,12 +398,24 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         .withTransaction((transaction) =>
           Effect.gen(function* () {
             yield* transaction.execute({
+              label: "identity.account-source.lock-topology",
+              text: "SELECT pg_advisory_xact_lock(83000003,1)",
+              values: [],
+              readonly: false,
+            });
+            yield* transaction.execute({
               label: "identity.users.upsert-account",
               text: `INSERT INTO users (user_id, status, account, created_at)
                    VALUES ($1, 'active', $2::jsonb, $3::timestamptz)
                    ON CONFLICT (user_id) DO UPDATE
                      SET status = 'active', account = EXCLUDED.account`,
               values: [userId, encodedAccount, document.user.created_at],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "identity.account-source.provision",
+              text: "SELECT provision_account_participation_owner_v1($1) AS owner_id",
+              values: [userId],
               readonly: false,
             });
             yield* transaction.execute({
@@ -531,6 +538,12 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       ControlPlaneError | IdentityRegistrationRace | IdentityRepositoryError
     > = db.withTransaction((transaction) =>
       Effect.gen(function* () {
+        yield* transaction.execute({
+          label: "identity.account-source.lock-topology",
+          text: "SELECT pg_advisory_xact_lock(83000003,1)",
+          values: [],
+          readonly: false,
+        });
         const existing = yield* transaction.execute<CredentialRow>({
           label: "identity.registration.lock-credential",
           text: `SELECT credential.canonical_user_id, credential.status,
@@ -547,24 +560,7 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         });
         if (existing.rows.length > 1) return yield* Effect.fail(invalid());
         if (existing.rows.length === 1) {
-          const outcome = yield* credentialOutcome(existing.rows[0]);
-          if (outcome.kind === "already_registered") {
-            yield* transaction.execute({
-              label: "identity.registration.backfill-minimum-age-attestation",
-              text: `INSERT INTO account_minimum_age_attestations
-                      (account_id, version, minimum_age, affirmed)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (account_id) DO NOTHING`,
-              values: [
-                outcome.canonicalUserId,
-                input.minimumAgeAttestation.version,
-                input.minimumAgeAttestation.minimum_age,
-                input.minimumAgeAttestation.affirmed,
-              ],
-              readonly: false,
-            });
-          }
-          return outcome;
+          return yield* credentialOutcome(existing.rows[0]);
         }
 
         const handleCollision = yield* transaction.execute({
@@ -592,20 +588,11 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         }
 
         yield* transaction.execute({
-          label: "identity.registration.insert-minimum-age-attestation",
-          text: `INSERT INTO account_minimum_age_attestations
-                  (account_id, version, minimum_age, affirmed, attested_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz)`,
-          values: [
-            input.userId,
-            input.minimumAgeAttestation.version,
-            input.minimumAgeAttestation.minimum_age,
-            input.minimumAgeAttestation.affirmed,
-            document.user.created_at,
-          ],
+          label: "identity.account-source.provision",
+          text: "SELECT provision_account_participation_owner_v1($1) AS owner_id",
+          values: [input.userId],
           readonly: false,
         });
-
         const insertedCredential = yield* transaction.execute({
           label: "identity.registration.insert-credential",
           text: `INSERT INTO identity_credentials (

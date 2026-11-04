@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { normalizePostgresBaselineDump } from "../../../scripts/postgres-baseline-normalization.ts";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
   readHnsResolverParityBehavior,
@@ -25,7 +26,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 14;
+const foundationTestCount = 15;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -910,6 +911,84 @@ async function expectPostgresFailure(
 }
 
 suite("Postgres 17 product and gates v2 foundation", () => {
+  test("portable function replay preserves actual target namespace, overload defaults, body and independent native frames", async () => {
+    await withSchema(async (admin, _connection, schema) => {
+      await admin.query(`CREATE FUNCTION portable_catalog_example(input_value integer DEFAULT 7)
+        RETURNS integer LANGUAGE sql SECURITY DEFINER
+        SET search_path TO pg_catalog, ${quoteIdentifier(schema)}, pg_temp
+        AS $$ SELECT input_value + 1 $$;
+        CREATE FUNCTION portable_catalog_example(input_value text DEFAULT 'sample'::text)
+        RETURNS text LANGUAGE sql SECURITY DEFINER
+        SET search_path TO pg_catalog, ${quoteIdentifier(schema)}, pg_temp
+        AS $$ SELECT pg_catalog.lower(input_value) $$;
+        CREATE FUNCTION portable_schema_first_example() RETURNS integer LANGUAGE sql SECURITY DEFINER
+        SET search_path TO ${quoteIdentifier(schema)}, pg_catalog, pg_temp
+        AS $$ SELECT portable_catalog_example(11) $$;
+        CREATE FUNCTION portable_legacy_example() RETURNS integer LANGUAGE sql
+        SET search_path TO ${quoteIdentifier(schema)}, pg_temp AS $$ SELECT 3 $$;`);
+      const definitions = await admin.query<{ definition: string }>(
+        `SELECT pg_get_functiondef(p.oid) AS definition FROM pg_proc p
+          JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1
+          ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)`,
+        [schema],
+      );
+      expect(definitions.rows).toHaveLength(4);
+      const nativeCatalog = await catalogForSchema(admin, schema);
+      const target = schemaIdentifier();
+      await admin.query(`CREATE SCHEMA ${quoteIdentifier(target)}`);
+      const footprint = async (namespace: string) =>
+        (
+          await admin.query(
+            `SELECT p.proname,pg_get_function_arguments(p.oid) AS arguments,p.prosrc,p.prosecdef
+          FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1
+          ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)`,
+            [namespace],
+          )
+        ).rows;
+      const originalFootprint = await footprint(schema);
+      try {
+        await admin.query(`SET search_path TO ${quoteIdentifier(target)}`);
+        // pg_get_functiondef splits the declaration before RETURNS; pg_dump
+        // puts that header on one line. Join only that header, leaving body bytes.
+        const dump = definitions.rows
+          .map(
+            ({ definition }) =>
+              definition
+                .replace(/\n[ \t]+RETURNS /u, " RETURNS ")
+                .replaceAll(`${schema}.`, "public.")
+                .trimEnd() + ";",
+          )
+          .join("\n");
+        await admin.query(normalizePostgresBaselineDump(dump));
+        expect(await admin.query("SHOW search_path").then((result) => result.rows)).toEqual([
+          { search_path: `${target}, pg_temp` },
+        ]);
+        expect(await catalogForSchema(admin, target)).toEqual(nativeCatalog);
+        expect(await footprint(target)).toEqual(originalFootprint);
+        expect(
+          (
+            await admin.query(`SELECT portable_catalog_example(7) AS integer_result,
+          portable_catalog_example('MiXeD'::text) AS text_result,portable_legacy_example() AS legacy_result,portable_schema_first_example() AS schema_first_result`)
+          ).rows,
+        ).toEqual([
+          { integer_result: 8, text_result: "mixed", legacy_result: 3, schema_first_result: 12 },
+        ]);
+        expect(
+          (
+            await admin.query(`SELECT count(*)::int AS count FROM pg_proc p
+          JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pg_catalog'
+          AND p.proname IN ('portable_catalog_example','portable_legacy_example','portable_schema_first_example')`)
+          ).rows,
+        ).toEqual([{ count: 0 }]);
+      } finally {
+        await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+        await admin.query(`DROP SCHEMA ${quoteIdentifier(target)} CASCADE`);
+      }
+    });
+    // Completion is credited only after both owned namespaces have drained.
+    completedTestCount += 1;
+  });
+
   test("matches migration and normalized-baseline catalogs and HNS resolver behavior", async () => {
     await withSchema(async (admin, scopedConnectionString, schema) => {
       expect(checksum(migrationSql)).toBe(migration.checksum);
@@ -1337,6 +1416,22 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "data_registration_signing_attempts",
         "decision_records",
         "evidence_receipts",
+        "guest_attachment_intents",
+        "guest_credentials",
+        "guest_empty_owner_aliases",
+        "guest_learning_preferences",
+        "guest_learning_schema_phase",
+        "guest_participation_operations",
+        "guest_resource_cost_policy_snapshots",
+        "guest_resource_edge_locks",
+        "guest_resource_global_lock",
+        "guest_resource_policy_snapshots",
+        "guest_resource_provider_calls",
+        "guest_resource_release_receipts",
+        "guest_resource_session_reservations",
+        "guest_secret_issuance_operations",
+        "guest_study_spoken_captures",
+        "guest_study_spoken_checkpoints",
         "handle_account_directory_bindings",
         "handle_account_offering_grant_counters",
         "handle_claim_actions",
@@ -1361,12 +1456,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "handle_reservation_actions",
         "handle_reservations",
         "handle_reserved_label_revisions",
+        "handle_spaces_membership_source_revisions",
         "hns_authority_inventories",
         "hns_authority_provision_jobs",
         "hns_community_app_host_activation_current",
         "hns_community_app_host_activation_revisions",
         "hns_community_app_host_operations",
         "hns_community_publication_jobs",
+        "hns_community_root_import_preparation_ceremonies",
         "hns_community_root_import_preparations",
         "hns_control_observer_configurations",
         "hns_control_observer_operations",
@@ -1392,9 +1489,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_root_import_lifecycle_jobs",
         "hns_root_import_name_proof_observations",
         "hns_root_import_observation_jobs",
+        "hns_root_import_publication_authorizations",
         "hns_root_import_recovery_authorizations",
         "hns_root_import_recovery_findings",
         "hns_root_import_retention_reviews",
+        "hns_root_import_safe_ownership_proofs",
+        "hns_root_import_separated_clocks_inventory",
         "hns_root_import_sessions",
         "hns_root_import_teardown_jobs",
         "home_feed_projection",
@@ -1402,7 +1502,22 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "karaoke_attempts",
         "karaoke_recordings",
         "karaoke_sessions",
+        "learner_audio_account_producer_captures",
+        "learner_audio_account_provider_calls",
+        "learner_audio_account_spoken_checkpoints",
         "learner_audio_artifacts",
+        "learner_audio_delete_batch_items",
+        "learner_audio_delete_batches",
+        "learner_audio_delete_commands",
+        "learner_audio_delete_sources",
+        "learner_audio_delete_target_artifacts",
+        "learner_audio_deleted_objects",
+        "learner_audio_legacy_settlements",
+        "learner_audio_object_names",
+        "learner_audio_owner_fences",
+        "learner_audio_upload_attempts",
+        "learner_audio_upload_cleanup_commands",
+        "learner_audio_upload_terminal_facts",
         "localization_lyric_line_lineage",
         "localization_lyric_line_occurrences",
         "localization_lyric_line_study_units",
@@ -1429,8 +1544,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_reference_evidence",
         "media_song_canonical_timings",
         "media_song_lyrics_revisions",
+        "media_song_stems",
         "media_song_video_accepted_masters",
+        "media_song_video_excerpt_grants",
         "media_song_video_masters",
+        "media_song_video_pcm_admission_policy",
+        "media_song_video_pcm_admissions",
+        "media_song_video_pcm_references",
+        "media_song_video_pcm_source_grants",
         "media_song_video_render_attempts",
         "media_song_video_render_plans",
         "media_submission_command_replays",
@@ -1445,6 +1566,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_video_derived_artifacts",
         "media_video_enrichment_outbox",
         "media_video_original_sounds",
+        "media_video_outcome_claims",
         "media_video_publication_decisions",
         "media_video_publication_wakeups",
         "media_video_reservation_command_replays",
@@ -1469,6 +1591,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "megapot_drawing_sweeps",
         "megapot_fallback_cutoff_activity_evidence",
         "megapot_fallback_cutoff_evidence",
+        "megapot_participant_claim_guards",
+        "megapot_participant_claims",
         "megapot_pool_beneficiary_snapshots",
         "megapot_pool_commitment_effects",
         "megapot_pool_drawing_transitions",
@@ -1498,6 +1622,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "operator_managed_root_registry_versions",
         "operator_managed_route_activations",
         "operator_managed_route_operations",
+        "participation_owner_clocks",
+        "participation_owners",
         "persona_activity_preparation_actions",
         "persona_activity_presentation_actions",
         "persona_activity_presentations",
@@ -1541,12 +1667,29 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "reward_chain_effects",
         "reward_eligibility_decisions",
         "reward_erc20_transfer_receipt_evidence",
+        "reward_gas_topup_daily_budgets",
+        "reward_gas_topup_wallets",
+        "reward_gas_topups",
         "reward_ledger_credits",
+        "reward_native_transfer_receipt_evidence",
+        "reward_operations_control",
+        "reward_operations_control_events",
+        "reward_operations_run_lease",
+        "reward_operations_run_lease_events",
         "reward_payout_effects",
         "reward_refund_effects",
+        "reward_safe_backing_v1",
+        "reward_safe_policies_v1",
+        "reward_safe_settlement_events_v1",
+        "reward_safe_settlements_v1",
+        "reward_safe_solvency_v1",
         "reward_signer_nonces",
         "reward_subject_consumptions",
         "reward_uniqueness_authorities",
+        "reward_winner_send_attempts",
+        "reward_winner_send_outcomes",
+        "reward_winner_send_transactions",
+        "reward_winner_sends",
         "schema_migrations",
         "song_dance_presentations",
         "song_derivative_video_policy_observations",
@@ -1564,6 +1707,37 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "song_streak_day_activities",
         "song_streak_days",
         "song_streaks",
+        "spaces_community_route_attachments",
+        "spaces_community_route_renewals",
+        "spaces_external_conflict_observations",
+        "spaces_final_conflict_evidence",
+        "spaces_final_issuance_evidence",
+        "spaces_issuance_driver_root_enablements",
+        "spaces_issuance_verifications",
+        "spaces_namespace_authority_evidence",
+        "spaces_network_configuration",
+        "spaces_operator_assignment_current",
+        "spaces_operator_assignment_revisions",
+        "spaces_operator_capability_observations",
+        "spaces_operator_deployment_records",
+        "spaces_operator_funding_observations",
+        "spaces_operator_instances",
+        "spaces_operator_prepared_assignments",
+        "spaces_operator_service_credentials",
+        "spaces_operator_service_reports",
+        "spaces_owner_proof_ceremonies",
+        "spaces_owner_proof_evidence",
+        "spaces_owner_proof_polls",
+        "spaces_registry_acknowledgments",
+        "spaces_registry_commit_hint_claims",
+        "spaces_registry_commit_hints",
+        "spaces_registry_credentials",
+        "spaces_registry_deliveries",
+        "spaces_registry_items",
+        "spaces_registry_occupancy_observations",
+        "spaces_registry_scope_anomalies",
+        "spaces_root_observations",
+        "spaces_taproot_creation_intents",
         "sponsor_daily_ticket_totals",
         "sponsor_withdrawal_effects",
         "study_attempts_v2",
@@ -1586,6 +1760,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "study_unit_exercise_eligibility",
         "subject_key_binding_events",
         "subject_keys",
+        "telegram_account_associations",
+        "telegram_bot_grants",
+        "telegram_interface_preferences",
+        "telegram_link_navigation",
+        "telegram_link_transactions",
+        "telegram_restricted_bot_affirmations",
+        "telegram_restricted_learners",
+        "telegram_restricted_study_personas",
+        "telegram_study_conversations",
         "text_content_held_revisions",
         "text_content_submissions",
         "text_moderation_cases",
@@ -1596,6 +1779,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "users",
         "verification_completion_attempts",
         "verification_start_reservations",
+        "wallet_sponsored_sends",
         // POSTGRES_FOUNDATION_TABLE_CATALOG_END
       ]);
 
@@ -1749,6 +1933,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "handle_reserved_label_revisions_append_only",
         "handle_sale_activation_actions_append_only",
         "handle_sale_activation_revisions_append_only",
+        "handle_spaces_membership_source_revisions_append_only",
         "hns_authority_inventories_append_only",
         "hns_community_app_host_activation_revisions_append_only",
         "hns_community_app_host_operations_append_only",
@@ -1760,6 +1945,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_dns_zone_health_observations_append_only",
         "hns_dns_zone_health_operations_append_only",
         "hns_dns_zone_lifecycle_operations_append_only",
+        "hns_safe_ownership_proof_append_only",
         "media_analysis_evidence_append_only",
         "media_audio_revisions_append_only",
         "media_immutable_objects_append_only",
@@ -1767,6 +1953,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_publication_decisions_append_only",
         "media_reference_evidence_append_only",
         "media_song_lyrics_append_only",
+        "media_song_stems_append_only",
         "media_submission_command_replays_append_only",
         "media_submission_events_append_only",
         "media_submission_terms_append_only",
@@ -1778,6 +1965,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "megapot_claim_receipt_evidence_append_only",
         "megapot_drawing_observations_append_only",
         "megapot_drawing_transitions_append_only",
+        "megapot_participant_claim_guards_append_only",
         "megapot_purchase_receipt_evidence_append_only",
         "megapot_sweep_ticket_evidence_append_only",
         "megapot_ticket_review_evidence_append_only",
@@ -1797,11 +1985,32 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "qualification_policy_versions_append_only",
         "reward_chain_effect_transitions_append_only",
         "reward_eligibility_decisions_append_only",
+        "reward_native_transfer_receipt_evidence_append_only",
         "reward_subject_consumptions_append_only",
         "reward_uniqueness_authorities_append_only",
+        "reward_winner_send_attempts_append_only",
+        "reward_winner_send_outcomes_append_only",
+        "reward_winner_send_transactions_append_only",
         "song_derivative_video_policy_observations_append_only",
         "song_owner_policy_revisions_append_only",
         "song_streak_days_append_only",
+        "spaces_community_route_renewals_append_only",
+        "spaces_external_conflict_observations_append_only",
+        "spaces_final_conflict_evidence_append_only",
+        "spaces_final_issuance_evidence_append_only",
+        "spaces_namespace_authority_evidence_append_only",
+        "spaces_network_configuration_append_only",
+        "spaces_operator_assignment_revisions_append_only",
+        "spaces_operator_capability_observations_append_only",
+        "spaces_operator_deployment_records_append_only",
+        "spaces_operator_funding_observations_append_only",
+        "spaces_operator_service_reports_append_only",
+        "spaces_registry_acknowledgments_append_only",
+        "spaces_registry_commit_hint_claims_append_only",
+        "spaces_registry_commit_hints_append_only",
+        "spaces_registry_deliveries_append_only",
+        "spaces_registry_occupancy_observations_append_only",
+        "spaces_root_observations_append_only",
         "subject_key_binding_events_append_only",
         "subject_keys_append_only",
         "text_content_held_revisions_append_only",

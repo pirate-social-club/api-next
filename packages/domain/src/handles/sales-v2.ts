@@ -5,6 +5,7 @@ import {
   handleNationalityEligibilitySnapshotPreimage,
   handleNationalityQualificationRefPreimage,
 } from "./nationality-qualification.ts";
+import { isCanonicalSpacesSubspaceLabelV1 } from "./spaces-native-names.ts";
 
 export type HandleFamilyV1 = "hns" | "spaces";
 export type HandleFulfillmentKindV1 =
@@ -36,10 +37,13 @@ export type HandleQualificationPolicyRefV1 =
       provider_binding_hash: string;
     }>;
 
+/** `spaces_subspace_label_v1` is admitted only with family `spaces` (§5.3.13.3). */
+export type HandleLabelGrammarIdV2 = "hns_ascii_ldh_1_63_v1" | "spaces_subspace_label_v1";
+
 export type HandleLabelScopeV2 =
   | Readonly<{
       kind: "exact_label_v2";
-      label_grammar_id: "hns_ascii_ldh_1_63_v1";
+      label_grammar_id: HandleLabelGrammarIdV2;
       reserved_labels_id: string;
       reserved_labels_revision: number;
       reserved_labels_hash: string;
@@ -47,7 +51,7 @@ export type HandleLabelScopeV2 =
     }>
   | Readonly<{
       kind: "label_rule_v2";
-      label_grammar_id: "hns_ascii_ldh_1_63_v1";
+      label_grammar_id: HandleLabelGrammarIdV2;
       reserved_labels_id: string;
       reserved_labels_revision: number;
       reserved_labels_hash: string;
@@ -92,6 +96,20 @@ const requireRevision = (value: number, name: string): void => {
 };
 const requireDigest = (value: string, name: string): void => {
   if (!digest(value)) throw new TypeError(`Invalid ${name}`);
+};
+
+/**
+ * The version-2 quote, reservation, and grant-finalize domains and the
+ * nationality successors are HNS-only. `spaces_native_v1` uses the Spaces
+ * version-3 domains, so no Spaces path can emit an HNS preimage.
+ */
+const requireHnsSuccessorFamily = (
+  family: HandleFamilyV1,
+  fulfillment: HandleFulfillmentKindV1,
+): void => {
+  if (family !== "hns" || fulfillment === "spaces_native_v1") {
+    throw new TypeError("Spaces native issuance uses the Spaces successor hash domains");
+  }
 };
 
 export function isCanonicalHnsHandleLabelV2(label: string): boolean {
@@ -299,15 +317,28 @@ export function handleSaleNamespaceActivationHash(input: {
   ]);
 }
 
-export function handleLabelScopeV2Preimage(scope: HandleLabelScopeV2): readonly unknown[] {
-  if (scope.label_grammar_id !== "hns_ascii_ldh_1_63_v1") {
-    throw new TypeError("Unsupported handle grammar");
+/** Each grammar is admitted only with its own family; HNS rules never apply to Spaces. */
+const canonicalLabelRuleForFamily = (
+  grammar: HandleLabelGrammarIdV2,
+  family: HandleFamilyV1,
+): ((label: string) => boolean) => {
+  if (grammar === "hns_ascii_ldh_1_63_v1" && family === "hns") return isCanonicalHnsHandleLabelV2;
+  if (grammar === "spaces_subspace_label_v1" && family === "spaces") {
+    return isCanonicalSpacesSubspaceLabelV1;
   }
+  throw new TypeError("Unsupported handle grammar");
+};
+
+export function handleLabelScopeV2Preimage(
+  scope: HandleLabelScopeV2,
+  family: HandleFamilyV1,
+): readonly unknown[] {
+  const isCanonicalLabel = canonicalLabelRuleForFamily(scope.label_grammar_id, family);
   requireIdentifier(scope.reserved_labels_id, "reserved-label document id");
   requireRevision(scope.reserved_labels_revision, "reserved-label revision");
   requireDigest(scope.reserved_labels_hash, "reserved-label hash");
   if (scope.kind === "exact_label_v2") {
-    assertCanonicalHnsHandleLabelV2(scope.handle_label);
+    if (!isCanonicalLabel(scope.handle_label)) throw new TypeError("invalid_handle");
     return [
       scope.kind,
       scope.label_grammar_id,
@@ -367,7 +398,7 @@ export function assertHandleOfferingCombinationV2(input: {
   pricing_kind: string;
   atomic_amount: string;
 }): void {
-  handleLabelScopeV2Preimage(input.label_scope);
+  handleLabelScopeV2Preimage(input.label_scope, "hns");
   if (
     input.fulfillment_kind !== "hosted_persona_v1" ||
     input.pricing_kind !== "free_v1" ||
@@ -395,7 +426,7 @@ export function assertHandleOfferingCombinationV3(
     });
     return;
   }
-  handleLabelScopeV2Preimage(input.label_scope);
+  handleLabelScopeV2Preimage(input.label_scope, "hns");
   if (
     input.label_scope.kind !== "label_rule_v2" ||
     input.allocation_kind !== "first_come_v1" ||
@@ -487,6 +518,8 @@ export function handleOfferingRevisionV3Hash(
     qualification_policy: HandleNationalityQualificationPolicyRefV1;
   },
 ): HandleHashResultV1 {
+  // The 2026-09-12 nationality qualification is not extended to Spaces (§5.3.13.12).
+  requireHnsSuccessorFamily(input.family, input.fulfillment_kind);
   return handleOfferingRevisionHash(
     input,
     "pirate-handle-offering-revision-v3",
@@ -507,6 +540,9 @@ function handleOfferingRevisionHash(
   requireRevision(input.sale_namespace_activation_generation, "sale activation generation");
   requireIdentifier(input.issuance_driver_id, "issuance driver id");
   requireIdentifier(input.issuance_driver_version, "issuance driver version");
+  if ((input.family === "spaces") !== (input.fulfillment_kind === "spaces_native_v1")) {
+    throw new TypeError("Handle family and fulfillment disagree");
+  }
   if (
     input.max_active_grants_per_account !== null &&
     (!Number.isSafeInteger(input.max_active_grants_per_account) ||
@@ -534,7 +570,7 @@ function handleOfferingRevisionHash(
     input.family,
     input.namespace_root,
     [input.sale_namespace_activation_id, input.sale_namespace_activation_generation],
-    handleLabelScopeV2Preimage(input.label_scope),
+    handleLabelScopeV2Preimage(input.label_scope, input.family),
     [input.allocation_kind],
     ["account_cap_v1", input.max_active_grants_per_account],
     [input.fulfillment_kind],
@@ -560,7 +596,10 @@ export type HandleEligibilitySnapshotV1 = Readonly<{
   evaluated_at: string;
 }>;
 
-const eligibilityPreimage = (eligibility: HandleEligibilitySnapshotV1): readonly unknown[] => {
+/** The §5.3.5 `quote_v2` eligibility member shape, reused unchanged by the Spaces `quote_v3`. */
+export function handleEligibilitySnapshotPreimageV1(
+  eligibility: HandleEligibilitySnapshotV1,
+): readonly unknown[] {
   requireRevision(eligibility.policy_revision, "eligibility policy revision");
   requireDigest(eligibility.policy_hash, "eligibility policy hash");
   for (const evidenceId of eligibility.evidence_use_ids) {
@@ -574,7 +613,7 @@ const eligibilityPreimage = (eligibility: HandleEligibilitySnapshotV1): readonly
     eligibility.evidence_use_ids,
     eligibility.evaluated_at,
   ];
-};
+}
 
 export function handleQuoteV2Hash(input: {
   quote_id: string;
@@ -593,6 +632,7 @@ export function handleQuoteV2Hash(input: {
   quoted_at: string;
   expires_at: string;
 }): HandleHashResultV1 {
+  requireHnsSuccessorFamily(input.family, input.fulfillment_kind);
   requireIdentifier(input.quote_id, "quote id");
   requireIdentifier(input.offering_id, "offering id");
   requireRevision(input.offering_revision, "offering revision");
@@ -621,7 +661,7 @@ export function handleQuoteV2Hash(input: {
       input.pricing.pricing_hash,
       input.pricing.atomic_amount,
     ],
-    eligibilityPreimage(input.eligibility),
+    handleEligibilitySnapshotPreimageV1(input.eligibility),
     input.quoted_at,
     input.expires_at,
   ]);
@@ -645,7 +685,7 @@ const quoteEligibilityPreimageV2 = (
 ): readonly unknown[] =>
   eligibility.kind === "curated_nationality_v1"
     ? [eligibility.kind, ...handleNationalityEligibilitySnapshotPreimage(eligibility.snapshot)]
-    : [eligibility.kind, ...eligibilityPreimage(eligibility.snapshot)];
+    : [eligibility.kind, ...handleEligibilitySnapshotPreimageV1(eligibility.snapshot)];
 
 /**
  * Successor quote hash for nationality-qualified offerings. The pin includes
@@ -670,6 +710,7 @@ export function handleQuoteV3Hash(input: {
   quoted_at: string;
   expires_at: string;
 }): HandleHashResultV1 {
+  requireHnsSuccessorFamily(input.family, input.fulfillment_kind);
   requireIdentifier(input.quote_id, "quote id");
   requireIdentifier(input.offering_id, "offering id");
   requireRevision(input.offering_revision, "offering revision");
@@ -720,6 +761,7 @@ export function handleReservationV2Hash(input: {
   reserved_at: string;
   expires_at: string;
 }): HandleHashResultV1 {
+  requireHnsSuccessorFamily(input.family, input.fulfillment_kind);
   for (const [name, value] of Object.entries(input)) {
     if (typeof value === "string" && name !== "family" && name !== "fulfillment_kind") {
       requireIdentifier(value, name);
@@ -761,6 +803,7 @@ export function handleGrantFinalizeV2Hash(input: {
   issuance_operation_id: string;
   claim_request_hash: string;
 }): HandleHashResultV1 {
+  requireHnsSuccessorFamily(input.family, input.fulfillment_kind);
   for (const [name, value] of Object.entries(input)) {
     if (typeof value === "string" && name !== "family" && name !== "fulfillment_kind") {
       requireIdentifier(value, name);

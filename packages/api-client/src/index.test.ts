@@ -42,6 +42,7 @@ describe("generated api client", () => {
       policy_revision: 2,
       derivative_video: "owner_only",
       can_post_with_song: false,
+      video_ready: true,
     } as const;
     const responses = [management, management, publicPolicy];
     const urls: string[] = [];

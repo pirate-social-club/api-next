@@ -98,6 +98,20 @@ nothing imports apps; domain uses only Schema/Data effect modules.
 
 ## Runtime
 
+All normal staging Worker deploys use `scripts/deploy-worker-with-provenance.ts`.
+Its serving-binding preflight compares the effective candidate with every
+version receiving traffic and refuses unexplained flag or binding differences
+before upload. Intentional differences need the exact, dated reviewed receipt
+described in `docs/staging-serving-binding-drift.md`. Do not bypass this with a
+direct Wrangler staging deploy. Read-only CI packaging dry runs remain allowed.
+
+Staging HTTP Worker deploys use `scripts/deploy-worker-with-provenance.ts`.
+The tool checks the active staging HNS gateway against
+`scripts/hns-staging-gateway-pin.json` and the sibling Solid staging ingress
+candidate before mutation. It runs Solid's full read-only 8s28 serving gate
+afterward. Do not bypass this with a direct Wrangler staging HTTP deploy. A
+gateway rotation updates the pin and Solid deployment as one reviewed release.
+
 Effect is pinned to an exact version (`4.0.0-rc.109` at bootstrap), and
 `bun run check` fails if `effect` or any `@effect/*` package declares or
 resolves to another version. Upgrades are deliberate, reviewed bumps — never

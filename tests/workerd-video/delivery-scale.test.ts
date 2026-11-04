@@ -101,7 +101,8 @@ for (const { videoItems, member } of [1, 10, 20].flatMap((videoItems) =>
         await admin.query(
           // Distinct ranks isolate join cost from the existing second-precision
           // cursor's same-rank subsecond pagination loss (not a delivery change).
-          "INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at) VALUES ($1,$2,$3,$4,clock_timestamp())",
+          // Publication already projects each video; set its distinct rank.
+          "INSERT INTO home_feed_projection (community_id,feed_item_id,post_id,rank_score,projected_at) VALUES ($1,$2,$3,$4,clock_timestamp()) ON CONFLICT (community_id,post_id) DO UPDATE SET rank_score=EXCLUDED.rank_score",
           [community, `feed-scale-${i}`, postId, i + 10],
         );
         posts.push(postId);

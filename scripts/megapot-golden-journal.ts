@@ -37,6 +37,8 @@ export async function withGoldenJournal<A>(
   const digest = createHash("sha256")
     .update(JSON.stringify({ ...input, funding_transaction_hash: null }))
     .digest("hex");
+  const fundingHash =
+    input.app_funded_pool?.transaction_hash ?? input.funding_transaction_hash ?? null;
   const lockPath = `${path}.lock`;
   const lock = await open(lockPath, "wx", 0o600);
   try {
@@ -47,7 +49,7 @@ export async function withGoldenJournal<A>(
     await lock.sync();
     let state: GoldenJournal = {
       input_digest: digest,
-      funding_transaction_hash: input.funding_transaction_hash ?? null,
+      funding_transaction_hash: fundingHash,
       leg_id: null,
       funding_effect_id: null,
       drawing_id: null,
@@ -63,12 +65,9 @@ export async function withGoldenJournal<A>(
         JSON.parse(lines.at(-1) ?? ""),
       );
       if (state.input_digest !== digest) throw new Error("Journal plan mismatch.");
-      if (
-        state.funding_transaction_hash !== null &&
-        state.funding_transaction_hash !== (input.funding_transaction_hash ?? null)
-      )
+      if (state.funding_transaction_hash !== null && state.funding_transaction_hash !== fundingHash)
         throw new Error("Journal funding transaction mismatch.");
-      state = { ...state, funding_transaction_hash: input.funding_transaction_hash ?? null };
+      state = { ...state, funding_transaction_hash: fundingHash };
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }

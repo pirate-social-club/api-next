@@ -57,6 +57,10 @@ function authority(overrides: Partial<MediaProcessingAuthority> = {}): MediaProc
       contentType: "audio/mpeg",
       sizeBytes: 1024,
     },
+    vocalStem: {
+      immutableRef: "private/vocal-1",
+      canonicalSha256: "b".repeat(64),
+    },
     termsRevision: 2,
     lyrics: {
       lyricsRevision: 1,
@@ -1373,6 +1377,30 @@ describe("media processing workflow", () => {
     expect(store.attempts.size).toBe(0);
   });
 
+  test("an exhausted classifier enters provider review without another classifier call or publication", async () => {
+    const store = new FakeStore();
+    const startAttempt = store.startAttempt;
+    // The durable store owns the budget. This models its exhausted result,
+    // rather than inventing a second attempt counter in the workflow fixture.
+    store.startAttempt = async (input) =>
+      input.stage === "classifier" ? { kind: "exhausted" } : startAttempt(input);
+    const providerEvents: string[] = [];
+    const deps = dependencies(store, providers(providerEvents));
+    expect(await runWorkflow(workflowPayload(store), "analysis_launch", deps)).toEqual({
+      outcome: "manual_review",
+    });
+    expect(store.current.status).toBe("manual_review");
+    expect(store.events).toContain("commit:provider-review:provider_exhausted");
+    expect(providerEvents.some((event) => event.startsWith("effect:classifier"))).toBe(false);
+    expect(store.publications).toBe(0);
+    expect(store.providerReviews).toBe(1);
+    const priorProviderEvents = [...providerEvents];
+    await runWorkflow(workflowPayload(store), "analysis_launch", deps);
+    expect(providerEvents).toEqual(priorProviderEvents);
+    expect(store.publications).toBe(0);
+    expect(store.providerReviews).toBe(1);
+  });
+
   test("late wakeups and stale workflow revisions are inert", async () => {
     const store = new FakeStore(authority({ status: "abandoned", phase: null }));
     const wakeupOutbox = store.outboxes.get("outbox-1");
@@ -1420,6 +1448,31 @@ describe("media processing workflow", () => {
     expect(store.alignments).toBe(1);
     expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([
       "effect:alignment:l1:accepted lyrics",
+    ]);
+  });
+
+  test("alignment is unavailable without an accepted vocal stem", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+        vocalStem: null,
+      }),
+      "alignment",
+    );
+    const providerEvents: string[] = [];
+    expect(
+      await runWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, providers(providerEvents)),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
+    expect(store.alignmentResults).toEqual([
+      { kind: "alignment", status: "unavailable", failureCode: "audio_missing" },
     ]);
   });
 
@@ -1541,7 +1594,17 @@ describe("media processing workflow", () => {
   });
 
   test("stale or failed recovery reads never reach the provider", async () => {
-    for (const recovery of [{ kind: "stale" }, { kind: "failed" }] as const) {
+    for (const recovery of [
+      { kind: "stale", reason: "invalid_projection_row_count" },
+      {
+        kind: "failed",
+        reason: {
+          errorClass: "ControlPlaneAcquireFailed",
+          code: null,
+          query: "media-processing.alignment-recovery-authorization",
+        },
+      },
+    ] as const) {
       const store = new FakeStore(
         authority({
           status: "published",
@@ -1560,7 +1623,11 @@ describe("media processing workflow", () => {
           "alignment",
           dependencies(store, providers(providerEvents)),
         ),
-      ).toEqual({ outcome: "waiting_for_provider" });
+      ).toEqual(
+        recovery.kind === "stale"
+          ? { outcome: "alignment_recovery_lookup_stale", reason: recovery.reason }
+          : { outcome: "alignment_recovery_lookup_failed", reason: recovery.reason },
+      );
       expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([]);
       expect(store.alignments).toBe(0);
     }

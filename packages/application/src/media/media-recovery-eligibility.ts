@@ -69,8 +69,30 @@ export const pendingPublishedAlignmentSql = (submission: string): string => `(
  * Required media recovery work: a submission still moving through the media
  * pipeline, or a published submission whose exact alignment is still pending.
  */
+export const requestedPublishedAlignmentRecoverySql = (submission: string): string => `(
+  ${submission}.status='published' AND EXISTS (
+    SELECT 1 FROM media_alignment_recovery_actions recovery
+    JOIN media_publication_projections publication
+      ON publication.community_id=recovery.community_id
+     AND publication.actor_user_id=recovery.actor_user_id
+     AND publication.submission_id=recovery.submission_id
+     AND publication.operation_id=recovery.operation_id
+     AND publication.post_id=recovery.post_id
+     AND publication.audio_revision=recovery.audio_revision
+     AND publication.analysis_revision=recovery.analysis_revision
+     AND publication.lyrics_revision=recovery.lyrics_revision
+     AND publication.canonical_audio_sha256=recovery.canonical_audio_sha256
+    WHERE recovery.community_id=${submission}.community_id
+      AND recovery.actor_user_id=${submission}.actor_user_id
+      AND recovery.submission_id=${submission}.submission_id
+      AND recovery.operation_id=${submission}.operation_id
+      AND recovery.post_id=${submission}.post_id
+      AND recovery.audio_revision=${submission}.audio_revision
+      AND recovery.analysis_revision=${submission}.analysis_revision
+      AND recovery.state='requested'))`;
+
 export const mediaRecoveryRequiredSql = (submission: string): string =>
-  `(${submission}.status IN ${liveStatesSql} OR ${pendingPublishedAlignmentSql(submission)})`;
+  `(${submission}.status IN ${liveStatesSql} OR ${pendingPublishedAlignmentSql(submission)} OR ${requestedPublishedAlignmentRecoverySql(submission)})`;
 
 export const isMediaTerminalSubmissionStatus = (status: string): boolean =>
   (MEDIA_TERMINAL_SUBMISSION_STATES as readonly string[]).includes(status);

@@ -7,13 +7,15 @@
     ]
   },
   "include": [
+    "verification/karaoke-storage",
     "packages/platform-cf",
     "apps/data-registration-worker",
     "apps/jobs-worker",
     "apps/media-processor-worker",
     "apps/video-source-gateway",
     "apps/staging-karaoke-reset-caller",
-    "tests"
+    "tests",
+    "scripts/song-video-cloudconvert-reconciliation.ts"
   ],
   "exclude": [
     "tests/workerd/vitest.config.ts",

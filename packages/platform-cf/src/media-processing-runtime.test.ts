@@ -302,8 +302,9 @@ describe("media processor runtime boundary", () => {
     ).resolves.toMatchObject({ cover: { status: "rejected", reasonCode: "invalid" } });
   });
 
-  test("maps forced alignment to an exact lyrics-fenced artifact after audio hash verification", async () => {
+  test("aligns vocal bytes while retaining the primary publication lineage", async () => {
     const audio = new Uint8Array([9, 8, 7, 6]);
+    const primaryHash = "a".repeat(64);
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", audio)), (value) =>
       value.toString(16).padStart(2, "0"),
     ).join("");
@@ -348,7 +349,7 @@ describe("media processor runtime boundary", () => {
       },
     };
     const port = makeElevenLabsProcessingAlignmentPort(
-      r2Bucket("immutable/operation/audio/1", audio, "audio/mpeg"),
+      r2Bucket("immutable/operation-stem-vocal_audio/audio/1", audio, "audio/mpeg"),
       adapter,
       64,
     );
@@ -358,8 +359,10 @@ describe("media processor runtime boundary", () => {
       audioRevision: 1,
       analysisRevision: 1,
       lyricsRevision: 2,
-      canonicalAudioSha256: hash,
+      canonicalAudioSha256: primaryHash,
       audioArtifactRef: "media://immutable/operation/audio/1",
+      alignmentSourceRef: "media://immutable/operation-stem-vocal_audio/audio/1",
+      alignmentSourceSha256: hash,
       lyrics: "project lyrics",
       signal: new AbortController().signal,
     });
@@ -371,7 +374,8 @@ describe("media processor runtime boundary", () => {
         operation_id: "operation",
         post_id: "post",
         lyrics_revision: 2,
-        canonical_audio_sha256: hash,
+        canonical_audio_sha256: primaryHash,
+        alignment_source_sha256: hash,
         segments: [
           { text: "project", start_ms: 0, end_ms: 500 },
           { text: "lyrics", start_ms: 500, end_ms: 1_000 },
@@ -404,6 +408,8 @@ describe("media processor runtime boundary", () => {
         lyricsRevision: 2,
         canonicalAudioSha256: "0".repeat(64),
         audioArtifactRef: "media://immutable/operation/audio/1",
+        alignmentSourceRef: "media://immutable/operation/audio/1",
+        alignmentSourceSha256: "0".repeat(64),
         lyrics: "project lyrics",
         signal: new AbortController().signal,
       }),
@@ -438,6 +444,8 @@ describe("media processor runtime boundary", () => {
         lyricsRevision: 2,
         canonicalAudioSha256: hash,
         audioArtifactRef: "media://immutable/operation/audio/1",
+        alignmentSourceRef: "media://immutable/operation/audio/1",
+        alignmentSourceSha256: hash,
         lyrics: "project lyrics",
         signal: new AbortController().signal,
       }),
@@ -480,6 +488,8 @@ describe("media processor runtime boundary", () => {
         lyricsRevision: 2,
         canonicalAudioSha256: hash,
         audioArtifactRef: "media://immutable/operation/audio/1",
+        alignmentSourceRef: "media://immutable/operation/audio/1",
+        alignmentSourceSha256: hash,
         lyrics: "project lyrics",
         signal: new AbortController().signal,
       }),
@@ -531,6 +541,8 @@ describe("media processor runtime boundary", () => {
         lyricsRevision: 2,
         canonicalAudioSha256: hash,
         audioArtifactRef: "media://immutable/operation/audio/1",
+        alignmentSourceRef: "media://immutable/operation/audio/1",
+        alignmentSourceSha256: hash,
         lyrics: "project lyrics",
         signal: new AbortController().signal,
       }),
@@ -580,6 +592,8 @@ describe("media processor runtime boundary", () => {
         lyricsRevision: 2,
         canonicalAudioSha256: hash,
         audioArtifactRef: "media://immutable/operation/audio/1",
+        alignmentSourceRef: "media://immutable/operation/audio/1",
+        alignmentSourceSha256: hash,
         lyrics: "project lyrics",
         signal: new AbortController().signal,
       }),

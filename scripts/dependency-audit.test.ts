@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { gzipSync } from "node:zlib";
 import {
   type AdvisoryFinding,
@@ -175,5 +176,30 @@ describe("dependency advisory policy", () => {
         }),
       ),
     ).toThrow("reason");
+  });
+});
+
+// Resolve from the real installed consumer so a nested vulnerable uuid copy
+// cannot be hidden by Self's already-patched version.
+const rootRequire = createRequire(import.meta.url);
+const selfRequire = createRequire(rootRequire.resolve("@selfxyz/core"));
+const commonRequire = createRequire(selfRequire.resolve("@selfxyz/common/utils/scope"));
+const aadhaarRequire = createRequire(commonRequire.resolve("@anon-aadhaar/core"));
+const uuid = aadhaarRequire("uuid");
+
+describe("the pinned Aadhaar uuid consumer", () => {
+  test("resolves the patched Self uuid and preserves its v4 API", () => {
+    expect(aadhaarRequire.resolve("uuid")).toBe(selfRequire.resolve("uuid"));
+    const identifier = uuid.v4();
+    expect(uuid.validate(identifier)).toBe(true);
+    expect(uuid.version(identifier)).toBe(4);
+    expect(uuid.v4({ random: new Uint8Array(16) })).toBe("00000000-0000-4000-8000-000000000000");
+  });
+
+  test("rejects undersized v3 and v5 output buffers", () => {
+    for (const generate of [uuid.v3, uuid.v5]) {
+      expect(() => generate("api-next", generate.DNS, new Uint8Array(15))).toThrow(RangeError);
+      expect(() => generate("api-next", generate.DNS, new Uint8Array(16), 1)).toThrow(RangeError);
+    }
   });
 });

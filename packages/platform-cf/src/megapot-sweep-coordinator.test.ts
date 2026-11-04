@@ -51,11 +51,13 @@ function harness(options: {
   readonly tierId: bigint;
   readonly settled?: boolean;
   readonly owner?: string;
+  readonly reorg?: boolean;
 }) {
   let stored: MegapotSweepResult | null = null;
   let pendingCalls = 0;
   let completeCalls = 0;
   let reviewCalls = 0;
+  let blockReads = 0;
   const store = {
     loadCandidate: () => Effect.succeed(candidate),
     findResult: () => Effect.succeed(stored),
@@ -117,7 +119,10 @@ function harness(options: {
     sendRawTransaction: async () => hash("b"),
     readReceipt: async () => null,
     readHead: async () => ({ blockNumber: 102n, blockHash: hash("c") }),
-    readBlock: async (blockNumber) => ({ blockNumber, blockHash: hash("d") }),
+    readBlock: async (blockNumber) => ({
+      blockNumber,
+      blockHash: hash(options.reorg && ++blockReads > 1 ? "e" : "d"),
+    }),
   } satisfies MegapotV2RpcClient;
   return {
     coordinator: makeMegapotSweepCoordinator({
@@ -133,6 +138,20 @@ function harness(options: {
 }
 
 describe("Megapot sweep coordinator", () => {
+  test("a reorg during ticket reads cannot persist a winning or losing result", async () => {
+    for (const tierId of [0n, 7n]) {
+      const simulation = harness({ tierId, reorg: true });
+      await expect(
+        Effect.runPromise(
+          simulation.coordinator.sweep({
+            poolLegId: candidate.poolLegId,
+            drawingId: candidate.drawingId,
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "drawing_evidence_invalid" });
+      expect(simulation.completeCalls()).toBe(0);
+    }
+  });
   test("records one finalized winning ticket with exact referral/net conservation", async () => {
     const testHarness = harness({ tierId: 7n });
     const first = await Effect.runPromise(

@@ -117,6 +117,8 @@ const schemas = {
     requestId: Text,
     evidenceRef: Text,
     minorSafetyEvidenceRef: Schema.NullOr(Text),
+    gateKind: Schema.optional(Schema.Literal("sampled_frame_openai_v1")),
+    sampledFrameEvidenceRef: Schema.optional(Text),
     mediaSafety: Safety,
     captionSafety: Schema.Literals(["not_applicable", "allow", "review_required", "blocked"]),
     automatedRating: Rating,

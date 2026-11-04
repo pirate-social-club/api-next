@@ -6,6 +6,7 @@ import type {
 import { Data, Effect } from "effect";
 import { keccak256, toBytes } from "viem";
 import { isMegapotStepChainAllowed } from "./megapot-chain-policy.ts";
+import { megapotReceiptIsFinalized } from "./megapot-finality.ts";
 import { megapotImplementationIdentityFromCandidate } from "./megapot-implementation-projection.ts";
 import {
   type MegapotTransactionReceipt,
@@ -147,7 +148,9 @@ export function makeRewardFundingCoordinator(input: {
   const attest = Effect.fn("RewardFundingCoordinator.attest")(function* (
     intent: RewardFundingIntent,
   ) {
-    if (!isMegapotStepChainAllowed("funding", intent.environment, intent.chainId)) {
+    if (
+      !isMegapotStepChainAllowed("funding", intent.environment, intent.chainId, input.rpc, intent)
+    ) {
       return yield* failed("production_disabled");
     }
     yield* rpcEffect(() => input.rpc.attestDeployment());
@@ -162,6 +165,13 @@ export function makeRewardFundingCoordinator(input: {
     yield* attest(intent);
     const receipt = yield* rpcEffect(() => input.rpc.readReceipt(transactionHash));
     if (receipt === null) return result(intent);
+    if (
+      !(yield* rpcEffect(() =>
+        megapotReceiptIsFinalized(input.rpc, intent.chainId, receipt.blockNumber),
+      ))
+    ) {
+      return result(intent);
+    }
     const [receiptBlock, head] = yield* rpcEffect(() =>
       Promise.all([input.rpc.readBlock(receipt.blockNumber), input.rpc.readHead()]),
     );

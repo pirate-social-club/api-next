@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.102.0",
+  "sourceBranch": "fix/rewards-expired-unfunded-status",
+  "sourceBase": "8af1d5ad9541a654d26856094151dbf55e860bba",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Funding instruction expired_unfunded means an unbound planned instruction expired with no recorded transaction hash. Actual reverted and reconciliation_required remain distinct. A reclaimable instruction with a hash remains reconciliation_required; clients must preserve ambiguous wallet journals.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.102.0.tgz",
+    "sha256": "a7719db21169f4c2225e5fc2ba9d5a6cb4481fa11a9c20db5382d6561a7ec9ef"
+  },
+  "validation": {
+    "status": "Local gates passed; hosted checks pending",
+    "passed": [
+      "Source check",
+      "Full unit/Node/workerd suites: 5201 unit passes, one existing skip; 20 Node passes; all workerd suites",
+      "Both pool and asset HTTP funding views: 19 tests, 132 assertions",
+      "PostgreSQL offer/funding/refund expiry regressions: 24 tests, 189 assertions",
+      "Immutable client artifact verification",
+      "Exact response-enum deprecation declarations"
+    ],
+    "remaining": [
+      "Final-baseline local check",
+      "Required hosted gates and fresh task register",
+      "Paired Solid consumer before any live API rollout"
+    ],
+    "operationalBoundary": "No deployment, migration, privilege or money operation authorized."
+  }
+}

@@ -7,6 +7,7 @@ import type {
   MediaUploadStore,
 } from "@pirate/application/media/submission-service";
 import {
+  attachMediaStem,
   bindMediaLyrics,
   bindMediaReference,
   bindMediaTerms,
@@ -282,6 +283,7 @@ export function makeMediaUploadApplicationCommands(
         : getMediaSubmission(input, services),
     bindReference: (input: Parameters<typeof bindMediaReference>[0]) =>
       bindMediaReference(input, services),
+    attachStem: (input: Parameters<typeof attachMediaStem>[0]) => attachMediaStem(input, services),
     retry: async (input: Parameters<typeof retryMediaSubmission>[0]) =>
       videoServices !== undefined && (await videoForAccount(input))
         ? retryVideoSubmission(input, videoServices)
@@ -325,7 +327,7 @@ export function makeMediaUploadStore(
   }): Promise<MediaSubmissionView | null> => {
     const locator = await run(readLocatorByAuthor(input));
     if (locator === null) return null;
-    const [state, lyrics] = await Promise.all([
+    const [state, lyrics, stems] = await Promise.all([
       run(
         repository.getForAuthor({
           communityId: locator.communityId,
@@ -336,6 +338,14 @@ export function makeMediaUploadStore(
       ),
       run(
         repository.getLyricsForAuthor({
+          communityId: locator.communityId,
+          submissionId: input.submissionId,
+          actorUserId: input.actorUserId,
+          personaId: input.personaId,
+        }),
+      ),
+      run(
+        repository.getStemsForAuthor({
           communityId: locator.communityId,
           submissionId: input.submissionId,
           actorUserId: input.actorUserId,
@@ -377,6 +387,7 @@ export function makeMediaUploadStore(
       lyrics: lyrics as MediaLyricsSnapshot,
       updatedAt: locator.updatedAt,
       ...(publishedHref === undefined ? {} : { publishedHref }),
+      ...(stems.instrumental_audio === null && stems.vocal_audio === null ? {} : { stems }),
     };
   };
 
@@ -615,6 +626,20 @@ export function makeMediaUploadStore(
       return authorView === null ? null : { view: authorView, personaId: locator.personaId };
     },
     getFinalizeContext,
+    getStemContext: async (input) => {
+      const authorView = await view(input);
+      if (authorView === null) return null;
+      const reservation = await run(
+        repository.readStemReservation({
+          communityId: authorView.state.communityId,
+          actorUserId: input.actorUserId,
+          personaId: input.personaId,
+          reservationId: input.reservationId,
+        }),
+      );
+      return { view: authorView, reservation };
+    },
+    attachStem: (input) => run(repository.attachStem(input)),
     beginFinalize: (input) => run(repository.beginFinalize(input)),
     getViewForModerator: async (input): Promise<MediaModeratorView | null> => {
       const locator = await run(readLocatorByModerator(input));

@@ -42,6 +42,13 @@ export type VideoSafetyFact = Readonly<{
   requestId: string;
   evidenceRef: string;
   minorSafetyEvidenceRef: string | null;
+  /**
+   * Spec 013 v1 automatic video publication amendment: allow produced by the
+   * owner-enabled sampled-frame OpenAI gate names that gate and carries its own
+   * evidence. It is never minor-safety evidence, which stays null.
+   */
+  gateKind?: "sampled_frame_openai_v1" | undefined;
+  sampledFrameEvidenceRef?: string | undefined;
   mediaSafety: "allow" | "review_required" | "blocked";
   captionSafety: "not_applicable" | "allow" | "review_required" | "blocked";
   automatedRating: "general" | "adult_18";

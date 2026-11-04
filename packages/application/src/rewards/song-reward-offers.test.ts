@@ -120,6 +120,7 @@ describe("song reward offer application service", () => {
     const fundingCalls: unknown[] = [];
     const store: SongRewardOfferStore = {
       listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+      fundingSender: () => Effect.succeed("0x5555555555555555555555555555555555555555"),
       qualificationPolicies: () =>
         Effect.succeed([
           {
@@ -217,12 +218,39 @@ describe("song reward offer application service", () => {
         idempotencyKey: "pool_1",
       },
     ]);
+    const unsafeCutoff = await Effect.runPromise(
+      service
+        .addMegapotPoolLeg({
+          accountId: "account_1",
+          personaId: "persona_1",
+          offerId: offer.offerId,
+          idempotencyKey: "pool_unsafe_cutoff",
+          senderAddress: fundingIntent.senderAddress,
+          fundingAmountAtomic: 5_000_000n,
+          maxTicketPriceAtomic: 1_000_000n,
+          entryCutoffSeconds: 60,
+          eligibleActivities: ["study"],
+          minScoreBps: 7_000,
+          emptyPoolPolicy: "no_purchase",
+          fallbackPayoutPersonaId: null,
+          fallbackDisclosureAcknowledged: false,
+        })
+        .pipe(...services([])),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(unsafeCutoff).toBeInstanceOf(SongRewardOfferRejected);
+    expect((unsafeCutoff as SongRewardOfferRejected).reason).toBe("invalid-input");
+    expect(legCalls).toHaveLength(1);
+    expect(fundingCalls).toHaveLength(1);
   });
 
   test("fails a fallback leg before persistence when disclosure policy is unresolved", async () => {
     const service = makeSongRewardOfferService({
       store: {
         listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+        fundingSender: () => Effect.succeed("0x5555555555555555555555555555555555555555"),
         qualificationPolicies: () =>
           Effect.succeed([
             {
@@ -281,6 +309,7 @@ describe("song reward offer application service", () => {
     const service = makeSongRewardOfferService({
       store: {
         listAdmittedAssets: () => Effect.succeed({ items: [], nextCursor: null }),
+        fundingSender: () => Effect.succeed("0x5555555555555555555555555555555555555555"),
         qualificationPolicies: () =>
           Effect.succeed([
             {

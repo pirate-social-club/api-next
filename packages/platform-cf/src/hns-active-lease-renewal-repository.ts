@@ -22,6 +22,7 @@ import {
 } from "@pirate/application/namespace-ownership";
 import { canonicalJson } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
+import { refreshVerifiedHnsHosts } from "./hns-ownership-host-refresh.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
@@ -54,7 +55,7 @@ function timestampValue(row: Row, name: string): string | null {
   return new Date(Date.parse(raw)).toISOString();
 }
 
-const authoritySelect = `
+const eligibleAuthoritySelect = `
   SELECT
     c.community_id,
     b.route_binding_id,
@@ -98,6 +99,28 @@ const authoritySelect = `
            s.environment
       FROM namespace_ownership_evidence_snapshots AS s
      WHERE s.evidence_ref = e.evidence_ref
+    UNION ALL
+    SELECT s.provider_configuration_kind,
+           s.provider_configuration_ref,
+           s.provider_configuration_version,
+           NULL::text,
+           s.environment
+      FROM community_route_attachment_namespace_sessions AS s
+      JOIN community_route_attachment_ceremony_results AS result
+        ON result.ceremony_intent_id = s.ceremony_intent_id
+       AND result.actor_id = s.actor_id
+       AND result.attachment_intent_id = s.attachment_intent_id
+       AND result.evidence_ref = e.evidence_ref
+       AND result.outcome_status = 'satisfied'
+     WHERE e.origin = 'route_attachment'
+       AND s.ceremony_intent_id = e.route_attachment_ceremony_intent_id
+       AND s.actor_id = e.verified_by_actor_id
+       AND s.route_root_label = e.root_label
+       AND s.requirement_hash = e.requirement_hash
+       AND s.provider_id = e.provider_id
+       AND s.provider_binding_hash = e.provider_binding_hash
+       AND s.provider_configuration_version = e.provider_configuration_version
+       AND s.status = 'completed'
     UNION ALL
     SELECT s.provider_configuration_kind,
            s.provider_configuration_reference,
@@ -147,8 +170,7 @@ const authoritySelect = `
      provider.provider_configuration_digest IS NULL
      OR configuration.provider_configuration_digest = provider.provider_configuration_digest
    )
- WHERE b.route_binding_id = $1
-   AND c.status = 'active'
+ WHERE c.status = 'active'
    AND b.family = 'hns'
    AND (
      provider.provider_configuration_digest IS NOT NULL
@@ -163,6 +185,65 @@ const authoritySelect = `
    AND e.path_segment = b.path_segment
    AND e.expires_at IS NOT NULL
    AND e.expires_at > clock_timestamp()`;
+
+const authoritySelect = `${eligibleAuthoritySelect} AND b.route_binding_id = $1`;
+
+export const HNS_ACTIVE_LEASE_RENEWAL_CANDIDATES_SQL = `${eligibleAuthoritySelect}
+   AND provider.provider_configuration_kind = 'managed'
+   AND provider.provider_configuration_reference = $1
+   AND provider.provider_configuration_version = $2
+   AND provider.environment = $3
+   AND e.expires_at <= clock_timestamp() + ($4 * INTERVAL '1 second')
+   AND NOT EXISTS (
+     SELECT 1 FROM community_route_active_lease_renewals AS renewal
+      WHERE renewal.route_binding_id = b.route_binding_id
+        AND renewal.expected_binding_generation = b.binding_generation
+        AND renewal.status <> 'pending'
+   )
+   AND NOT EXISTS (
+     SELECT 1 FROM community_route_active_lease_renewals AS renewal
+     JOIN community_route_active_lease_renewal_attempts AS attempt
+       USING (active_lease_renewal_id)
+      WHERE renewal.route_binding_id = b.route_binding_id
+        AND renewal.expected_binding_generation = b.binding_generation
+        AND attempt.state = 'leased' AND attempt.lease_expires_at > clock_timestamp()
+   )
+   AND 3 > (
+     SELECT count(*) FROM community_route_active_lease_renewals AS renewal
+     JOIN community_route_active_lease_renewal_attempts AS attempt
+       USING (active_lease_renewal_id)
+      WHERE renewal.route_binding_id = b.route_binding_id
+        AND renewal.expected_binding_generation = b.binding_generation
+        AND attempt.state = 'consumed'
+   )
+ ORDER BY e.expires_at, b.route_binding_id
+ LIMIT $5`;
+
+export const readHnsActiveLeaseRenewalCandidates = Effect.fn("readHnsActiveLeaseRenewalCandidates")(
+  function* (
+    input: Readonly<{
+      reference: string;
+      version: string;
+      environment: string;
+      leadSeconds: number;
+      limit: number;
+    }>,
+  ) {
+    const db = yield* ControlPlaneDb;
+    const result = yield* db.execute<Row>({
+      label: "hns-active-renewal.candidates",
+      text: HNS_ACTIVE_LEASE_RENEWAL_CANDIDATES_SQL,
+      values: [input.reference, input.version, input.environment, input.leadSeconds, input.limit],
+      readonly: true,
+    });
+    return yield* Effect.forEach(result.rows, (row) => {
+      const candidate = authorityFromRow(row);
+      return candidate === null
+        ? Effect.fail(storageFailure())
+        : Effect.succeed(candidate.authority);
+    });
+  },
+);
 
 function authorityFromRow(row: Row): Readonly<{
   readonly authority: HnsActiveLeaseRenewalAuthorityV1;
@@ -713,7 +794,7 @@ function finalizeInTransaction(
     const request = input.reservation.request;
     const lockResult = yield* transaction.execute<Row>({
       label: "hns-active-renewal.finalize-lock",
-      text: `SELECT c.status AS community_status, c.canonical_route_binding_id,
+      text: `SELECT c.status AS community_status, c.canonical_route_binding_id, c.created_by_user_id,
                     b.binding_generation, b.verified_evidence_ref,
                     b.ownership_status, b.route_lifecycle_status,
                     e.expires_at AS evidence_expires_at,
@@ -1027,6 +1108,18 @@ function finalizeInTransaction(
         readonly: false,
       });
       if (routeEvidence.rowCount !== 1) return yield* Effect.fail(storageFailure());
+      const actor = stringValue(locked, "created_by_user_id");
+      if (actor === null) return yield* Effect.fail(storageFailure());
+      yield* refreshVerifiedHnsHosts(transaction, {
+        community_id: request.community_id,
+        route_binding_id: request.route_binding_id,
+        root_label: evidence.root_label,
+        actor_id: actor,
+        expected_binding_generation: request.expected_binding_generation,
+        evidence_ref: evidence.evidence_ref,
+        operation_id: request.active_lease_renewal_id,
+        result_hash: resultHash,
+      }).pipe(Effect.mapError(() => storageFailure()));
     }
     const stored = yield* loadStored(transaction, request.active_lease_renewal_id);
     if (stored === null || stored.terminal === null) return yield* Effect.fail(storageFailure());

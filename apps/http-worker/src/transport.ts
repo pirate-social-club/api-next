@@ -1,3 +1,8 @@
+import type { BrowserParticipationContext } from "@pirate/application/guest-participation-authority";
+import {
+  HNS_FORWARDER_HOST_HEADER,
+  isCanonicalHnsForwarderHost,
+} from "@pirate/application/use-cases/hns-browser-transport";
 import {
   type IdentityRegistrationHandlerServices,
   makeIdentityRegistrationHandler,
@@ -17,6 +22,9 @@ import {
   NotFound,
   toErrorBody,
 } from "@pirate/contracts";
+import type { SpacesRouteAttachmentStore } from "@pirate/platform-cf/spaces-community-route-attachment-repository";
+import type { SpacesOperatorAssignmentStore } from "@pirate/platform-cf/spaces-operator-assignment-repository";
+import type { SpacesOwnerProofStore } from "@pirate/platform-cf/spaces-owner-proof-repository";
 import { Schema } from "effect";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -28,6 +36,13 @@ import {
   boundaryFailureDiagnostic,
 } from "./failure-diagnostics.ts";
 import { routeTable } from "./generated/route-table.ts";
+import { assertGuestBrowserRequestBoundary } from "./guest-browser-authentication.ts";
+import type { GuestBrowserAuthenticationAdapter } from "./guest-browser-cookie-policy.ts";
+import type { makeGuestBrowserRequestAuthenticator } from "./guest-browser-request-authentication.ts";
+import {
+  type GuestStudyServingComposition,
+  isGuestStudyServingName,
+} from "./guest-study-serving-composition.ts";
 import {
   disabledProductionHnsCommunityAppApiComposition,
   type HnsCommunityAppApiComposition,
@@ -36,6 +51,7 @@ import {
   hasReservedHnsCommunityAppHeader,
   resolveHnsSolidHostAuthorityRequest,
   stripHnsCommunityAppPrivateHeaders,
+  type VerifiedHnsCommunityAppApiRequest,
   verifyHnsCommunityAppApiRequest,
 } from "./hns-community-app-api-transport.ts";
 import {
@@ -49,6 +65,15 @@ import {
 } from "./hns-handle-host-api-composition.ts";
 import { resolveHnsSolidHandleHostAuthorityRequest } from "./hns-handle-host-api-transport.ts";
 import { type KaraokeHandlerServices, makeKaraokeHandlers } from "./karaoke-handlers.ts";
+import { makeSpacesOperatorAssignmentHandlers } from "./spaces-operator-assignment-handlers.ts";
+import { makeSpacesOperatorAssignmentTransport } from "./spaces-operator-assignment-transport.ts";
+import { makeSpacesOwnerProofHandlers } from "./spaces-owner-proof-handlers.ts";
+import {
+  makeSpacesRegistryTransport,
+  type SpacesRegistryTransportOptions,
+} from "./spaces-registry-transport.ts";
+import { makeSpacesRouteAttachmentHandlers } from "./spaces-route-attachment-handlers.ts";
+import { telegramLinkBrowser } from "./telegram-linking-browser.ts";
 
 export interface Principal {
   readonly kind: "user" | "admin" | "agent" | "device";
@@ -60,6 +85,10 @@ export interface Principal {
 
 /** The only request value a handler or policy authorizer can observe. */
 export interface DecodedRequest {
+  /** Validated operation-specific metadata, never raw cookies or a user principal. */
+  readonly browserParticipation?: BrowserParticipationContext;
+  /** Trusted session digest and private binding, only for Telegram linking routes. */
+  readonly telegramLinkBrowser?: { readonly sessionHash: string; readonly binding?: string };
   readonly body: unknown;
   /** Present only when the endpoint declares a headers schema. */
   readonly headers?: unknown;
@@ -128,9 +157,17 @@ export interface BeforeDecodeArgs {
 export interface HttpWorkerConfig {
   /** Comma-separated exact allowed origins, or `*`, supplied by Worker configuration. */
   readonly corsOrigin: string;
+  /** A configured protected hostname must fail closed even before HNS is enabled. */
+  readonly hnsCommunityAppApiProtectedOrigin?: string;
 }
 
 export interface HttpWorkerOptions {
+  /** Managed admitted sixteen-operation graph; absent means unavailable. */
+  readonly guestStudy?: GuestStudyServingComposition;
+  /** Frozen adapter port only. Interface-only endpoints remain disabled even when supplied. */
+  readonly browserParticipation?: GuestBrowserAuthenticationAdapter;
+  /** Private source factory; adding it never enables a disabled definition. */
+  readonly browserParticipationRequest?: ReturnType<typeof makeGuestBrowserRequestAuthenticator>;
   readonly config?: HttpWorkerConfig;
   readonly hnsEdgeStatus?: HnsEdgeStatusComposition;
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
@@ -154,12 +191,22 @@ export interface HttpWorkerOptions {
   readonly hnsCommunityAppApi?: HnsCommunityAppApiComposition;
   /** Source-closed public handle-host authority. Production remains disabled and unbound. */
   readonly hnsHandleHostApi?: HnsHandleHostApiComposition;
+  /** Private operator registry; absent in every production composition by default. */
+  readonly spacesRegistry?: SpacesRegistryTransportOptions;
+  /** Absent in production until scoped verifier credentials are installed. */
+  readonly spacesOwnerProof?: SpacesOwnerProofStore;
+  /** Absent unless the trusted public origin for Spaces community routes is configured. */
+  readonly spacesRouteAttachment?: SpacesRouteAttachmentStore;
+  /** Absent until scoped host credentials and an independent verifier are composed. */
+  readonly spacesOperatorAssignments?: SpacesOperatorAssignmentStore;
 }
 
 type HttpWorkerEnv = {
   Variables: {
     requestId: string;
+    privateEndpointCacheControl?: boolean;
     hnsCommunityAppApiVerified?: boolean;
+    hnsCommunityAppApiAuthority?: VerifiedHnsCommunityAppApiRequest;
     hnsDynamicCorsOrigin?: string;
   };
 };
@@ -250,7 +297,11 @@ type ParsedCookies = {
   readonly invalidNames: ReadonlySet<string>;
 };
 
-const SENSITIVE_COOKIE_NAMES = new Set([SESSION_COOKIE_NAME, CSRF_COOKIE_NAME]);
+const SENSITIVE_COOKIE_NAMES = new Set([
+  SESSION_COOKIE_NAME,
+  CSRF_COOKIE_NAME,
+  "__Host-pirate_telegram_link",
+]);
 const hasControlCharacter = (value: string): boolean =>
   [...value].some((character) => {
     const code = character.charCodeAt(0);
@@ -659,6 +710,19 @@ const CANONICAL_ONLY_ENDPOINTS = new Set([
   "ListCommunityHandleOfferingManagement",
 ]);
 const PRIVATE_NO_STORE_ENDPOINTS = new Set([
+  "ListMyModerationCommunities",
+  "GetPublicProfileActivity",
+  "StartSpacesOwnership",
+  "GetSpacesOwnershipProgress",
+  "ListSpacesOwnershipRoots",
+  "ResumeSpacesOwnership",
+  "PollSpacesOwnership",
+  "StartSpacesRouteAttachment",
+  "GetCurrentSpacesRouteAttachment",
+  "ProveSpacesRouteAttachment",
+  "CommitSpacesRouteAttachment",
+  "GetSpacesOperatorAssignments",
+  "ConfirmSpacesOperatorAssignment",
   "GetHandleNationalityAuthoring",
   "GetHandleNationalityQualification",
   "CreateHandleNationalityQualificationPolicy",
@@ -672,11 +736,46 @@ const PRIVATE_NO_STORE_ENDPOINTS = new Set([
   "RetirePersona",
   "GetSongOwnerPolicy",
   "UpdateSongOwnerPolicy",
+  "ListPersonaSongs",
 ]);
 const PRIVATE_NO_STORE_PATH = /^(?:\/auth\/register|\/personas(?:\/|$))/u;
 // Endpoints that mint the browser session cookie share one same-origin policy
 // regardless of their declared public auth kind.
 const SESSION_ISSUANCE_ENDPOINTS = new Set(["SessionExchange", "RegisterIdentity"]);
+
+const PRIVATE_CACHE_ROUTES = routeTable
+  .filter(({ endpoint }) => endpoint.cacheControl === "private, no-store")
+  .map(
+    ({ path }) =>
+      new RegExp(
+        "^(?:/api)?" +
+          path
+            .split("/")
+            .map((segment) =>
+              segment.startsWith(":") ? "[^/]+" : segment.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
+            )
+            .join("/") +
+          "$",
+      ),
+  );
+
+// Generated declarative policy matching is used only for the early refusal
+// boundary, never to turn an untrusted forwarder host into product authority.
+const BROWSER_PARTICIPATION_ROUTES = routeTable
+  .filter(({ endpoint }) => endpoint.auth.policy.kind === "browserParticipation")
+  .map((binding) => ({
+    binding,
+    path: new RegExp(
+      "^(?:/api)?" +
+        binding.path
+          .split("/")
+          .map((segment) =>
+            segment.startsWith(":") ? "[^/]+" : segment.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
+          )
+          .join("/") +
+        "$",
+    ),
+  }));
 
 const json = (
   context: HttpContext,
@@ -725,21 +824,69 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
 };
 
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
+  if (
+    options.guestStudy !== undefined &&
+    options.browserParticipationRequest !== undefined &&
+    options.guestStudy.requestAuthentication !== options.browserParticipationRequest
+  )
+    throw new Error("Guest request authentication composition differs");
   const hnsEdgeStatus = options.hnsEdgeStatus ?? disabledProductionHnsEdgeStatusComposition;
   const hnsCommunityAppApi =
     options.hnsCommunityAppApi ?? disabledProductionHnsCommunityAppApiComposition;
+  const configuredHnsProtectedOrigin = options.config?.hnsCommunityAppApiProtectedOrigin ?? "";
+  if (configuredHnsProtectedOrigin !== "") {
+    try {
+      const parsed = new URL(configuredHnsProtectedOrigin);
+      if (parsed.protocol !== "https:" || parsed.origin !== configuredHnsProtectedOrigin) {
+        throw new Error("invalid protected origin");
+      }
+    } catch {
+      throw new Error("HNS community API protected origin is invalid");
+    }
+    if (
+      hnsCommunityAppApi.enabled &&
+      configuredHnsProtectedOrigin !== hnsCommunityAppApi.protected_origin
+    ) {
+      throw new Error("HNS community API protected origin is invalid");
+    }
+  }
   const hnsHandleHostApi =
     options.hnsHandleHostApi ?? disabledProductionHnsHandleHostApiComposition;
+  const spacesRegistry =
+    options.spacesRegistry === undefined
+      ? undefined
+      : makeSpacesRegistryTransport(options.spacesRegistry);
   const karaokeHandlers: Readonly<Record<string, EndpointHandler>> | undefined =
     options.karaoke === undefined ? undefined : makeKaraokeHandlers(options.karaoke);
+  const spacesOwnerProofHandlers =
+    options.spacesOwnerProof === undefined
+      ? undefined
+      : makeSpacesOwnerProofHandlers(options.spacesOwnerProof);
+  const spacesRouteAttachmentHandlers =
+    options.spacesRouteAttachment === undefined
+      ? undefined
+      : makeSpacesRouteAttachmentHandlers(options.spacesRouteAttachment);
+  const spacesOperatorAssignmentHandlers =
+    options.spacesOperatorAssignments === undefined
+      ? undefined
+      : makeSpacesOperatorAssignmentHandlers(options.spacesOperatorAssignments);
+  const spacesOperatorAssignmentTransport =
+    options.spacesOperatorAssignments === undefined
+      ? undefined
+      : makeSpacesOperatorAssignmentTransport(options.spacesOperatorAssignments);
   const sessionExchangeHandler =
     options.sessionExchange === undefined
       ? undefined
       : makeSessionExchangeHandler(options.sessionExchange);
   const installedProtectedHandlers = routeTable.filter(
     (binding) =>
+      binding.endpoint.implementation !== "disabled" &&
+      binding.endpoint.auth.policy.kind !== "browserParticipation" &&
       (options.handlers?.[binding.name] !== undefined ||
         karaokeHandlers?.[binding.name] !== undefined ||
+        spacesOwnerProofHandlers?.[binding.name] !== undefined ||
+        spacesRouteAttachmentHandlers?.[binding.name] !== undefined ||
+        spacesOperatorAssignmentHandlers?.[binding.name] !== undefined ||
         (binding.name === "GetMyProfile" && options.profile !== undefined)) &&
       !isPublic(binding.endpoint),
   );
@@ -753,11 +900,37 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   const app = new Hono<HttpWorkerEnv>();
   app.use("*", async (context, next) => {
     requestId(context);
-    await next();
+    const pathname = new URL(context.req.raw.url).pathname;
+    if (PRIVATE_CACHE_ROUTES.some((route) => route.test(pathname)))
+      context.set("privateEndpointCacheControl", true);
+    try {
+      await next();
+    } finally {
+      // Includes successful middleware short-circuits, OPTIONS and path/body
+      // failures before route dispatch. Guest authority metadata is never cached.
+      if (context.get("privateEndpointCacheControl") === true)
+        context.header("cache-control", "private, no-store");
+    }
   });
   app.use("*", async (context, next) => {
     const requestUrl = new URL(context.req.raw.url);
     const pathname = requestUrl.pathname;
+    if (!hnsCommunityAppApi.enabled && requestUrl.origin === configuredHnsProtectedOrigin) {
+      return new Response(null, {
+        status: 503,
+        headers: {
+          "cache-control": context.get("privateEndpointCacheControl")
+            ? "private, no-store"
+            : "no-store",
+        },
+      });
+    }
+    if (spacesRegistry?.matches(pathname)) {
+      return spacesRegistry.serve(context.req.raw);
+    }
+    if (spacesOperatorAssignmentTransport?.matches(pathname)) {
+      return spacesOperatorAssignmentTransport.serve(context.req.raw);
+    }
     if (pathname === "/admin/hns") {
       if (context.req.raw.method !== "GET") {
         return new Response("Method not allowed", {
@@ -810,8 +983,45 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     }
 
     if (hnsApiRequest && protectedHnsIngress && hnsCommunityAppApi.enabled) {
-      const verified = await verifyHnsCommunityAppApiRequest(context.req.raw, hnsCommunityAppApi);
+      const guest = BROWSER_PARTICIPATION_ROUTES.find(
+        ({ binding, path }) => binding.method === context.req.method && path.test(pathname),
+      )?.binding;
+      let beforeGuestBodyRead: (() => Promise<void>) | undefined;
+      if (guest !== undefined) {
+        // Disabled definitions refuse before HNS clones/hashes any body.
+        if (
+          guest.endpoint.implementation === "disabled" ||
+          !isGuestStudyServingName(guest.name) ||
+          options.guestStudy === undefined
+        )
+          throw new NotFound({ message: "Endpoint not found" });
+        const policy = guest.endpoint.auth.policy;
+        if (policy.kind !== "browserParticipation")
+          throw new InternalError({ message: "Invalid guest policy" });
+        const claimedHost = context.req.raw.headers.get(HNS_FORWARDER_HOST_HEADER);
+        if (claimedHost === null || !isCanonicalHnsForwarderHost(claimedHost))
+          throw new AuthError({ message: "Authentication failed" });
+        // This precheck can only refuse. Successful precheck mints no context.
+        // Actual MAC below must still authenticate this exact host and body.
+        assertGuestBrowserRequestBoundary({
+          policy,
+          requestHeaders: context.req.raw.headers,
+          trustedProductOrigin: `https://${claimedHost}`,
+        });
+        const guestRequest =
+          options.guestStudy?.requestAuthentication ?? options.browserParticipationRequest;
+        if (guestRequest === undefined)
+          throw new InternalError({ message: "Guest browser composition unavailable" });
+        beforeGuestBodyRead = () =>
+          guestRequest.precheckHnsBeforeBody({ request: context.req.raw, policy });
+      }
+      const verified = await verifyHnsCommunityAppApiRequest(
+        context.req.raw,
+        hnsCommunityAppApi,
+        beforeGuestBodyRead,
+      );
       context.set("hnsCommunityAppApiVerified", true);
+      context.set("hnsCommunityAppApiAuthority", verified);
       context.set("hnsDynamicCorsOrigin", verified.exact_origin);
       await next();
       return;
@@ -844,16 +1054,30 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     const install = (path: string, pathPrefix = ""): void => {
       app.on(binding.method, path, async (context) => {
         enforceExactRawPathParameters(binding.endpoint, context, pathPrefix);
+        if (
+          binding.endpoint.implementation === "disabled" ||
+          (isGuestStudyServingName(binding.name) && options.guestStudy === undefined) ||
+          (binding.endpoint.auth.policy.kind === "browserParticipation" &&
+            (!isGuestStudyServingName(binding.name) || options.guestStudy === undefined))
+        ) {
+          throw new NotFound({ message: "Endpoint not found" });
+        }
         const handler =
           options.handlers?.[binding.name] ??
           karaokeHandlers?.[binding.name] ??
+          spacesOwnerProofHandlers?.[binding.name] ??
+          spacesRouteAttachmentHandlers?.[binding.name] ??
+          spacesOperatorAssignmentHandlers?.[binding.name] ??
           (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
           (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
             ? makeIdentityRegistrationHandler(options.identityRegistration)
             : undefined) ??
           (binding.name === "SessionLogout" ? () => ({ status: "ok" }) : undefined) ??
           (binding.name === "GetMyProfile" ? options.profile : undefined);
-        if (handler === undefined) {
+        if (
+          handler === undefined &&
+          !(options.guestStudy !== undefined && isGuestStudyServingName(binding.name))
+        ) {
           if (binding.name === "Health") {
             return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);
           }
@@ -861,6 +1085,40 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         }
 
         try {
+          if (options.guestStudy !== undefined && isGuestStudyServingName(binding.name)) {
+            const verifiedHns = context.get("hnsCommunityAppApiAuthority");
+            const result = await options.guestStudy.handle({
+              name: binding.name,
+              request: context.req.raw,
+              ...(verifiedHns === undefined ? {} : { verifiedHns }),
+              decodeRequestLocations: async () => {
+                const decoded = await decodeInput(binding.endpoint, context, null);
+                const {
+                  principal: _principal,
+                  browserParticipation: _guest,
+                  ...locations
+                } = decoded;
+                const edgeClientIp = context.req.header("CF-Connecting-IP");
+                return {
+                  ...locations,
+                  signal: context.req.raw.signal,
+                  ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
+                };
+              },
+            });
+            const status = result.status ?? declaredStatuses(binding.endpoint)[0] ?? 200;
+            validateHandlerStatus(binding.endpoint, status);
+            const headers = new Headers(result.responseHeaders);
+            headers.set("cache-control", "private, no-store");
+            return json(
+              context,
+              decodeResponse(binding.endpoint, result.body),
+              status,
+              true,
+              headers,
+            );
+          }
+          if (handler === undefined) throw new NotFound({ message: "Endpoint not found" });
           const authorization = context.req.header("authorization");
           const hasAuthorizationHeader = authorization !== undefined;
           const hasCredentials = authorization !== undefined && authorization.trim() !== "";
@@ -953,8 +1211,25 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           if (compatibilityResponse !== undefined) return compatibilityResponse;
           const input = await decodeInput(binding.endpoint, context, principal);
           const edgeClientIp = context.req.header("CF-Connecting-IP");
+          const linkBrowser =
+            isBrowserSessionOnly(binding.endpoint) &&
+            binding.endpoint.path.startsWith("/telegram/link/") &&
+            sessionCookie
+              ? await telegramLinkBrowser(
+                  sessionCookie,
+                  cookies,
+                  parsedCookies.duplicateNames,
+                  parsedCookies.invalidNames,
+                  ![
+                    "GetMyTelegramLinks",
+                    "RevokeTelegramLinkGrant",
+                    "UnlinkTelegramAccount",
+                  ].includes(binding.name),
+                )
+              : undefined;
           const requestWithEdgeIp = {
             ...input,
+            ...(linkBrowser === undefined ? {} : { telegramLinkBrowser: linkBrowser }),
             signal: context.req.raw.signal,
             ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
           };
@@ -999,17 +1274,24 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
               : sessionCookieHeaders(sessionResult.sessionToken, sessionResult.sessionTtlSeconds);
           const request = requestShape(binding.endpoint);
           const noStore =
+            binding.endpoint.cacheControl !== undefined ||
             !isPublic(binding.endpoint) ||
             binding.name === "GetPublicPersona" ||
             binding.name === "GetPublicCommunityThreads" ||
             binding.name === "GetPublicHomeFeed" ||
             binding.name === "GetPublicPostSitemap" ||
+            binding.name === "GetTrendingSongs" ||
+            binding.name === "ListPopularCommunities" ||
+            binding.name === "ListCommunityHandleOfferings" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
             request?.body !== undefined ||
             cookiesToSet !== undefined;
           const headers = new Headers(responseHeaders);
-          if (PRIVATE_NO_STORE_ENDPOINTS.has(binding.name)) {
+          if (
+            binding.endpoint.cacheControl === "private, no-store" ||
+            PRIVATE_NO_STORE_ENDPOINTS.has(binding.name)
+          ) {
             headers.set("cache-control", "private, no-store");
           }
           for (const cookie of cookiesToSet ?? []) headers.append("set-cookie", cookie);
@@ -1025,7 +1307,11 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     if (
       hnsCommunityAppApi.enabled &&
       !CANONICAL_ONLY_ENDPOINTS.has(binding.name) &&
-      (binding.method === "GET" || binding.method === "POST" || binding.method === "PATCH")
+      (binding.method === "GET" ||
+        binding.method === "POST" ||
+        binding.method === "PATCH" ||
+        (binding.endpoint.auth.policy.kind === "browserParticipation" &&
+          (binding.method === "PUT" || binding.method === "DELETE")))
     ) {
       install(`/api${binding.path}`, "/api");
     }
@@ -1034,6 +1320,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   app.onError((error, context) => {
     const serialized = toErrorBody(error, requestId(context));
     const response = json(context, serialized.body, serialized.status, true, serialized.headers);
+    if (context.get("privateEndpointCacheControl") === true)
+      response.headers.set("cache-control", "private, no-store");
     if (HANDLE_SALES_MANAGEMENT_PATH.test(new URL(context.req.raw.url).pathname)) {
       response.headers.set("cache-control", "private, no-store");
     }

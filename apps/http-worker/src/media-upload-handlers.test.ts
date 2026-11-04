@@ -42,6 +42,7 @@ describe("media upload handlers", () => {
       renewParts: none,
       get: none,
       bindReference: none,
+      attachStem: none,
       retry: none,
       retryPoster: none,
       cancel: none,
@@ -69,6 +70,7 @@ describe("media upload handlers", () => {
       renewParts: call("renew-parts"),
       get: call("get"),
       bindReference: call("reference"),
+      attachStem: call("stems"),
       retry: call("retry"),
       retryPoster: call("retry-poster"),
       cancel: call("cancel"),
@@ -86,6 +88,7 @@ describe("media upload handlers", () => {
     await handlers.RenewVideoUploadParts(request());
     await handlers.GetMediaPostSubmission(request());
     await handlers.BindMediaPostSubmissionReference(request());
+    await handlers.AttachMediaPostSubmissionStem(request());
     await handlers.RetryMediaPostSubmission(request());
     await handlers.RetryVideoPostSubmissionPoster(request());
     await handlers.CancelMediaPostSubmission(request());
@@ -109,6 +112,7 @@ describe("media upload handlers", () => {
       "renew-parts",
       "get",
       "reference",
+      "stems",
       "retry",
       "retry-poster",
       "cancel",
@@ -124,7 +128,7 @@ describe("media upload handlers", () => {
       submissionId: "submission_media",
       actor: { kind: "user", userId: "account_media" },
     });
-    expect(observed[12]?.input).toEqual({
+    expect(observed[13]?.input).toEqual({
       communityId: "community_media",
       actor: { kind: "user", userId: "account_media" },
       query: { cursor: "cursor-fixture", limit: "10" },
@@ -149,6 +153,7 @@ describe("media upload handlers", () => {
       renewParts: unavailable,
       get: unavailable,
       bindReference: unavailable,
+      attachStem: unavailable,
       retry: unavailable,
       retryPoster: unavailable,
       cancel: unavailable,
@@ -202,6 +207,7 @@ describe("media upload handlers", () => {
       renewParts: none,
       get: none,
       bindReference: none,
+      attachStem: none,
       retry: none,
       retryPoster: none,
       cancel: none,

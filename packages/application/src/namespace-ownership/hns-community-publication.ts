@@ -11,11 +11,18 @@ export interface HnsCommunityPublicationClaim {
   readonly input: PollHnsCommunityRootImportInput;
   readonly fence: number;
   readonly authorized: boolean;
+  /** Why an unauthorized claim stops, when it is more specific than authority. */
+  readonly refusal_code?: "publication_window_closed";
 }
+type HnsCommunityPublicationEnqueueOutcome =
+  | Readonly<{ readonly kind: "queued" | "conflict" }>
+  /** The exposed plan's publication window is closed or held for recovery. */
+  | Readonly<{ readonly kind: "window_closed"; readonly reason: string }>;
+
 export interface HnsCommunityPublicationQueue {
   readonly enqueue: (
     input: PollHnsCommunityRootImportInput,
-  ) => Effect.Effect<boolean, HnsCommunityRootImportStorageFailed>;
+  ) => Effect.Effect<HnsCommunityPublicationEnqueueOutcome, HnsCommunityRootImportStorageFailed>;
   readonly claim: () => Effect.Effect<
     HnsCommunityPublicationClaim | null,
     HnsCommunityRootImportStorageFailed
@@ -49,7 +56,13 @@ export const requestHnsCommunityPublicationCheck = Effect.fn("requestHnsCommunit
       return yield* new HnsCommunityRootImportRejected({ reason: "conflict" });
     if (current.status !== "awaiting_owner_update")
       return yield* new HnsCommunityRootImportRejected({ reason: "invalid" });
-    if (!(yield* queue.enqueue(input)))
+    const queued = yield* queue.enqueue(input);
+    if (queued.kind === "window_closed")
+      return yield* new HnsCommunityRootImportRejected({
+        reason: "publication_window_closed",
+        window_reason: queued.reason,
+      });
+    if (queued.kind !== "queued")
       return yield* new HnsCommunityRootImportRejected({ reason: "conflict" });
     return { ...current, publication_check_pending: true, retry_after_seconds: 2 };
   },
@@ -60,7 +73,7 @@ export const continueHnsCommunityPublication = Effect.fn("continueHnsCommunityPu
     const claim = yield* queue.claim();
     if (claim === null) return false;
     if (!claim.authorized) {
-      yield* queue.settle(claim, "failed", "authority_or_expiry");
+      yield* queue.settle(claim, "failed", claim.refusal_code ?? "authority_or_expiry");
       return true;
     }
     const result = yield* Effect.exit(

@@ -29,6 +29,55 @@ const emptySnapshot = (environment: InfisicalSnapshot["environment"]): Infisical
 });
 
 describe("Infisical secret drift audit", () => {
+  test("keeps CloudConvert runtime keys separate from staging operator custody", () => {
+    for (const [name, allowedPath] of [
+      ["CLOUDCONVERT_RENDER_API_KEY", "/services/api-next"],
+      ["CLOUDCONVERT_API_KEY", "/services/api-next/operator"],
+    ] as const) {
+      for (const environment of ["dev", "staging", "prod"] as const) {
+        for (const path of ["/", "/services/api-next", "/services/api-next/operator"] as const) {
+          const base = emptySnapshot(environment);
+          const snapshot = { ...base, secrets: { ...base.secrets, [path]: [name] } };
+          const violations = auditInfisicalSnapshots([snapshot]).violations.filter(
+            (v) => v.name === name,
+          );
+          expect(violations).toEqual(
+            (environment === "staging" && path === allowedPath) ||
+              (environment === "prod" &&
+                name === "CLOUDCONVERT_RENDER_API_KEY" &&
+                path === allowedPath)
+              ? []
+              : [{ environment, path, kind: "unexpected-secret", name }],
+          );
+        }
+      }
+    }
+  });
+
+  test("admits the optional gas signer only in staging operator custody", () => {
+    const name = "GAS_TOPUP_KEY";
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      for (const path of ["/", "/services/api-next", "/services/api-next/operator"] as const) {
+        const snapshot = { ...base, secrets: { ...base.secrets, [path]: [name] } };
+        const violations = auditInfisicalSnapshots([snapshot]).violations.filter(
+          (violation) => violation.name === name,
+        );
+        expect(violations).toEqual(
+          environment === "staging" && path === "/services/api-next/operator"
+            ? []
+            : [{ environment, path, kind: "unexpected-secret", name }],
+        );
+      }
+    }
+    const policy = INFISICAL_POLICIES.find(
+      ({ environment, path }) =>
+        environment === "staging" && path === "/services/api-next/operator",
+    );
+    expect(policy?.allowedNames).toContain(name);
+    expect(policy?.requiredNames).not.toContain(name);
+  });
+
   test("extracts names and folder paths without exposing secret values", () => {
     expect(
       parseInfisicalSecretNames({
@@ -95,6 +144,7 @@ describe("Infisical secret drift audit", () => {
       "ZKPASSPORT_VERIFIER_SHARED_SECRET",
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
       "HNS_EDGE_ALERT_TOKEN",
+      "VERY_WEB_SEALING_KEY",
     ]);
     expect(report.acceptedDrift).toHaveLength(0);
   });
@@ -232,83 +282,7 @@ describe("Infisical secret drift audit", () => {
     ]);
   });
 
-  test("admits optional production provisioning secrets only in their owned paths", () => {
-    const prodBase = emptySnapshot("prod");
-    const requiredRuntimeNames = [
-      "PIRATE_APP_JWT_PRIVATE_KEY",
-      "PRIVY_APP_SECRET",
-      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-      "HNS_EDGE_ALERT_TOKEN",
-    ];
-    const withoutSigner: InfisicalSnapshot = {
-      ...prodBase,
-      secrets: {
-        ...prodBase.secrets,
-        "/services/api-next": requiredRuntimeNames,
-        "/services/api-next/operator": [
-          "CONTROL_PLANE_POSTGRES_ADMIN_URL",
-          "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
-        ],
-      },
-    };
-    expect(auditInfisicalSnapshots([withoutSigner]).violations).toEqual([]);
-
-    const withSigner: InfisicalSnapshot = {
-      ...withoutSigner,
-      secrets: {
-        ...withoutSigner.secrets,
-        "/services/api-next": [
-          ...requiredRuntimeNames,
-          "DATA_REGISTRATION_PRODUCTION_AENEID_PRIVATE_KEY",
-          "FILEBASE_IPFS_TOKEN",
-          "ACRCLOUD_ACCESS_KEY",
-          "ACRCLOUD_ACCESS_SECRET",
-          "ELEVENLABS_API_KEY",
-          "OPENAI_API_KEY",
-          "OPENROUTER_API_KEY",
-          "MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID",
-          "MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY",
-        ],
-      },
-    };
-    expect(auditInfisicalSnapshots([withSigner]).violations).toEqual([]);
-
-    const monitorNames = ["HNS_OPERATOR_ALERT_WEBHOOK_URL", "HNS_OPERATOR_MONITOR_POSTGRES_URL"];
-    expect(
-      auditInfisicalSnapshots([
-        {
-          ...withoutSigner,
-          secrets: {
-            ...withoutSigner.secrets,
-            "/services/api-next/operator": [
-              ...withoutSigner.secrets["/services/api-next/operator"],
-              ...monitorNames,
-            ],
-          },
-        },
-      ]).violations,
-    ).toEqual([]);
-    expect(
-      auditInfisicalSnapshots([
-        {
-          ...withoutSigner,
-          secrets: {
-            ...withoutSigner.secrets,
-            "/services/api-next": [...requiredRuntimeNames, ...monitorNames],
-          },
-        },
-      ]).violations,
-    ).toEqual(
-      monitorNames.map((name) => ({
-        environment: "prod",
-        path: "/services/api-next",
-        kind: "unexpected-secret",
-        name,
-      })),
-    );
-  });
-
-  test("admits optional video secrets only at the staging runtime path", () => {
+  test("admits optional video secrets only at staging and production runtime paths", () => {
     const names = [
       "VIDEO_WORKFLOW_READ_TOKEN",
       "VIDEO_STREAM_SIGNING_JWK_BASE64",
@@ -329,7 +303,7 @@ describe("Infisical secret drift audit", () => {
             kind === "unexpected-secret" && name !== undefined && names.includes(name),
         );
         expect(unexpected).toEqual(
-          environment === "staging" && path === "/services/api-next"
+          environment !== "dev" && path === "/services/api-next"
             ? []
             : [...names]
                 .sort()
@@ -339,7 +313,7 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
-  test("admits the retained Stream copies only at exact staging paths", () => {
+  test("admits Stream runtime keys and keeps its retained operator copy staging-only", () => {
     const name = "VIDEO_STREAM_API_TOKEN";
     for (const environment of ["dev", "staging", "prod"] as const) {
       const base = emptySnapshot(environment);
@@ -352,8 +326,8 @@ describe("Infisical secret drift audit", () => {
             ({ kind, name: observed }) => kind === "unexpected-secret" && observed === name,
           ),
         ).toEqual(
-          environment === "staging" &&
-            (path === "/services/api-next" || path === "/services/api-next/operator")
+          (environment !== "dev" && path === "/services/api-next") ||
+            (environment === "staging" && path === "/services/api-next/operator")
             ? []
             : [{ environment, path, kind: "unexpected-secret", name }],
         );
@@ -387,7 +361,7 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
-  test("admits song playback secrets only at the staging runtime path", () => {
+  test("admits song playback secrets only at staging and production runtime paths", () => {
     const names = [
       "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
       "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
@@ -405,7 +379,7 @@ describe("Infisical secret drift audit", () => {
               kind === "unexpected-secret" && name !== undefined && names.includes(name),
           ),
         ).toEqual(
-          environment === "staging" && path === "/services/api-next"
+          environment !== "dev" && path === "/services/api-next"
             ? []
             : names.sort().map((name) => ({ environment, path, kind: "unexpected-secret", name })),
         );
@@ -413,8 +387,50 @@ describe("Infisical secret drift audit", () => {
     }
   });
 
-  test("keeps persona fixture custody optional and restricted to the staging operator path", () => {
-    const names = ["PERSONA_WALLET_E2E_EMAIL", "PERSONA_WALLET_E2E_OTP"];
+  test("keeps optional wallet, Spaces member, prover and verifier credentials only in staging operator custody", () => {
+    const names = [
+      "PERSONA_WALLET_E2E_EMAIL",
+      "PERSONA_WALLET_E2E_OTP",
+      "RUNPOD_API_KEY",
+      "SPACES_TAPROOT_E2E_EMAIL",
+      "SPACES_TAPROOT_E2E_OTP",
+      "SPACES_VERIFIER_ACCESS_CLIENT_ID",
+      "SPACES_VERIFIER_ACCESS_CLIENT_SECRET",
+      "SPACES_VERIFIER_BEARER_TOKEN",
+      "SPACES_VERIFIER_TUNNEL_TOKEN",
+      "SPACES_YAHOO_MEMBER_E2E_EMAIL",
+      "SPACES_YAHOO_MEMBER_E2E_OTP",
+    ];
+    for (const environment of ["dev", "staging", "prod"] as const) {
+      const base = emptySnapshot(environment);
+      expect(
+        auditInfisicalSnapshots([base]).violations.filter(({ name }) => names.includes(name ?? "")),
+      ).toEqual([]);
+      for (const path of [
+        "/",
+        "/agents",
+        "/agents/codex",
+        "/services/api-next",
+        "/services/api-next/operator",
+      ] as const) {
+        const report = auditInfisicalSnapshots([
+          { ...base, secrets: { ...base.secrets, [path]: names } },
+        ]);
+        expect(
+          report.violations.filter(
+            ({ kind, name }) => kind === "unexpected-secret" && names.includes(name ?? ""),
+          ),
+        ).toEqual(
+          environment === "staging" && path === "/services/api-next/operator"
+            ? []
+            : names.map((name) => ({ environment, path, kind: "unexpected-secret", name })),
+        );
+      }
+    }
+  });
+
+  test("keeps the Spaces Taproot fixture identity only at the staging operator path", () => {
+    const names = ["SPACES_TAPROOT_E2E_EMAIL", "SPACES_TAPROOT_E2E_OTP"];
     for (const environment of ["dev", "staging", "prod"] as const) {
       const base = emptySnapshot(environment);
       expect(

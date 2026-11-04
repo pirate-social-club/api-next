@@ -1,5 +1,6 @@
 import type { MegapotPublishedSnapshot } from "@pirate/domain";
 import { Data, type Effect } from "effect";
+import type { RewardOperationsPaused, RewardRunAuthorityUnavailable } from "./reward-operations.ts";
 
 export class MegapotCommitmentStorageFailed extends Data.TaggedError(
   "MegapotCommitmentStorageFailed",
@@ -17,7 +18,11 @@ export class MegapotCommitmentRejected extends Data.TaggedError("MegapotCommitme
     | "signer-unavailable";
 }> {}
 
-export type MegapotCommitmentFailure = MegapotCommitmentRejected | MegapotCommitmentStorageFailed;
+export type MegapotCommitmentFailure =
+  | MegapotCommitmentRejected
+  | MegapotCommitmentStorageFailed
+  | RewardOperationsPaused
+  | RewardRunAuthorityUnavailable;
 
 export type MegapotCommitmentCandidate = Readonly<{
   poolLegId: string;

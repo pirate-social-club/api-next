@@ -1,0 +1,29 @@
+[Unit]
+Description=Pirate staging read-only Handshake mainnet RPC boundary
+After=network-online.target hsd.service
+Requires=hsd.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/pirate-hns-staging/mainnet-reader
+ExecStart=/opt/node/bin/node /opt/pirate-hns-staging/mainnet-reader/read-only-hsd-rpc-proxy.mjs
+EnvironmentFile=/etc/hsd-rpc-filter.env
+LoadCredential=staging-hsd-client-key:/etc/pirate-hns-staging/mainnet-reader/client-key
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1
+CapabilityBoundingSet=
+MemoryMax=64M
+CPUQuota=10%
+TasksMax=32
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

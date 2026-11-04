@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import type { MegapotTicket } from "@pirate/domain";
 import { type Hex, keccak256, toBytes } from "viem";
+import { makeMegapotLocalForkRpcClient, megapotLocalForkUrl } from "./megapot-local-fork.ts";
 import { decodeMegapotMainnetCoreCandidate } from "./megapot-mainnet-core-preflight.ts";
 import {
   encodeMegapotBuyTickets,
@@ -12,7 +13,7 @@ import {
   validateMegapotPurchaseReceipt,
   validateMegapotUsdcApprovalReceipt,
 } from "./megapot-v2.ts";
-import { type MegapotV2RpcClient, makeMegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 
 // Run only against a fresh local Anvil fork. Never point this write test at a remote RPC.
 const FORK_BLOCK = 51_684_323;
@@ -28,36 +29,36 @@ type RpcEnvelope = { jsonrpc: "2.0"; id: number; result?: unknown; error?: unkno
 function localForkUrl(): string {
   const value = process.env.MEGAPOT_BASE_FORK_RPC_URL;
   if (value === undefined) throw new Error("MEGAPOT_BASE_FORK_RPC_URL is required");
-  const url = new URL(value);
-  if (
-    url.protocol !== "http:" ||
-    url.hostname !== "127.0.0.1" ||
-    url.username !== "" ||
-    url.password !== "" ||
-    url.pathname !== "/" ||
-    url.search !== "" ||
-    url.hash !== ""
-  ) {
-    throw new Error("fork RPC must be an uncredentialed 127.0.0.1 HTTP origin");
-  }
-  return url.href;
+  return megapotLocalForkUrl(value);
 }
 
 function localRpc(url: string) {
   let id = 0;
-  return async (method: string, params: readonly unknown[]): Promise<unknown> => {
-    id += 1;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-    });
-    if (!response.ok) throw new Error(`local fork RPC failed: ${method}`);
-    const body = (await response.json()) as RpcEnvelope;
-    if (body.jsonrpc !== "2.0" || body.id !== id || body.error !== undefined) {
-      throw new Error(`local fork RPC rejected: ${method}`);
+  return async (method: string, params: readonly unknown[], coldRead = false): Promise<unknown> => {
+    if (coldRead && method !== "eth_estimateGas") throw new Error("cold probe must be read-only");
+    const requestId = ++id;
+    const started = performance.now();
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        redirect: "error",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        // Fixture preparation may populate archive state; runtime RPC deadlines
+        // remain unchanged and are checked again with the production adapter.
+        signal: AbortSignal.timeout(coldRead ? 60_000 : 10_000),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }),
+      });
+      if (!response.ok) throw new Error(`local fork RPC failed: ${method}`);
+      const body = (await response.json()) as RpcEnvelope;
+      if (body.jsonrpc !== "2.0" || body.id !== requestId || body.error !== undefined) {
+        throw new Error(`local fork RPC rejected: ${method}`);
+      }
+      return body.result;
+    } finally {
+      console.info("local_fork_method_ms", method, Math.round(performance.now() - started));
     }
-    return body.result;
   };
 }
 
@@ -119,75 +120,97 @@ runForkTest(
       usdcImplementationCodeHash: candidate.usdc_implementation_code_hash,
       attestationId: "local-base-fork-approval",
     };
-    const client = makeMegapotV2RpcClient({ rpcUrl: url, attestation: deployment });
+    const client = await makeMegapotLocalForkRpcClient({ rpcUrl: url, attestation: deployment });
     await client.attestDeployment();
     expect(await client.readUsdcAllowance(CUSTODY, deployment.jackpotAddress)).toBe(0n);
     expect(await client.readUsdcBalance(HOLDER)).toBeGreaterThan(FUNDING_ATOMIC);
 
-    await rpc("anvil_impersonateAccount", [HOLDER]);
-    await rpc("anvil_setBalance", [HOLDER, "0x3635c9adc5dea00000"]);
-    const fundingHash = (await rpc("eth_sendTransaction", [
-      {
-        from: HOLDER,
-        to: deployment.usdcAddress,
-        data: encodeMegapotUsdcTransfer(CUSTODY, FUNDING_ATOMIC),
-      },
-    ])) as Hex;
-    expect((await waitForReceipt(client, fundingHash)).status).toBe("success");
-    expect(await client.readUsdcBalance(CUSTODY)).toBe(FUNDING_ATOMIC);
+    const snapshot = await rpc("evm_snapshot", []);
+    try {
+      await rpc("anvil_impersonateAccount", [HOLDER]);
+      await rpc("anvil_setBalance", [HOLDER, "0x3635c9adc5dea00000"]);
+      const fundingHash = (await rpc("eth_sendTransaction", [
+        {
+          from: HOLDER,
+          to: deployment.usdcAddress,
+          data: encodeMegapotUsdcTransfer(CUSTODY, FUNDING_ATOMIC),
+        },
+      ])) as Hex;
+      expect((await waitForReceipt(client, fundingHash)).status).toBe("success");
+      expect(await client.readUsdcBalance(CUSTODY)).toBe(FUNDING_ATOMIC);
 
-    const approvalHash = (await rpc("eth_sendTransaction", [
-      {
-        from: CUSTODY,
-        to: deployment.usdcAddress,
-        data: encodeMegapotUsdcApproval(deployment.jackpotAddress, APPROVAL_ATOMIC),
-      },
-    ])) as Hex;
-    const receipt = await waitForReceipt(client, approvalHash);
-    const evidence = validateMegapotUsdcApprovalReceipt({
-      deployment,
-      receipt,
-      approvedAmountAtomic: APPROVAL_ATOMIC,
-    });
-    expect(evidence.transactionHash).toBe(approvalHash.toLowerCase());
-    expect(evidence.approvedAmountAtomic).toBe(APPROVAL_ATOMIC);
-    expect(await client.readUsdcAllowance(CUSTODY, deployment.jackpotAddress)).toBe(
-      APPROVAL_ATOMIC,
-    );
+      const approvalHash = (await rpc("eth_sendTransaction", [
+        {
+          from: CUSTODY,
+          to: deployment.usdcAddress,
+          data: encodeMegapotUsdcApproval(deployment.jackpotAddress, APPROVAL_ATOMIC),
+        },
+      ])) as Hex;
+      const receipt = await waitForReceipt(client, approvalHash);
+      const evidence = validateMegapotUsdcApprovalReceipt({
+        deployment,
+        receipt,
+        approvedAmountAtomic: APPROVAL_ATOMIC,
+      });
+      expect(evidence.transactionHash).toBe(approvalHash.toLowerCase());
+      expect(evidence.approvedAmountAtomic).toBe(APPROVAL_ATOMIC);
+      expect(await client.readUsdcAllowance(CUSTODY, deployment.jackpotAddress)).toBe(
+        APPROVAL_ATOMIC,
+      );
 
-    expect(await client.readTicketPurchasesAllowed()).toBe(true);
-    const { drawingId, state } = await client.readCurrentDrawing();
-    expect(drawingId).toBe(183n);
-    expect(state.ticketPrice).toBe(1_000_000n);
-    const ticket: MegapotTicket = { normals: [1, 2, 3, 4, 5], bonusball: 1 };
-    const source = keccak256(toBytes("pirate.megapot.local-fork.purchase"));
-    const balanceBeforePurchase = await client.readUsdcBalance(CUSTODY);
-    const purchaseHash = (await rpc("eth_sendTransaction", [
-      {
+      expect(await client.readTicketPurchasesAllowed()).toBe(true);
+      const { drawingId, state } = await client.readCurrentDrawing();
+      expect(drawingId).toBe(183n);
+      expect(state.ticketPrice).toBe(1_000_000n);
+      const ticket: MegapotTicket = { normals: [1, 2, 3, 4, 5], bonusball: 1 };
+      const source = keccak256(toBytes("pirate.megapot.local-fork.purchase"));
+      const balanceBeforePurchase = await client.readUsdcBalance(CUSTODY);
+      const calldata = encodeMegapotBuyTickets({
+        tickets: [ticket],
+        recipient: CUSTODY,
+        referrers: [REFERRER],
+        referralSplit: [MEGAPOT_REFERRAL_SPLIT_SCALE],
+        source,
+      });
+      await rpc(
+        "eth_estimateGas",
+        [{ from: CUSTODY, to: deployment.jackpotAddress, data: calldata }],
+        true,
+      );
+      const gas = await client.estimateGas({
         from: CUSTODY,
         to: deployment.jackpotAddress,
-        data: encodeMegapotBuyTickets({
-          tickets: [ticket],
-          recipient: CUSTODY,
-          referrers: [REFERRER],
-          referralSplit: [MEGAPOT_REFERRAL_SPLIT_SCALE],
-          source,
-        }),
-      },
-    ])) as Hex;
-    const purchaseReceipt = await waitForReceipt(client, purchaseHash);
-    const purchaseEvidence = validateMegapotPurchaseReceipt({
-      deployment,
-      receipt: purchaseReceipt,
-      drawingId,
-      source,
-      tickets: [ticket],
-    });
-    expect(purchaseEvidence.transactionHash).toBe(purchaseHash.toLowerCase());
-    expect(purchaseEvidence.ticketIds).toHaveLength(1);
-    const ticketId = purchaseEvidence.ticketIds[0];
-    if (ticketId === undefined) throw new Error("local fork purchase did not mint a ticket");
-    expect(await client.readTicketOwner(ticketId)).toBe(CUSTODY.toLowerCase());
-    expect(balanceBeforePurchase - (await client.readUsdcBalance(CUSTODY))).toBe(state.ticketPrice);
+        data: calldata,
+      });
+      expect(gas).toBeGreaterThan(0n);
+      const purchaseHash = (await rpc("eth_sendTransaction", [
+        {
+          from: CUSTODY,
+          to: deployment.jackpotAddress,
+          data: calldata,
+          gas: `0x${((gas * 12n + 9n) / 10n).toString(16)}`,
+        },
+      ])) as Hex;
+      const purchaseReceipt = await waitForReceipt(client, purchaseHash);
+      const purchaseEvidence = validateMegapotPurchaseReceipt({
+        deployment,
+        receipt: purchaseReceipt,
+        drawingId,
+        source,
+        tickets: [ticket],
+      });
+      expect(purchaseEvidence.transactionHash).toBe(purchaseHash.toLowerCase());
+      expect(purchaseEvidence.ticketIds).toHaveLength(1);
+      const ticketId = purchaseEvidence.ticketIds[0];
+      if (ticketId === undefined) throw new Error("local fork purchase did not mint a ticket");
+      expect(await client.readTicketOwner(ticketId)).toBe(CUSTODY.toLowerCase());
+      expect(balanceBeforePurchase - (await client.readUsdcBalance(CUSTODY))).toBe(
+        state.ticketPrice,
+      );
+    } finally {
+      await rpc("anvil_stopImpersonatingAccount", [HOLDER]);
+      expect(await rpc("evm_revert", [snapshot])).toBe(true);
+    }
   },
+  120_000,
 );

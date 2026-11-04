@@ -4,6 +4,14 @@ import { runInDurableObject, env as testEnv } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { KaraokeAttemptDO } from "../../packages/platform-cf/src/karaoke-attempt-do.ts";
 import { KARAOKE_RESET_MARKER_KEY } from "../../packages/platform-cf/src/karaoke-reset-marker.ts";
+import {
+  admitCapturedArchiveFixture,
+  bounded,
+  enteredOrSettled,
+  finishArchive,
+  handled,
+  type Settlement,
+} from "./karaoke-reset-captured.fixture.ts";
 
 const env = testEnv as unknown as {
   readonly KARAOKE_ATTEMPT: DurableObjectNamespace<KaraokeAttemptDO>;
@@ -11,85 +19,136 @@ const env = testEnv as unknown as {
 
 describe("persisted Karaoke reset marker denial", () => {
   for (const suspendedAt of ["create", "complete"] as const) {
-    it(`issues no further R2 work after fencing during multipart ${suspendedAt}`, async () => {
+    it(`records late multipart ${suspendedAt} facts but blocks later writes/publication after fencing`, async () => {
       const stub = env.KARAOKE_ATTEMPT.getByName(`in-flight-${crypto.randomUUID()}`);
       await runInDurableObject(stub, async (_instance, state) => {
         const entered = Promise.withResolvers<void>();
         const release = Promise.withResolvers<void>();
-        const calls = { create: 0, part: 0, complete: 0, get: 0, abort: 0 };
+        const calls = {
+          create: 0,
+          part: 0,
+          complete: 0,
+          get: 0,
+          abort: 0,
+          delete: 0,
+          hyperdrive: 0,
+        };
+        let admitted: Awaited<ReturnType<typeof admitCapturedArchiveFixture>> | null = null;
+        const outsideTransaction = () => {
+          if (admitted === null) throw new Error("capture not admitted");
+          expect(admitted.inTransaction()).toBe(false);
+        };
         const upload = {
           uploadId: "late-upload-id",
           async abort() {
+            outsideTransaction();
             calls.abort += 1;
+            throw new Error("unexpected_abort");
           },
           async complete() {
+            outsideTransaction();
             calls.complete += 1;
-            entered.resolve();
-            await release.promise;
+            if (suspendedAt === "complete") {
+              entered.resolve();
+              await release.promise;
+            }
           },
           async uploadPart() {
+            outsideTransaction();
             calls.part += 1;
             return { partNumber: 1, etag: "part-etag" };
           },
         };
-        const object = new KaraokeAttemptDO(state, {
-          get CONTROL_PLANE(): never {
-            throw new Error("unexpected_hyperdrive");
+        const bucket = {
+          async delete() {
+            outsideTransaction();
+            calls.delete += 1;
+            throw new Error("unexpected_delete");
           },
-          LEARNER_AUDIO: {
-            async createMultipartUpload() {
-              calls.create += 1;
+          async createMultipartUpload() {
+            outsideTransaction();
+            calls.create += 1;
+            if (suspendedAt === "create") {
               entered.resolve();
               await release.promise;
-              return upload;
-            },
-            resumeMultipartUpload() {
-              return upload;
-            },
-            async get() {
-              calls.get += 1;
-              return null;
-            },
+            }
+            return upload;
           },
+          resumeMultipartUpload() {
+            return upload;
+          },
+          async get() {
+            outsideTransaction();
+            calls.get += 1;
+            return {
+              size: 2,
+              body: new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new Uint8Array([0, 0]));
+                  controller.close();
+                },
+              }),
+            };
+          },
+        };
+        const object = new KaraokeAttemptDO(state, {
+          get CONTROL_PLANE(): never {
+            calls.hyperdrive += 1;
+            throw new Error("unexpected_hyperdrive");
+          },
+          LEARNER_AUDIO: bucket,
         });
-        await state.blockConcurrencyWhile(async () => {});
-        state.storage.sql.exec(
-          `INSERT INTO karaoke_archive
-            (id,upload_id,object_key,next_part,parts_json,byte_size,duration_ms,state)
-           VALUES (1,?,'karaoke/fixture/attempt.pcm',2,?,2,1,'pending')`,
-          suspendedAt === "complete" ? upload.uploadId : null,
-          suspendedAt === "complete"
-            ? JSON.stringify([{ partNumber: 1, etag: "part-etag" }])
-            : "[]",
+        await bounded(
+          state.blockConcurrencyWhile(async () => {}),
+          "marker-constructor-barrier",
         );
-        if (suspendedAt === "create") {
-          state.storage.sql.exec(
-            "INSERT INTO karaoke_audio_chunk VALUES (1,?,2)",
-            new Uint8Array([0, 0]).buffer,
-          );
+        admitted = await admitCapturedArchiveFixture(object, state, bucket);
+        let settled: Promise<Settlement<unknown>> | null = null;
+        try {
+          // Original producer tracker and reset guard execute. Only its already
+          // admitted native authority is substituted at the finite driver seam.
+          settled = handled(finishArchive(object));
+          await enteredOrSettled(entered.promise, settled, `marker-${suspendedAt}-entry`);
+          await state.storage.put(KARAOKE_RESET_MARKER_KEY, { version: 1, state: "active" });
+          Reflect.set(object, "resetFenced", true);
+          release.resolve();
+          const result = await bounded(settled, `marker-${suspendedAt}-settlement`);
+          expect(result.ok).toBe(false);
+          if (!result.ok) expect(String(result.error)).toContain("karaoke_reset_fenced");
+          expect(calls).toEqual({
+            create: 1,
+            part: suspendedAt === "complete" ? 1 : 0,
+            complete: suspendedAt === "complete" ? 1 : 0,
+            get: suspendedAt === "complete" ? 1 : 0,
+            abort: 0,
+            delete: 0,
+            hyperdrive: 0,
+          });
+          const journal = admitted.journal.load();
+          expect(journal.multipartId).toBe("late-upload-id");
+          expect(journal.inFlight).toBeNull();
+          if (suspendedAt === "create") {
+            expect(journal.completed).toBe(false);
+            expect(journal.result).toBeNull();
+            expect(admitted.facts).toHaveLength(0);
+            expect(admitted.nativeState().ioState).toBe("writing");
+          } else {
+            expect(journal.completed).toBe(true);
+            expect(journal.result).toMatchObject({ state: "stored", byteSize: 2 });
+            expect(admitted.facts).toHaveLength(1);
+            expect(admitted.nativeState()).toMatchObject({
+              ioState: "closed",
+              storageDisposition: "stored",
+            });
+          }
+          const before = { ...calls };
+          const reentry = await bounded(handled(finishArchive(object)), "marker-fenced-reentry");
+          expect(reentry.ok).toBe(false);
+          expect(calls).toEqual(before);
+        } finally {
+          release.resolve();
+          if (settled !== null) await bounded(settled, `marker-${suspendedAt}-cleanup`);
         }
-        // Exercise the actual private producer boundary without exposing a test RPC.
-        const finish = Reflect.get(object, "finishArchive");
-        if (typeof finish !== "function") throw new Error("missing_archive_producer");
-        const work = finish.call(object);
-        const rejected = expect(work).rejects.toThrow("karaoke_reset_fenced");
-        await entered.promise;
-        await state.storage.put(KARAOKE_RESET_MARKER_KEY, { version: 1, state: "active" });
-        Reflect.set(object, "resetFenced", true);
-        release.resolve();
-        await rejected;
-        expect(calls).toEqual({
-          create: suspendedAt === "create" ? 1 : 0,
-          part: 0,
-          complete: suspendedAt === "complete" ? 1 : 0,
-          get: 0,
-          abort: 0,
-        });
-        expect(
-          state.storage.sql
-            .exec<{ upload_id: string }>("SELECT upload_id FROM karaoke_archive WHERE id=1")
-            .one().upload_id,
-        ).toBe("late-upload-id");
       });
     });
   }

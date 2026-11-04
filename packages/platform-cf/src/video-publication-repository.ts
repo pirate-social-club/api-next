@@ -69,6 +69,20 @@ const json = <T>(value: unknown): T => {
   throw new Error("invalid video persistence row");
 };
 
+const sameMultipartManifest = (
+  stored: NonNullable<VideoReservationRecord["manifest"]>,
+  requested: NonNullable<VideoReservationRecord["manifest"]>,
+): boolean =>
+  Array.isArray(stored) &&
+  stored.length === requested.length &&
+  stored.every(
+    (part, index) =>
+      part !== null &&
+      typeof part === "object" &&
+      part.partNumber === requested[index]?.partNumber &&
+      part.etag === requested[index]?.etag,
+  );
+
 function reservationFromRow(row: Row): VideoReservationRecord {
   const contentType = text(row, "expected_content_type");
   if (contentType !== "video/mp4" && contentType !== "video/quicktime")
@@ -710,6 +724,27 @@ export function makeControlPlaneVideoPublicationStore(
         }),
       ),
 
+    replaySubmissionStart: (input) =>
+      run(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          // The same read createSubmission makes under its lock. A submission
+          // row carries its saved answer, key and hash from the transaction
+          // that claimed the reservation, so it is visible exactly when the
+          // claim is.
+          const prior = yield* db.execute<Row>({
+            label: "video-publication.start-replay",
+            text: `SELECT submission_id,request_hash,response_snapshot_bytes
+                     FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$2
+                      AND endpoint_template='/communities/:communityId/media-post-submissions'
+                      AND idempotency_key=$3`,
+            values: [input.communityId, input.actorAccountId, input.idempotencyKey],
+            readonly: true,
+          });
+          return replayFromRow(prior.rows[0], input.requestHash, "submission_id");
+        }),
+      ),
+
     getSubmissionForAccount: (input) =>
       run(
         Effect.gen(function* () {
@@ -775,7 +810,7 @@ export function makeControlPlaneVideoPublicationStore(
                 throw new Error("video finalize fence rejected");
               const reservationResult = yield* tx.execute<Row>({
                 label: "video-publication.finalize-reservation",
-                text: `SELECT ${RESERVATION_COLUMNS} FROM media_upload_reservations
+                text: `SELECT ${RESERVATION_COLUMNS},multipart_completed_at FROM media_upload_reservations
                         WHERE reservation_id=$1 AND submission_id=$2 AND operation_id=$3
                           AND state IN ('claimed','expired') FOR UPDATE`,
                 values: [
@@ -808,10 +843,7 @@ export function makeControlPlaneVideoPublicationStore(
                     details: { reason_code: "action_expired" },
                   });
               }
-              if (
-                priorManifest !== null &&
-                JSON.stringify(priorManifest) !== JSON.stringify(input.manifest)
-              )
+              if (priorManifest !== null && !sameMultipartManifest(priorManifest, input.manifest))
                 throw new Error("video finalize manifest conflict");
               if (priorManifest === null) {
                 yield* tx.execute({
@@ -875,6 +907,7 @@ export function makeControlPlaneVideoPublicationStore(
                 ...input.submission,
                 status: "abandoned",
                 phase: null,
+                abandonmentReason: "upload_expectation_mismatch",
               };
               yield* tx.execute({
                 label: "video-publication.manifest-abort",
@@ -887,7 +920,12 @@ export function makeControlPlaneVideoPublicationStore(
                 values: [input.evidenceRef, input.reservation.reservationId],
                 readonly: false,
               });
-              yield* updateSubmissionSnapshot(tx, { prior: input.submission, next });
+              yield* updateSubmissionSnapshot(tx, {
+                prior: input.submission,
+                next,
+                extraSql: ",abandonment_reason=$10,retention_disposition=$11",
+                extraValues: ["upload_expectation_mismatch", "retain_for_reconciliation"],
+              });
             }),
           );
         }),
@@ -1021,10 +1059,33 @@ export function makeControlPlaneVideoPublicationStore(
           const db = yield* ControlPlaneDb;
           return yield* db.withTransaction((tx) =>
             Effect.gen(function* () {
+              yield* lock(
+                tx,
+                `video-finalize:${input.submission.operationId}:${input.idempotencyKey}`,
+              );
+              const prior = yield* commandReplay(tx, {
+                actorAccountId: input.submission.actorAccountId,
+                endpointTemplate: input.endpointTemplate,
+                idempotencyKey: input.idempotencyKey,
+                requestHash: input.requestHash,
+              });
+              if (prior.kind !== "none") return prior;
+              const current = yield* findSubmission(tx, {
+                clause: "s.submission_id=$1 AND s.operation_id=$2 FOR UPDATE",
+                values: [input.submission.submissionId, input.submission.operationId],
+              });
+              if (
+                current === null ||
+                current.state.status !== "processing" ||
+                current.state.phase !== "finalize" ||
+                current.state.creationRevision !== input.submission.creationRevision
+              )
+                throw new Error("video finalization mismatch fence rejected");
               const next: VideoSubmissionState = {
-                ...input.submission,
+                ...current.state,
                 status: "abandoned",
                 phase: null,
+                abandonmentReason: "upload_expectation_mismatch",
               };
               yield* tx.execute({
                 label: "video-publication.expectation-mismatch",
@@ -1037,10 +1098,16 @@ export function makeControlPlaneVideoPublicationStore(
                 readonly: false,
               });
               yield* updateSubmissionSnapshot(tx, {
-                prior: input.submission,
+                prior: current.state,
                 next,
-                extraSql: ",response_snapshot_bytes=$10,response_snapshot_sha256=$11",
-                extraValues: [input.responseBytes, input.responseSha256],
+                extraSql:
+                  ",abandonment_reason=$10,retention_disposition=$11,response_snapshot_bytes=$12,response_snapshot_sha256=$13",
+                extraValues: [
+                  "upload_expectation_mismatch",
+                  "retain_for_reconciliation",
+                  input.responseBytes,
+                  input.responseSha256,
+                ],
               });
               yield* storeCommand(tx, {
                 state: input.submission,
@@ -1582,7 +1649,10 @@ export function makeControlPlaneVideoPublicationStore(
                 extraValues: [
                   input.evidenceRef,
                   current.state.retryCount,
-                  !next.reconciliationRequired && current.state.retryCount < 3,
+                  // A gate the sampled-frame check could not clear is terminal.
+                  !next.reconciliationRequired &&
+                    current.state.retryCount < 3 &&
+                    input.failureCode !== "safety_gate_unresolved",
                   current.state.phase,
                 ],
               });
@@ -1722,6 +1792,7 @@ export function makeControlPlaneVideoPublicationStore(
                   "poster_undecodable",
                   "poster_timestamp_out_of_range",
                   "upload_seal_conflict",
+                  "safety_gate_unresolved",
                 ].includes(current.state.failureCode)
               ) {
                 throw new Error("video technical retry rejected");
@@ -1982,7 +2053,10 @@ export function makeControlPlaneVideoPublicationStore(
                 ...(allApproved
                   ? {
                       status: "processing" as const,
-                      phase: "publish" as const,
+                      phase:
+                        current.state.intent === "song_reference"
+                          ? ("render" as const)
+                          : ("publish" as const),
                       reviewReasons: [],
                       decision:
                         current.state.decision === null
@@ -2022,7 +2096,11 @@ function insertPublicationWakeup(
   actionId: string,
 ) {
   return Effect.gen(function* () {
-    if (state.video === null || state.analysis === null || state.phase !== "publish")
+    if (
+      state.video === null ||
+      state.analysis === null ||
+      (state.phase !== "publish" && state.phase !== "render")
+    )
       throw new Error("video publication wakeup authority rejected");
     const identity = `video-analysis:${state.operationId}:v${state.videoRevision}:c${state.creationRevision}`;
     yield* tx.execute({
@@ -2172,6 +2250,17 @@ function publishTransaction(input: VideoPublishBundle) {
             current.state.authorDeclaredRating,
             contentRating,
           ],
+          readonly: false,
+        });
+        // Home lists posts from this projection. Song and text publication
+        // write it in the same transaction; a published video must too.
+        yield* tx.execute({
+          label: "video-publication.home-feed.insert",
+          text: `INSERT INTO home_feed_projection
+            (community_id,feed_item_id,post_id,rank_score,projected_at)
+            VALUES ($1,$2,$3,0,clock_timestamp())
+            ON CONFLICT (community_id,post_id) DO NOTHING`,
+          values: [current.state.communityId, `video-feed-${current.state.operationId}`, postId],
           readonly: false,
         });
         yield* tx.execute({
@@ -2852,6 +2941,17 @@ function publishSongReferenceTransaction(input: VideoSongReferencePublishBundle)
             current.state.authorDeclaredRating,
             contentRating,
           ],
+          readonly: false,
+        });
+        // Home lists posts from this projection. Song and text publication
+        // write it in the same transaction; a published video must too.
+        yield* tx.execute({
+          label: "video-publication.home-feed.insert",
+          text: `INSERT INTO home_feed_projection
+            (community_id,feed_item_id,post_id,rank_score,projected_at)
+            VALUES ($1,$2,$3,0,clock_timestamp())
+            ON CONFLICT (community_id,post_id) DO NOTHING`,
+          values: [current.state.communityId, `video-feed-${current.state.operationId}`, postId],
           readonly: false,
         });
         yield* tx.execute({

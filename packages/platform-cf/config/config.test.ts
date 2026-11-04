@@ -9,6 +9,7 @@ import {
   JobsWorkerConfig,
   loadConfig,
   loadConfigFrom,
+  parseRewardGasTopupConfig,
   secret,
 } from "./index.ts";
 
@@ -269,7 +270,7 @@ describe("config system (000 §9)", () => {
     ).toThrow("invalid Megapot reward runtime posture");
   });
 
-  test("API staging and production keep Base Sepolia rewards disabled", async () => {
+  test("API enables staging rewards while keeping production rewards disabled", async () => {
     const paths = [
       "../../../apps/http-worker/wrangler.jsonc",
       "../../../apps/jobs-worker/wrangler.jsonc",
@@ -284,7 +285,7 @@ describe("config system (000 §9)", () => {
         >;
       };
 
-      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
+      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
       expect(config.env?.staging?.vars?.MEGAPOT_CHAIN_ID).toBe("84532");
       expect(config.env?.production?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
       expect(config.env?.production?.vars?.MEGAPOT_CHAIN_ID).toBe("8453");
@@ -405,28 +406,58 @@ describe("config system (000 §9)", () => {
               readonly binding?: string;
               readonly service?: string;
             }[];
+            readonly routes?: readonly {
+              readonly pattern?: string;
+              readonly custom_domain?: boolean;
+            }[];
           }
         >
       >;
     };
 
+    expect(config.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
+    // Staging serves both community and handle hosts through the protected origin.
+    expect(config.env?.staging?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("true");
+    expect(config.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("false");
+    expect(config.env?.staging?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("true");
     for (const environment of [config, config.env?.staging]) {
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
-      expect(environment?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("false");
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe("");
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe("");
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe("");
-      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE).toBe("");
-      expect(environment?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe("");
-      expect(environment?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("");
-      expect(environment?.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("0");
-      expect(environment?.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("-1");
       expect(environment?.secrets?.required).toContain("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY");
       expect(environment?.durable_objects?.bindings).toContainEqual({
         name: "HNS_COMMUNITY_APP_API_REPLAY",
         class_name: "HnsForwarderReplayStoreDO",
       });
     }
+    expect(config.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe("");
+    expect(config.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe("");
+    expect(config.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe("");
+    expect(config.vars?.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE).toBe("");
+    expect(config.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe("");
+    expect(config.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("");
+    expect(config.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("0");
+    expect(config.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("-1");
+    const staging = config.env?.staging;
+    expect(staging?.routes).toContainEqual({
+      pattern: "hns-community-api-staging.pirate.sc",
+      custom_domain: true,
+    });
+    expect(staging?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe(
+      "https://hns-community-api-staging.pirate.sc",
+    );
+    expect(staging?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe(
+      "https://piratesocialclub.cloudflareaccess.com",
+    );
+    expect(staging?.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe(
+      "https://piratesocialclub.cloudflareaccess.com/cdn-cgi/access/certs",
+    );
+    expect(staging?.vars?.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE).toBe(
+      "f077cbaec4e7c6ff9ceaf0ebf5b3c5f4ec9d01a35fb4275deb05e33179143818",
+    );
+    expect(staging?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe(
+      "pirate:hns-forwarder-v3:staging-community-app:v1",
+    );
+    expect(staging?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("2026-09-23-01");
+    expect(staging?.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("300");
+    expect(staging?.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("5");
     const production = config.env?.production;
     expect(production?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("true");
     expect(production?.vars?.HNS_HANDLE_HOST_API_ENABLED).toBe("true");
@@ -461,9 +492,13 @@ describe("config system (000 §9)", () => {
       binding: "HNS_OWNER_VERIFIER",
       service: "pirate-hns-owner-verifier-production",
     });
-    expect(JSON.stringify([config.services, config.env?.staging?.services])).not.toContain(
-      "HNS_OWNER_VERIFIER",
-    );
+    expect(config.services).toBeUndefined();
+    expect(config.env?.staging?.services).toEqual([
+      {
+        binding: "HNS_OWNER_VERIFIER",
+        service: "pirate-hns-owner-verifier-staging",
+      },
+    ]);
     expect(JSON.stringify(config)).not.toContain("HNS_OBSERVER_DRIVER");
   });
 
@@ -487,23 +522,51 @@ describe("config system (000 §9)", () => {
     };
     const staging = config.env?.staging;
     const production = config.env?.production;
-    const environments = [config, staging];
+    const environments = [config, staging, production];
     for (const environment of environments) {
       expect(environment?.vars?.VERY_OAUTH_ENABLED).toBe("false");
-      expect(environment?.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
       expect(environment?.vars?.OPENAI_MODERATION_MODEL).toBe("omni-moderation-2024-09-26");
       expect(environment?.vars?.OPENAI_MODERATION_BASE_URL).toBe("https://api.openai.com/v1");
       expect(environment?.vars?.OPENAI_MODERATION_TIMEOUT_MS).toBe("10000");
       expect(environment?.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment?.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
     }
-    // Development and production keep Very web fail-closed. Staging alone
-    // carries the operator-authorized Very web app.
+    // The public ZK identifier is shared; each environment must supply its
+    // own confidential sealing key. Development remains disabled.
     expect(config.vars?.VERY_WEB_ENABLED).toBeUndefined();
-    expect(staging?.vars?.VERY_WEB_ENABLED).toBe("true");
-    expect(staging?.vars?.VERY_WEB_APP_ID).toBe("fa6bb1db-51dd-4673-915a-b945e7a895a0");
-    expect(production?.vars?.VERY_WEB_ENABLED).toBeUndefined();
-    expect(production?.vars?.VERY_WEB_APP_ID).toBeUndefined();
+    expect(config.secrets?.required ?? []).not.toContain("VERY_WEB_SEALING_KEY");
+    for (const environment of [staging, production]) {
+      expect(environment?.vars).toMatchObject({
+        VERY_WEB_ENABLED: "true",
+        VERY_WEB_APP_ID: "fa6bb1db-51dd-4673-915a-b945e7a895a0",
+        VERY_WEB_API_URL: "https://api.very.org/api/v1",
+        VERY_WEB_VERIFY_URL: "https://verify.very.org/api/v1/verify",
+        VERY_WEB_BRIDGE_API_URL: "https://bridge.very.org/api/v1",
+      });
+      expect(environment?.vars).not.toHaveProperty("VERY_WEB_SEALING_KEY");
+      expect(environment?.secrets?.required).toContain("VERY_WEB_SEALING_KEY");
+    }
+    expect(production?.vars).toMatchObject({
+      MEGAPOT_REWARDS_ENABLED: "false",
+      GUEST_STUDY_SERVING_ENABLED: "false",
+      SELF_PASS_ENABLED: "false",
+      VERY_OAUTH_ENABLED: "false",
+      AVATAR_AUTHORING_ENABLED: "false",
+      CORS_ORIGIN: "https://app.pirate,https://pirate.sc",
+    });
+    expect(JSON.parse(production?.vars?.TELEGRAM_CONFIG_JSON ?? "{}")).toMatchObject({
+      enabled: false,
+      linking_enabled: false,
+      practice_enabled: false,
+    });
+    for (const name of [
+      "ZKPASSPORT_ENABLED",
+      "NATIONALITY_AUTHORING_ENABLED",
+      "SPACES_RUNTIME_ENABLED",
+    ]) {
+      expect(production?.vars?.[name]).toBeUndefined();
+    }
+    expect(staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
     expect(config.vars?.OPENAI_MODERATION_ENABLED).toBe("false");
     expect(config.secrets?.required ?? []).not.toContain("OPENAI_API_KEY");
     expect(staging?.vars?.OPENAI_MODERATION_ENABLED).toBe("true");
@@ -516,6 +579,18 @@ describe("config system (000 §9)", () => {
     expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
     expect(production?.vars?.HNS_OWNERSHIP_CONFIGURATION_REFERENCE).toBe("hns-owner-production");
     expect(production?.vars?.HNS_OWNERSHIP_CONFIGURATION_VERSION).toBe("hns-owner-config-v1");
+    // Development keeps ownership off. Staging is pinned to the staging owner
+    // verifier's regtest configuration and advertises hns-txt-import-v1;
+    // production enables the import capability only by a separate reviewed change.
+    expect(config.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
+    expect(config.vars?.HNS_OWNERSHIP_CAPABILITIES).toBeUndefined();
+    expect(staging?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
+    expect(staging?.vars?.HNS_OWNERSHIP_CONFIGURATION_REFERENCE).toBe(
+      "hns-owner-staging-mainnet-v1",
+    );
+    expect(staging?.vars?.HNS_OWNERSHIP_CONFIGURATION_VERSION).toBe("hns-owner-config-v1");
+    expect(staging?.vars?.HNS_OWNERSHIP_CAPABILITIES).toBe("hns-txt-import-v1");
+    expect(production?.vars?.HNS_OWNERSHIP_CAPABILITIES).toBeUndefined();
   });
 
   test("pins the production HTTP origin to its dedicated Hyperdrive and custom domain", async () => {
@@ -554,7 +629,7 @@ describe("config system (000 §9)", () => {
     expect(production?.hyperdrive).toEqual([
       {
         binding: "CONTROL_PLANE",
-        id: "884b68c5a7904982a86620ed90032b77",
+        id: "0c215865d7994c92b940d905f54ece37",
         localConnectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
       },
     ]);
@@ -562,9 +637,7 @@ describe("config system (000 §9)", () => {
     expect(production?.secrets?.required).toContain("HNS_EDGE_ALERT_TOKEN");
     expect(production?.vars?.HNS_EDGE_STATUS_ENABLED).toBe("false");
     expect(production?.vars?.PIRATE_API_PUBLIC_ORIGIN).toBe("https://api-next.pirate.sc");
-    expect(production?.vars?.CORS_ORIGIN).toBe(
-      "https://app.pirate,https://pirate.app,https://pirate.sc",
-    );
+    expect(production?.vars?.CORS_ORIGIN).toBe("https://app.pirate,https://pirate.sc");
     expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("true");
     expect(production?.services).toEqual([
       {
@@ -572,5 +645,46 @@ describe("config system (000 §9)", () => {
         service: "pirate-hns-owner-verifier-production",
       },
     ]);
+  });
+});
+
+describe("winner gas top-up limits", () => {
+  const staging = {
+    MEGAPOT_GAS_TOPUP_TARGET_WEI: "50000000000000",
+    MEGAPOT_GAS_TOPUP_MAX_WEI: "50000000000000",
+    MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "3",
+    MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "5000000000000000",
+  };
+
+  test("absent limits disable top-ups and a complete set parses", () => {
+    expect(
+      parseRewardGasTopupConfig({
+        MEGAPOT_GAS_TOPUP_TARGET_WEI: "",
+        MEGAPOT_GAS_TOPUP_MAX_WEI: "",
+        MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "",
+        MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "",
+      }),
+    ).toBeNull();
+    expect(parseRewardGasTopupConfig(staging)).toEqual({
+      targetBalanceWei: 50_000_000_000_000n,
+      maxTopupWei: 50_000_000_000_000n,
+      accountDailyCount: 3,
+      platformDailyWei: 5_000_000_000_000_000n,
+    });
+  });
+
+  test("a partial, malformed or inconsistent set fails closed", () => {
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_PLATFORM_DAILY_WEI: "" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_MAX_WEI: "-1" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_MAX_WEI: "60000000000000" }),
+    ).toThrow();
+    expect(() =>
+      parseRewardGasTopupConfig({ ...staging, MEGAPOT_GAS_TOPUP_ACCOUNT_DAILY_COUNT: "0" }),
+    ).toThrow();
   });
 });

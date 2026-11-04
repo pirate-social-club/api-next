@@ -4,6 +4,10 @@ import {
   HandleSalesPageRejected,
   type HandleSalesStore,
 } from "@pirate/application/use-cases/handles/sales";
+import {
+  SpacesSaleNamespaceNotReady,
+  type SpacesSaleNamespaceStore,
+} from "@pirate/application/use-cases/handles/spaces-sale-namespaces";
 import { Effect } from "effect";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { createHttpWorker } from "./transport.ts";
@@ -38,12 +42,13 @@ const storeWith = (overrides: Partial<HandleSalesStore>): HandleSalesStore =>
     ...overrides,
   }) as HandleSalesStore;
 
-const workerWith = (store: HandleSalesStore) => {
+const workerWith = (store: HandleSalesStore, spacesSaleNamespaces?: SpacesSaleNamespaceStore) => {
   let sequence = 0;
   return createHttpWorker({
     config: { corsOrigin: "https://app.pirate.test" },
     handlers: makeHandleSalesHandlers({
       store,
+      ...(spacesSaleNamespaces === undefined ? {} : { spacesSaleNamespaces }),
       ids: { next: Effect.sync(() => `http-${++sequence}`) },
       tokenVault: {
         mint: Effect.succeed(rawToken),
@@ -58,6 +63,275 @@ const workerWith = (store: HandleSalesStore) => {
 };
 
 describe("handle sales HTTP handlers", () => {
+  test("anonymous readiness-bearing offering pages are never cacheable", async () => {
+    const app = workerWith(
+      storeWith({ listOfferings: () => Effect.succeed({ items: [], next_cursor: null }) }),
+    );
+    const response = await app.request(
+      "/communities/community_123e4567-e89b-42d3-a456-426614174055/handle-offerings?limit=100",
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ items: [], next_cursor: null });
+  });
+
+  test("routes staging Spaces activation and revision through the Spaces store", async () => {
+    const communityId = "community_123e4567-e89b-42d3-a456-426614174055";
+    const activation = {
+      sale_namespace_activation_id: "spaces_activation_http-1",
+      sale_namespace_activation_generation: 1,
+      sale_namespace_activation_hash: "a".repeat(64),
+      community_id: communityId,
+      family: "spaces" as const,
+      network: "mainnet" as const,
+      canonical_root: "yahoo",
+      display_root: "yahoo",
+      namespace_authority: {
+        kind: "verified_namespace_v1" as const,
+        namespace_authority_reference: "snauth_http",
+        namespace_authority_generation: 4,
+      },
+      operator: {
+        kind: "spaces_operator_assignment_v1" as const,
+        operator_assignment_id: "sassign_http",
+        operator_assignment_generation: 1,
+      },
+      operator_funding_terms: {
+        kind: "spaces_operator_funding_confirm_v1" as const,
+        confirmed: true as const,
+      },
+      status: "active" as const,
+      created_at: "2026-09-27T00:00:00.000Z",
+      activated_at: "2026-09-27T00:00:00.000Z",
+      suspended_at: null,
+      revoked_at: null,
+    };
+    const seen: Array<Record<string, unknown>> = [];
+    const spaces = {
+      createSaleNamespace: (input: Record<string, unknown>) => {
+        seen.push(input);
+        return Effect.succeed({ activation, replayed: seen.length > 1 });
+      },
+      reviseSaleNamespace: (input: Record<string, unknown>) => {
+        seen.push(input);
+        return Effect.succeed({
+          activation: { ...activation, status: "suspended" as const },
+          replayed: false,
+        });
+      },
+    } as unknown as SpacesSaleNamespaceStore;
+    const worker = workerWith(storeWith({}), spaces);
+    const command = {
+      idempotency_key: "spaces-yahoo-http-1",
+      family: "spaces",
+      namespace_authority_reference: "snauth_http",
+      expected_namespace_authority_generation: 4,
+      operator_assignment_id: "sassign_http",
+      expected_operator_assignment_generation: 1,
+      operator_funding_terms_confirmed: true,
+    };
+    const path = `/communities/${communityId}/handle-sale-namespaces`;
+    const send = (url: string, body: unknown) =>
+      worker.request(url, {
+        method: "POST",
+        headers: { authorization: "Bearer test", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const created = await send(path, command);
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual({ activation, replayed: false });
+    const replayed = await send(path, command);
+    expect(replayed.status).toBe(200);
+    expect(await replayed.json()).toEqual({ activation, replayed: true });
+    const revised = await send(`${path}/${activation.sale_namespace_activation_id}/revisions`, {
+      ...command,
+      idempotency_key: "spaces-yahoo-http-2",
+      expected_sale_namespace_activation_hash: activation.sale_namespace_activation_hash,
+      requested_status: "suspended",
+    });
+    expect(revised.status).toBe(201);
+    expect(await revised.json()).toMatchObject({ activation: { status: "suspended" } });
+    expect(seen).toMatchObject([
+      {
+        accountId: "account-http",
+        communityId,
+        activationId: "spaces_activation_http-1",
+        actionId: "spaces_action_http-2",
+        operatorAssignmentId: "sassign_http",
+        operatorFundingTermsConfirmed: true,
+      },
+      { idempotencyKey: "spaces-yahoo-http-1", activationId: "spaces_activation_http-3" },
+      {
+        activationId: activation.sale_namespace_activation_id,
+        actionId: "spaces_action_http-5",
+        requestedStatus: "suspended",
+      },
+    ]);
+  });
+
+  test("refuses Spaces activation when disabled or not ready", async () => {
+    const body = {
+      idempotency_key: "spaces-yahoo-disabled",
+      family: "spaces",
+      namespace_authority_reference: "snauth_http",
+      expected_namespace_authority_generation: 4,
+      operator_assignment_id: "sassign_http",
+      expected_operator_assignment_generation: 1,
+      operator_funding_terms_confirmed: true,
+    };
+    const request = {
+      method: "POST",
+      headers: { authorization: "Bearer test", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    };
+    const path =
+      "/communities/community_123e4567-e89b-42d3-a456-426614174055/handle-sale-namespaces";
+    const disabled = await workerWith(storeWith({})).request(path, request);
+    expect(disabled.status).toBe(409);
+    expect(await disabled.json()).toMatchObject({
+      error: { details: { reason: "service_unavailable" } },
+    });
+    const spaces = {
+      createSaleNamespace: () =>
+        Effect.fail(new SpacesSaleNamespaceNotReady({ reason: "operator_capability_unverified" })),
+    } as unknown as SpacesSaleNamespaceStore;
+    const notReady = await workerWith(storeWith({}), spaces).request(path, request);
+    expect(notReady.status).toBe(409);
+    expect(await notReady.json()).toMatchObject({
+      error: { details: { reason: "service_unavailable" } },
+    });
+  });
+
+  test("refuses a Spaces offering while the Spaces runtime is unavailable", async () => {
+    const response = await workerWith(storeWith({})).request(
+      "/communities/community_123e4567-e89b-42d3-a456-426614174055/handle-offerings",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer test", "content-type": "application/json" },
+        body: JSON.stringify({
+          idempotency_key: "spaces-offering-disabled",
+          terms: {
+            sale_namespace_activation_id: "spaces-activation",
+            expected_sale_namespace_activation_generation: 1,
+            label_scope: {
+              kind: "label_rule_v2",
+              label_grammar_id: "spaces_subspace_label_v1",
+              reserved_labels_id: "reserved_labels_spaces_01",
+              expected_reserved_labels_revision: 1,
+              availability: {
+                kind: "length_band_v1",
+                min_label_length: 8,
+                max_label_length: 32,
+              },
+            },
+            allocation_kind: "first_come_v1",
+            fulfillment_kind: "spaces_native_v1",
+            qualification_policy_id: "qualification_policy_spaces_members_01",
+            expected_qualification_policy_revision: 1,
+            pricing_id: "platform_free_handles_v1",
+            expected_pricing_revision: 1,
+            issuance_driver_id: "spaces_native-local",
+            expected_issuance_driver_version: "1",
+            quote_ttl_seconds: 120,
+            reservation_ttl_seconds: 300,
+          },
+        }),
+      },
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: { details: { reason: "service_unavailable" } },
+    });
+  });
+
+  test("keeps a pending Spaces name private to its claimant", async () => {
+    const claim = {
+      claim_id: "claim-spaces-http",
+      owner_persona_id: "persona-spaces-http",
+      offering_id: "offering-spaces-http",
+      offering_hash: "a".repeat(64),
+      quote_id: "quote-spaces-http",
+      reservation_id: "reservation-spaces-http",
+      reservation_hash: "b".repeat(64),
+      sale_namespace_activation_id: "activation-spaces-http",
+      sale_namespace_activation_generation: 1,
+      fulfillment: { kind: "spaces_native_v1" as const },
+      recipient: {
+        kind: "persona_taproot_v1" as const,
+        network: "regtest" as const,
+        script_pubkey_hex: `5120${"c".repeat(64)}`,
+      },
+      handle: {
+        family: "spaces" as const,
+        namespace_root: "charizard",
+        handle_label: "member",
+      },
+      display_identifier: "member@charizard",
+      payment: {
+        kind: "not_required_v1" as const,
+        pricing_revision: 1,
+        pricing_hash: "d".repeat(64),
+        atomic_amount: "0" as const,
+        status: "not_applicable" as const,
+      },
+      state: "issuance_pending" as const,
+      delayed: false,
+      safe_reason: "issuance_pending" as const,
+      grant: null,
+      created_at: "2026-09-24T00:00:00.000Z",
+      updated_at: "2026-09-24T00:00:00.000Z",
+    };
+    const worker = workerWith(
+      storeWith({
+        getClaim: () => Effect.succeed(claim),
+        getPublicGrant: () => Effect.succeed(null),
+      }),
+    );
+    const privateResponse = await worker.request("/handle-claims/claim-spaces-http", {
+      headers: { authorization: "Bearer test" },
+    });
+    expect(privateResponse.status).toBe(200);
+    expect(privateResponse.headers.get("cache-control")).toBe("no-store");
+    expect(await privateResponse.json()).toEqual(claim);
+
+    const publicResponse = await worker.request("/handles/spaces/charizard/member");
+    expect(publicResponse.status).toBe(404);
+    expect(await publicResponse.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  test("serves a finalized Spaces grant without an HNS host projection", async () => {
+    const persona = {
+      persona_id: "persona-spaces-public",
+      object: "persona" as const,
+      display_name: "Member",
+      avatar_ref: null,
+      primary_public_handle: null,
+    };
+    const grant = {
+      grant_id: "grant-spaces-public",
+      grant_generation: 1,
+      community_id: "community-spaces-public",
+      owner_persona: persona,
+      sale_namespace_activation_id: "activation-spaces-public",
+      sale_namespace_activation_generation: 1,
+      fulfillment: { kind: "spaces_native_v1" as const },
+      handle: {
+        family: "spaces" as const,
+        namespace_root: "charizard",
+        handle_label: "member",
+      },
+      display_identifier: "member@charizard",
+      host: { kind: "not_applicable" as const },
+      issued_at: "2026-09-24T00:00:00.000Z",
+    };
+    const response = await workerWith(
+      storeWith({ getPublicGrant: () => Effect.succeed(grant) }),
+    ).request("/handles/spaces/charizard/member");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600, must-revalidate");
+    expect(await response.json()).toEqual(grant);
+  });
+
   test("serves the seller-management context only to the authorized account", async () => {
     let observedAccount: string | undefined;
     const context = {
@@ -74,20 +348,22 @@ describe("handle sales HTTP handlers", () => {
           expected_dns_zone_activation_generation: 2,
         },
       ],
-      offering_authoring_preset: {
-        kind: "hns_hosted_persona_free_v1" as const,
-        reserved_labels_id: "reserved_labels_01",
-        expected_reserved_labels_revision: 1,
-        broad_qualification_policy_id: "none_v1",
-        expected_broad_qualification_policy_revision: 1,
-        expected_account_directory_binding_version: "1",
-        pricing_id: "platform_free_handles_v1",
-        expected_pricing_revision: 1,
-        issuance_driver_id: "hosted_persona-local",
-        expected_issuance_driver_version: "1",
-        quote_ttl_seconds: 120,
-        reservation_ttl_seconds: 300,
-      },
+      offering_authoring_presets: [
+        {
+          kind: "hns_hosted_persona_free_v1" as const,
+          reserved_labels_id: "reserved_labels_01",
+          expected_reserved_labels_revision: 1,
+          broad_qualification_policy_id: "none_v1",
+          expected_broad_qualification_policy_revision: 1,
+          expected_account_directory_binding_version: "1",
+          pricing_id: "platform_free_handles_v1",
+          expected_pricing_revision: 1,
+          issuance_driver_id: "hosted_persona-local",
+          expected_issuance_driver_version: "1",
+          quote_ttl_seconds: 120,
+          reservation_ttl_seconds: 300,
+        },
+      ],
       observed_at: "2026-08-26T00:00:00.000Z",
     };
     const worker = workerWith(

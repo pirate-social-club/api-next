@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.116.0",
+  "sourceBranch": "feat/spaces-owner-progress-recovery",
+  "sourceBase": "306ba472a27e245fd136e97e89ab0f6f0554a6dc",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds private browser-session Spaces owner root discovery and progress GETs, plus exact replay resume POST. Existing start, poll, assignment, activation and HNS operations retain their wire shape. Readback grants no activation, delegation or wallet authority.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.116.0.tgz",
+    "sha256": "0c109a5b51f8958b0c9bbd0d68eeff34f21583a085e13db99c133cd83d28b870"
+  },
+  "validation": {
+    "status": "Candidate package; required gates and independent source acceptance pending.",
+    "operationalBoundary": "No deployment, live wallet or chain exercise, funding or credential operation."
+  }
+}

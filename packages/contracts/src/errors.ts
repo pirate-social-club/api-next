@@ -1,4 +1,18 @@
 import { Data, Schema } from "effect";
+import {
+  closedGuestError,
+  type GuestAuthError,
+  type GuestBadRequest,
+  type GuestConflict,
+  type GuestPendingConflict,
+} from "./guest-errors.ts";
+
+export {
+  GuestAuthError,
+  GuestBadRequest,
+  GuestConflict,
+  GuestPendingConflict,
+} from "./guest-errors.ts";
 
 /**
  * api-next-owned v2 wire-error catalog (api-next 000 §10; 001 phase 0 step 2).
@@ -415,6 +429,13 @@ export class VerifierContractIncompatible extends Data.TaggedError(
   readonly retryable = false as const;
 }
 
+/** Deliberate operator pause; not an upstream provider failure. */
+export class RewardsPaused extends Data.TaggedError("RewardsPaused")<WireArgs> {
+  readonly status = 503 as const;
+  readonly code = "rewards_paused" as const;
+  readonly retryable = true as const;
+}
+
 export class ProviderUnavailable extends Data.TaggedError("ProviderUnavailable")<WireArgs> {
   readonly status = 502 as const;
   readonly code = "provider_unavailable" as const;
@@ -458,6 +479,10 @@ export class NotImplemented extends Data.TaggedError("NotImplemented")<WireArgs>
 
 /** The closed catalog of fixed-code wire errors. */
 export type ApiError =
+  | GuestAuthError
+  | GuestBadRequest
+  | GuestConflict
+  | GuestPendingConflict
   | AuthError
   | BadRequest
   | PaymentRequired
@@ -496,6 +521,7 @@ export type ApiError =
   | NamespaceUnavailable
   | StructuredSurfaceDisabled
   | VerifierContractIncompatible
+  | RewardsPaused
   | ProviderUnavailable
   | ProviderMisconfigured
   | FundingConfirmationTimeout
@@ -526,6 +552,13 @@ export function toErrorBody(
   readonly headers?: Readonly<Record<string, string>>;
 } {
   const requestIdField = requestId === undefined ? {} : { request_id: requestId };
+  const guest = closedGuestError(error);
+  if (guest !== undefined)
+    return {
+      status: guest.status,
+      body: { error: guest.error, ...requestIdField },
+      ...(!("headers" in guest) || guest.headers === undefined ? {} : { headers: guest.headers }),
+    };
   if (hasWireShape(error)) {
     const ownerRecoveryDetails =
       error.code === "owner_recovery_in_progress" ? error.details : undefined;

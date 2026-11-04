@@ -72,7 +72,7 @@ function attemptFromRow(planId: string, row: AttemptRow): SongVideoRenderAttempt
  * otherwise one this wrapper opens and closes around the statement. This is the
  * same discipline the control-plane adapter applies to its transactions.
  */
-function withTransactionSearchPath(client: Client, searchPath: string): Client {
+export function withTransactionSearchPath(client: Client, searchPath: string): Client {
   let inTransaction = false;
   const run = (text: string, values?: readonly unknown[]): Promise<unknown> =>
     values === undefined ? client.query(text) : client.query({ text, values: [...values] });
@@ -312,7 +312,13 @@ export function makeSongVideoRenderStore(
       withClient(async (client) => {
         const result = await client.query(
           `UPDATE media_song_video_render_attempts
-              SET execution_phase = 'submitting', execution_started_at = clock_timestamp()
+              SET execution_phase = 'submitting', execution_started_at = clock_timestamp(),
+                  provider_wait_deadline = CASE WHEN dispatch_renderer_identity='cloudconvert-song-video-pcm-v1'
+                    THEN clock_timestamp() + interval '30 minutes' ELSE NULL END,
+                  execution_claim_id = CASE WHEN dispatch_renderer_identity='cloudconvert-song-video-pcm-v1'
+                    THEN 'cloudconvert' ELSE execution_claim_id END,
+                  execution_claimed_at = CASE WHEN dispatch_renderer_identity='cloudconvert-song-video-pcm-v1'
+                    THEN clock_timestamp() ELSE execution_claimed_at END
             WHERE attempt_id = $1 AND plan_id = $2 AND generation = $3
               AND state = 'started' AND execution_phase = 'recorded'`,
           [attempt.attemptId, attempt.planId, attempt.generation],

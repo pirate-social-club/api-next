@@ -2,6 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
+  encodeAbiParameters,
+  encodeEventTopics,
+  type Hex,
+  parseAbi,
+  parseAbiParameters,
+} from "viem";
+import {
   loadPostgresMigrations,
   runPostgresMigrations,
 } from "../../../scripts/postgres-migrations.ts";
@@ -9,6 +16,7 @@ import {
   applyPostgresTestBaselineConnection,
   withReusablePostgresTestSchema,
 } from "../../../scripts/postgres-test-baseline.ts";
+import { seedVeryRewardEvidence } from "./activity-participation-composed-identity.pg-fixture.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture.ts";
 import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
@@ -23,14 +31,19 @@ import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawin
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
+import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
 import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
+import { finishAdmittedRefund } from "./reward-admitted-refund.pg-fixture.ts";
+import { makeRewardFundingCoordinator } from "./reward-funding-coordinator.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardOfferTerminalStore } from "./reward-offer-terminal-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
 import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
 import { makeControlPlaneRewardRefundStore } from "./reward-refund-repository.ts";
+import { seedActivePoolLeg, seedSong } from "./rewards-song-offers.pg-fixture.ts";
+import { makeControlPlaneSongOwnerPolicyStore } from "./song-owner-video-policy-repository.ts";
 import { makeControlPlaneSongRewardOfferStore } from "./song-reward-offer-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -43,7 +56,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
-const testCount = 23;
+const testCount = 31;
 let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
@@ -66,6 +79,7 @@ async function withSchema<A>(
     use: async ({ admin, schema }) => {
       await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
       await applyPostgresTestBaselineConnection({
+        rewardsRunning: true,
         connectionString: connectionForSchema(connectionString, schema),
       });
       return await use(admin, connectionForSchema(connectionString, schema));
@@ -73,104 +87,17 @@ async function withSchema<A>(
   });
 }
 
-type SeedIdentity = Readonly<{
-  accountId: string;
-  communityId: string;
-  personaId: string;
-  postId: string;
-}>;
-
-async function seedSong(
-  admin: Client,
-  suffix: string,
-  walletAddress?: string,
-  thirdPartyRewardLegs: "allowed" | "owner_only" = "allowed",
-): Promise<SeedIdentity> {
-  const accountId = `account-${suffix}`;
-  const communityId = `community-${suffix}`;
-  const postId = `post-${suffix}`;
+async function assertPausedReservation<A, E>(admin: Client, reserve: () => Effect.Effect<A, E>) {
   await admin.query(
-    `INSERT INTO users (user_id, status, account, created_at)
-     VALUES ($1, 'active', '{}'::jsonb, clock_timestamp() - interval '30 days')`,
-    [accountId],
+    "SELECT set_reward_operations_paused_v1(revision,TRUE,'reservation_pause_test') FROM reward_operations_control WHERE singleton",
   );
-  await activatePendingPersonaFixtures(admin, undefined, walletAddress);
-  const personas = await admin.query<{ readonly persona_id: string }>(
-    `SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona`,
-    [accountId],
-  );
-  const personaId = personas.rows[0]?.persona_id;
-  if (personaId === undefined) throw new Error("first persona was not provisioned");
-  await admin.query(
-    `INSERT INTO communities (
-       community_id, display_name, status, created_by_user_id, created_at, updated_at
-     ) VALUES ($1, $2, 'active', $3, clock_timestamp() - interval '20 days',
-       clock_timestamp() - interval '20 days')`,
-    [communityId, `Community ${suffix}`, accountId],
-  );
-  await insertActiveCommunityMembershipFixture(admin, {
-    communityId,
-    membershipId: `membership-${suffix}`,
-    userId: accountId,
-    joinedAt: "2026-08-03T00:00:00.000Z",
+  expect(await Effect.runPromise(Effect.flip(reserve()))).toMatchObject({
+    _tag: "RewardOperationsPaused",
+    reason: "paused",
   });
   await admin.query(
-    `INSERT INTO posts (
-       community_id, post_id, author_user_id, author_persona_id, post_type,
-       status, visibility, title, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, 'song', 'published', 'public', $5,
-       clock_timestamp() - interval '10 days', clock_timestamp() - interval '10 days')`,
-    [communityId, postId, accountId, personaId, `Song ${suffix}`],
+    "SELECT set_reward_operations_paused_v1(revision,FALSE,'reservation_resume_test') FROM reward_operations_control WHERE singleton",
   );
-  await admin.query("SET session_replication_role = replica");
-  try {
-    await admin.query(
-      `INSERT INTO media_publication_projections (
-         submission_id, community_id, actor_user_id, operation_id, post_id,
-         creation_revision, audio_revision, analysis_revision, decision_revision,
-         canonical_audio_sha256, title, audio_asset_ref, language_status,
-         lyrics_explicitness, alignment, data_registration, locked_delivery,
-         projected_at, author_persona_id, lyrics_status, lyrics_revision, lyrics_text
-       ) VALUES (
-         $1, $2, $3, $4, $5, 1, 3, 1, 1, $6, $7, $8, 'ready',
-         'not_explicit', 'ready', 'registered', 'not_required', clock_timestamp(),
-         $9, 'ready', 1, 'Raise the sails'
-       )`,
-      [
-        `submission-${suffix}`,
-        communityId,
-        accountId,
-        `operation-${suffix}`,
-        postId,
-        hash("a"),
-        `Song ${suffix}`,
-        `r2://audio-${suffix}`,
-        personaId,
-      ],
-    );
-    // Publication normally initializes the Spec 013 owner policy through a
-    // trigger this fixture suppresses, so create the same head and revision
-    // explicitly. Every published song carries one in production.
-    await admin.query(
-      `INSERT INTO song_owner_policy_revisions (
-         community_id, post_id, audio_revision, owner_account_id, policy_revision,
-         third_party_reward_legs, pool_leg, derivative_video, policy_hash
-       ) VALUES ($1, $2, 3, $3, 1, $4, 'allowed', 'allowed',
-         song_owner_policy_hash_v1($1, $2, 3, $3, 1, $4, 'allowed', 'allowed'))`,
-      [communityId, postId, accountId, thirdPartyRewardLegs],
-    );
-    await admin.query(
-      `INSERT INTO song_owner_policies (
-         community_id, post_id, audio_revision, owner_account_id,
-         current_policy_revision, current_policy_hash
-       ) VALUES ($1, $2, 3, $3, 1,
-         song_owner_policy_hash_v1($1, $2, 3, $3, 1, $4, 'allowed', 'allowed'))`,
-      [communityId, postId, accountId, thirdPartyRewardLegs],
-    );
-  } finally {
-    await admin.query("SET session_replication_role = origin");
-  }
-  return { accountId, communityId, personaId, postId };
 }
 
 async function seedMegapotAuthority(admin: Client): Promise<void> {
@@ -205,122 +132,6 @@ async function seedMegapotAuthority(admin: Client): Promise<void> {
       bytes32("a"),
     ],
   );
-}
-
-async function seedActivePoolLeg(
-  admin: Client,
-  identity: SeedIdentity,
-  input: Readonly<{
-    fallback: boolean;
-    suffix: string;
-    expired?: boolean;
-    endsInMinutes?: number;
-  }> = {
-    fallback: false,
-    suffix: "pool",
-  },
-): Promise<Readonly<{ legId: string; offerId: string }>> {
-  const offerId = `offer-${input.suffix}`;
-  const legId = `leg-${input.suffix}`;
-  const rewardPolicyVersionId = `reward-policy-${input.suffix}`;
-  await admin.query(
-    `INSERT INTO reward_activity_availability_observations (
-       availability_observation_id, community_id, post_id, audio_revision,
-       activity_key, producer_id, producer_revision, state, study_item_count,
-       evidence, evidence_hash, observed_at, expires_at
-     ) VALUES ($1, $2, $3, 3, 'study', 'study-item-source', 'v1',
-       'available', 3, '{"kind":"typed_study_items","item_count":3}'::jsonb,
-       $4, clock_timestamp(), clock_timestamp() + interval '2 hours')`,
-    [`availability-${input.suffix}`, identity.communityId, identity.postId, hash("b")],
-  );
-  await admin.query(
-    `INSERT INTO reward_uniqueness_authorities (
-       campaign_id, issuer, method, scope_kind, issuer_rp_scope
-     ) VALUES ($1, 'https://verify.very.org', 'palm_web', 'issuer_rp_scope', 'pirate-social')`,
-    [offerId],
-  );
-  await admin.query(
-    `INSERT INTO policy_versions (
-       policy_version_id, community_id, policy_key, revision, policy_hash,
-       policy, compiled_plan, compiler_version, uniqueness_model,
-       created_by_user_id, published_at, policy_purpose, uniqueness_authority_id
-     ) VALUES ($1,$2,$3,1,$4,'{"version":"scarce_reward_v1"}'::jsonb,
-       '{"evaluator":"scarce_reward_eligibility_v1"}'::jsonb,
-       'scarce_reward_policy_v1',$5::jsonb,$6,clock_timestamp(),'reward',$7)`,
-    [
-      rewardPolicyVersionId,
-      identity.communityId,
-      `song_reward_offer:${offerId}`,
-      hash("e"),
-      JSON.stringify({ kind: "single_authority", authority_id: offerId }),
-      identity.accountId,
-      offerId,
-    ],
-  );
-  await admin.query(
-    `INSERT INTO song_reward_offers (
-       offer_id, community_id, post_id, audio_revision, created_by_account_id,
-       status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
-       reward_policy_version_id
-     ) VALUES ($1, $2, $3, 3, $4, 'draft', clock_timestamp() - interval '1 day',
-       clock_timestamp() + CASE WHEN $7::boolean THEN interval '-1 hour'
-         ELSE make_interval(mins => COALESCE($8::integer, 14400)) END,
-       '{"third_party_legs":"allowed"}'::jsonb, $5, $6)`,
-    [
-      offerId,
-      identity.communityId,
-      identity.postId,
-      identity.accountId,
-      hash("c"),
-      rewardPolicyVersionId,
-      input.expired ?? false,
-      input.endsInMinutes ?? null,
-    ],
-  );
-  await admin.query(
-    `UPDATE song_reward_offers
-        SET status='active', activated_at=clock_timestamp(), updated_at=clock_timestamp()
-      WHERE offer_id=$1`,
-    [offerId],
-  );
-  await admin.query(
-    `INSERT INTO song_reward_offer_legs (
-       leg_id, offer_id, kind, status, funder_account_id, refund_policy,
-       leg_terms_hash, participation_starts_at, chain_id, token_address,
-       token_decimals, tickets_per_drawing, max_ticket_price_atomic,
-       entry_cutoff_seconds, beneficiary_algorithm_version, ticket_selection_version,
-       attestation_id, participation_starts_drawing_id, eligible_activities,
-       min_score_bps, empty_pool_policy, funding_source,
-       fallback_beneficiary_account_id, fallback_payout_persona_id,
-       referral_allocation_version, referral_policy_hash, referral_disclosed_at,
-       funded_atomic
-     ) VALUES (
-       $1, $2, 'megapot_pool', 'draft', $3, 'refund_to_funders_pro_rata',
-       $4, clock_timestamp() - interval '1 day', 84532, $5, 6, 1, 10000, 300,
-       'equal_v1', 'keccak_packed_v1', 'megapot-base-sepolia-v2', 100,
-       ARRAY['study'], 7000, $6, 'leg_budget', $7, $8, $9, $10, $11, 100000
-     )`,
-    [
-      legId,
-      offerId,
-      identity.accountId,
-      bytes32("b"),
-      address("1"),
-      input.fallback ? "funder_fallback" : "no_purchase",
-      input.fallback ? identity.accountId : null,
-      input.fallback ? identity.personaId : null,
-      input.fallback ? "referral-test-v1" : null,
-      input.fallback ? hash("d") : null,
-      input.fallback ? new Date().toISOString() : null,
-    ],
-  );
-  await admin.query(
-    `UPDATE song_reward_offer_legs
-        SET status='active', activated_at=clock_timestamp(), updated_at=clock_timestamp()
-      WHERE leg_id=$1`,
-    [legId],
-  );
-  return { legId, offerId };
 }
 
 async function seedTicketReviewCandidate(
@@ -434,6 +245,88 @@ async function seedTicketReviewCandidate(
 }
 
 suite("Postgres 17 Megapot rewards persistence", () => {
+  test("forward implementation migration preserves staging and refuses unpinned existing production rows atomically", async () => {
+    if (connectionString === undefined) throw new Error("test URL missing");
+    const schema = `rewards_implementation_forward_${crypto.randomUUID().replaceAll("-", "")}`;
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    try {
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      // Isolate this ALTER's data precondition from the much larger maintained
+      // baseline. Full migration replay/baseline equivalence is a separate gate.
+      await admin.query(`CREATE TABLE megapot_deployment_attestations (
+        attestation_id TEXT PRIMARY KEY, environment TEXT NOT NULL
+      )`);
+      await admin.query(`INSERT INTO megapot_deployment_attestations VALUES
+        ('old-staging','staging'), ('old-production','production')`);
+      const migration = (await loadPostgresMigrations()).find((entry) =>
+        entry.version.endsWith("_megapot_usdc_implementation_attestation.sql"),
+      );
+      if (migration === undefined) throw new Error("forward implementation migration missing");
+      expect(migration.version.slice(0, 4) > "0268").toBe(true);
+      await admin.query("BEGIN");
+      await expect(admin.query(migration.sql)).rejects.toMatchObject({ code: "23514" });
+      await admin.query("ROLLBACK");
+      expect(
+        (
+          await admin.query(
+            `SELECT count(*)::int AS columns FROM information_schema.columns
+        WHERE table_schema=$1 AND table_name='megapot_deployment_attestations'`,
+            [schema],
+          )
+        ).rows[0],
+      ).toEqual({ columns: 2 });
+      await admin.query(
+        "DELETE FROM megapot_deployment_attestations WHERE environment='production'",
+      );
+      await admin.query(migration.sql);
+      const insert = (
+        id: string,
+        environment: string,
+        implementation: string | null,
+        codeHash: string | null,
+      ) =>
+        admin.query("INSERT INTO megapot_deployment_attestations VALUES ($1,$2,$3,$4)", [
+          id,
+          environment,
+          implementation,
+          codeHash,
+        ]);
+      for (const [id, implementation, codeHash] of [
+        ["missing", null, null],
+        ["half-address", address("a"), null],
+        ["half-hash", null, bytes32("b")],
+        ["zero-address", address("0"), bytes32("b")],
+        ["bad-hash", address("a"), "0x1234"],
+      ] as const) {
+        await expect(insert(id, "production", implementation, codeHash)).rejects.toMatchObject({
+          code: "23514",
+        });
+      }
+      await expect(insert("staging-half", "staging", address("a"), null)).rejects.toMatchObject({
+        code: "23514",
+      });
+      await insert("new-production", "production", address("a"), bytes32("b"));
+      expect(
+        (
+          await admin.query(
+            "SELECT attestation_id,usdc_implementation_address FROM megapot_deployment_attestations ORDER BY attestation_id",
+          )
+        ).rows,
+      ).toEqual([
+        { attestation_id: "new-production", usdc_implementation_address: address("a") },
+        { attestation_id: "old-staging", usdc_implementation_address: null },
+      ]);
+    } finally {
+      await admin.query("ROLLBACK");
+      await admin.query("SET search_path TO public");
+      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+      await admin.end();
+    }
+    completedTestCount += 1;
+  });
+
   test("requires a paired USDC implementation identity for production attestations", async () => {
     await withSchema(async (admin) => {
       const insert = (
@@ -1260,13 +1153,21 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         }),
       );
 
-      // Client A mirrors the repository's leg authority read, including the
-      // FOR SHARE fence on the policy head, inside an open transaction.
+      // Client A mirrors the repository's leg authority: the guarded head lock,
+      // then the authority read on a fresh snapshot, inside one transaction.
       const authority = new Client({ connectionString: scopedConnection });
       const narrowing = new Client({ connectionString: scopedConnection });
       await Promise.all([authority.connect(), narrowing.connect()]);
       try {
         await authority.query("BEGIN");
+        const locked = await authority.query(
+          `SELECT head.owner_account_id
+             FROM song_reward_offers offer
+             CROSS JOIN LATERAL lock_song_owner_policy_head_v1(offer.community_id, offer.post_id) head
+            WHERE offer.offer_id=$1`,
+          [opened.offer.offerId],
+        );
+        expect(locked.rows).toHaveLength(1);
         const held = await authority.query(
           `SELECT revision.policy_revision, revision.policy_hash
              FROM song_reward_offers offer
@@ -1281,8 +1182,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
               AND revision.policy_revision=head.current_policy_revision
               AND revision.policy_hash=head.current_policy_hash
             WHERE offer.offer_id=$1 AND offer.status IN ('draft','active')
-              AND offer.ends_at > clock_timestamp()
-            FOR SHARE OF head`,
+              AND offer.ends_at > clock_timestamp()`,
           [opened.offer.offerId],
         );
         expect(held.rows).toHaveLength(1);
@@ -1336,6 +1236,187 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       } finally {
         await Promise.all([authority.end(), narrowing.end()]);
       }
+    });
+    completedTestCount += 1;
+  });
+
+  test("reward authority and owner policy run as the restricted runtime role", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "runtime-role", address("d"));
+      await seedMegapotAuthority(admin);
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-runtime-role', 'megapot-base-sepolia-v2', 84532, 42,
+           10000, clock_timestamp() + interval '1 hour', 25, 13, false,
+           100000000000000000, 100000000000000000, 142, $1,
+           clock_timestamp() - interval '2 minutes', 3, clock_timestamp(),
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("9"), hash("9")],
+      );
+      // Apply the operational role template to this schema under unique role
+      // names, so the repositories run with the runtime role's real grants:
+      // SELECT only on song_owner_policies, which cannot take FOR SHARE.
+      const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+      const runtime = `rewards_runtime_${suffix}`;
+      const operator = `rewards_operator_${suffix}`;
+      const schemaRow = await admin.query<{ readonly schema: string }>(
+        "SELECT current_schema() AS schema",
+      );
+      const schema = schemaRow.rows[0]?.schema;
+      if (!schema) throw new Error("test schema was not resolved");
+      const template = (
+        await Bun.file(new URL("../../../db/postgres/roles.sql.example", import.meta.url)).text()
+      )
+        .replaceAll("api_next_operator", operator)
+        .replaceAll("api_next_app", runtime)
+        .replaceAll("SCHEMA public", `SCHEMA ${quoteIdentifier(schema)}`);
+      await admin.query(template);
+      const runtimeConnection = `${scopedConnection}${encodeURIComponent(` -c role=${runtime}`)}`;
+      const probe = new Client({ connectionString: runtimeConnection });
+      try {
+        await probe.connect();
+        const role = await probe.query<{ readonly current_user: string }>("SELECT current_user");
+        expect(role.rows[0]?.current_user).toBe(runtime);
+        await expect(
+          probe.query(
+            "SELECT 1 FROM song_owner_policies WHERE community_id=$1 AND post_id=$2 FOR SHARE",
+            [identity.communityId, identity.postId],
+          ),
+        ).rejects.toMatchObject({ code: "42501" });
+
+        const layer = makeDirectPostgresControlPlaneLayer(runtimeConnection);
+        const offers = makeControlPlaneSongRewardOfferStore(layer);
+        const opened = await Effect.runPromise(
+          offers.openOffer({
+            actionId: "reward-action-runtime-role-open",
+            offerId: "reward-offer-runtime-role",
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+            communityId: identity.communityId,
+            postId: identity.postId,
+            idempotencyKey: "runtime-role-open-1",
+            requestHash: hash("b"),
+            termsHash: hash("c"),
+            rewardPolicy: {
+              version: "scarce_reward_v1",
+              community_id: identity.communityId,
+              offer_id: "reward-offer-runtime-role",
+              requirements: ["human.personhood", "credential.subject_unique"],
+              uniqueness: { kind: "single_authority", authority_id: "reward-offer-runtime-role" },
+              legal_eligibility: {
+                age: null,
+                geography: null,
+                disclosure: null,
+                environment: "test_staging_empty_v1",
+              },
+            },
+            rewardPolicyHash: hash("d"),
+            startsAt: new Date().toISOString(),
+            endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        expect(opened.replayed).toBe(false);
+        const leg = await Effect.runPromise(
+          offers.addMegapotPoolLeg({
+            actionId: "reward-action-runtime-role-leg",
+            legId: "reward-leg-runtime-role",
+            offerId: opened.offer.offerId,
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+            idempotencyKey: "runtime-role-leg-1",
+            requestHash: hash("e"),
+            legTermsHash: bytes32("f"),
+            createdAt: new Date(Date.now() + 1).toISOString(),
+            maxTicketPriceAtomic: 20_000n,
+            entryCutoffSeconds: 600,
+            eligibleActivities: ["study", "karaoke"] as const,
+            minScoreBps: 7_000,
+            emptyPoolPolicy: "no_purchase" as const,
+            fallbackPayoutPersonaId: null,
+            referralAllocationVersion: null,
+            referralPolicyHash: null,
+            referralDisclosedAt: null,
+          }),
+        );
+        expect(leg.leg.ownerPolicyRevision).toBe(1);
+
+        const policies = makeControlPlaneSongOwnerPolicyStore(layer);
+        const management = await Effect.runPromise(
+          policies.getManagement({
+            communityId: identity.communityId,
+            postId: identity.postId,
+            accountId: identity.accountId,
+            personaId: identity.personaId,
+          }),
+        );
+        expect(management.policy_revision).toBe(1);
+        const updated = await Effect.runPromise(
+          policies.update({
+            communityId: identity.communityId,
+            postId: identity.postId,
+            accountId: identity.accountId,
+            update: {
+              persona_id: identity.personaId,
+              expected_policy_revision: 1,
+              third_party_reward_legs: "allowed",
+              pool_leg: "allowed",
+              derivative_video: "owner_only",
+            },
+          }),
+        );
+        expect(updated.policy_revision).toBe(2);
+      } finally {
+        await probe.end().catch(() => undefined);
+        for (const role of [runtime, operator]) {
+          await admin.query(`DROP OWNED BY ${quoteIdentifier(role)}`);
+          await admin.query(`DROP ROLE ${quoteIdentifier(role)}`);
+        }
+      }
+    });
+    completedTestCount += 1;
+  });
+
+  test("derives the funding sender only from the persona's single active wallet", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const owner = await seedSong(admin, "sender-owner", address("d"));
+      const other = await seedSong(admin, "sender-other", address("e"));
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const sender = (accountId: string, personaId: string) =>
+        Effect.runPromise(store.fundingSender({ accountId, personaId }));
+      const refused = { _tag: "SongRewardOfferRejected", reason: "persona-ineligible" };
+
+      expect(await sender(owner.accountId, owner.personaId)).toBe(address("d"));
+      // Another account's persona, or a persona that does not exist, fails closed.
+      for (const [accountId, personaId] of [
+        [owner.accountId, other.personaId],
+        [other.accountId, owner.personaId],
+        [owner.accountId, "persona-missing"],
+      ] as const) {
+        await expect(sender(accountId, personaId)).rejects.toMatchObject(refused);
+      }
+      // An inactive wallet assignment is not a sender either.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE persona_wallet_assignments
+              SET status='tombstoned', tombstoned_at=clock_timestamp(), updated_at=clock_timestamp()
+            WHERE account_id=$1 AND persona_id=$2`,
+          [owner.accountId, owner.personaId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      await expect(sender(owner.accountId, owner.personaId)).rejects.toMatchObject(refused);
     });
     completedTestCount += 1;
   });
@@ -1524,6 +1605,22 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           transactionHash: bytes32("1"),
         }),
       );
+      // A bonus leg freezes no attestation of its own. Jobs still lists its bound
+      // transfer, and the store resolves the custody deployment it must be read on.
+      const pendingBonusFunding = () =>
+        Effect.runPromise(
+          makeControlPlaneMegapotWorkStore(
+            makeDirectPostgresControlPlaneLayer(scopedConnection),
+          ).loadPendingFunding({ limit: 10, cursor: 0 }),
+        );
+      expect(await pendingBonusFunding()).toEqual([funding.fundingEffectId]);
+      await expect(
+        Effect.runPromise(fundingStore.find(funding.fundingEffectId)),
+      ).resolves.toMatchObject({
+        legKind: "asset_bonus",
+        state: "confirming",
+        attestationId: "megapot-base-sepolia-v2",
+      });
       await Effect.runPromise(
         fundingStore.confirm({
           fundingEffectId: funding.fundingEffectId,
@@ -1536,6 +1633,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           confirmedAt: new Date().toISOString(),
         }),
       );
+      expect(await pendingBonusFunding()).toEqual([]);
       await admin.query(
         `UPDATE song_reward_offer_legs
             SET status='ended',participation_ends_at=clock_timestamp(),
@@ -2018,6 +2116,17 @@ suite("Postgres 17 Megapot rewards persistence", () => {
          ) VALUES ($1,$2,9,8,110,$3,clock_timestamp() - interval '1 second')`,
         [candidate.chainId, candidate.custodyAddress, bytes32("7")],
       );
+      await assertPausedReservation(admin, () =>
+        store.reserveNonce({
+          candidate,
+          effectId: "purchase-effect-101",
+          ticket: { normals: [1, 2, 3, 4, 5], bonusball: 6 },
+          observedPendingNonce: 9n,
+          observedBlockNumber: 111n,
+          observedBlockHash: bytes32("8"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const reserved = await Effect.runPromise(
         store.reserveNonce({
           candidate,
@@ -2196,6 +2305,18 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         expectedReferralAccrualAtomic: 100n,
         expectedNetWinningsAtomic: 901n,
       });
+      await assertPausedReservation(admin, () =>
+        claimStore.reserveNonce({
+          candidate: claimCandidate,
+          effectId: "claim-effect-101",
+          custodyBalanceBeforeAtomic: 20_000n,
+          referralBalanceBeforeAtomic: 1_000n,
+          observedPendingNonce: 10n,
+          observedBlockNumber: 121n,
+          observedBlockHash: bytes32("d"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const claimReservation = await Effect.runPromise(
         claimStore.reserveNonce({
           candidate: claimCandidate,
@@ -2356,7 +2477,18 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         },
       ]);
       const creditId = allocation.allocations[0]?.creditId;
-      if (creditId === null || creditId === undefined) throw new Error("missing payout credit");
+      const winnerAccountId = allocation.allocations[0]?.accountId;
+      if (creditId === null || creditId === undefined || winnerAccountId === undefined)
+        throw new Error("missing payout credit");
+      // Spec 015 §5.2a: a participant credit is held until its account claims it
+      // with current Very evidence; only then does payout pick it up.
+      await expect(Effect.runPromise(work.loadCredits(50))).resolves.not.toContain(creditId);
+      await seedVeryRewardEvidence(admin, winnerAccountId, "payout-claim", "c".repeat(64));
+      const participantClaim = await admin.query<{ outcome: string; claim_status: string }>(
+        "SELECT outcome, claim_status FROM accept_megapot_participant_claim_v1($1, $2)",
+        [creditId, winnerAccountId],
+      );
+      expect(participantClaim.rows).toEqual([{ outcome: "accepted", claim_status: "accepted" }]);
       await expect(Effect.runPromise(work.loadCredits(50))).resolves.toContain(creditId);
       const projections = makeControlPlaneRewardProjectionStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
@@ -2444,6 +2576,16 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
       const payoutCandidate = await Effect.runPromise(payoutStore.loadCandidate(creditId));
+      await assertPausedReservation(admin, () =>
+        payoutStore.reserveNonce({
+          candidate: payoutCandidate,
+          effectId: "payout-effect-101",
+          observedPendingNonce: 11n,
+          observedBlockNumber: 123n,
+          observedBlockHash: bytes32("f"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const payoutReservation = await Effect.runPromise(
         payoutStore.reserveNonce({
           candidate: payoutCandidate,
@@ -2612,6 +2754,9 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       const store = makeControlPlaneMegapotPurchaseStore(layer);
       const candidate = await Effect.runPromise(
         store.loadCandidate({ poolLegId: legId, drawingId: 101n }),
+      );
+      await admin.query(
+        "SELECT set_reward_operations_paused_v1(revision,TRUE,'paused_drawing_cutoff') FROM reward_operations_control WHERE singleton",
       );
       await Effect.runPromise(
         store.closePreBroadcast({
@@ -2894,6 +3039,19 @@ suite("Postgres 17 Megapot rewards persistence", () => {
          ) VALUES ($1,$2,12,11,119,$3,clock_timestamp() - interval '1 second')`,
         [candidate.chainId, candidate.custodyAddress, bytes32("b")],
       );
+      await assertPausedReservation(admin, () =>
+        store.reserveNonce({
+          candidate,
+          effectId: "approval-effect-100000",
+          allowanceBeforeAtomic: 0n,
+          minimumAllowanceAtomic: 10_000n,
+          approvedAmountAtomic: 100_000n,
+          observedPendingNonce: 12n,
+          observedBlockNumber: 120n,
+          observedBlockHash: bytes32("c"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const reserved = await Effect.runPromise(
         store.reserveNonce({
           candidate,
@@ -2969,6 +3127,123 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           allowance_after_atomic: "100000",
         },
       ]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("a required run lease gates real inserts into offers, legs and funding effects", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "run-lease", address("d"));
+      await seedMegapotAuthority(admin);
+      const sqlState = async (work: () => Promise<unknown>) => {
+        try {
+          await work();
+          return null;
+        } catch (error) {
+          return (error as { code?: string }).code ?? "unknown";
+        }
+      };
+      const setPaused = (paused: boolean) =>
+        admin.query(
+          "SELECT set_reward_operations_paused_v1(revision,$1,'run_lease_admission') FROM reward_operations_control WHERE singleton",
+          [paused],
+        );
+      const fundingStore = makeControlPlaneRewardFundingStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const plan = (legId: string, fundingEffectId: string) =>
+        Effect.runPromise(
+          Effect.flip(
+            fundingStore.plan({
+              fundingEffectId,
+              legId,
+              funderAccountId: identity.accountId,
+              senderAddress: address("d"),
+              expectedAmountAtomic: 500n,
+              requiredConfirmations: 3,
+            }),
+          ),
+        ).then(
+          (failure) => (failure as { _tag?: string })._tag ?? "failed",
+          () => null,
+        );
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL pirate.reward_run_lease_requirement_change = 'deployment'");
+      await admin.query("UPDATE reward_operations_run_lease SET required=TRUE WHERE singleton");
+      await admin.query("COMMIT");
+
+      // The brake is running, but no lease is held: the first real offer is refused.
+      // The fixture writes other rows before the offer, so the attempt is rolled back.
+      await admin.query("BEGIN");
+      expect(
+        await sqlState(() =>
+          seedActivePoolLeg(admin, identity, { fallback: false, suffix: "lease-none" }),
+        ),
+      ).toBe("PR001");
+      await admin.query("ROLLBACK");
+      expect(
+        (await admin.query("SELECT count(*)::integer AS offers FROM song_reward_offers")).rows,
+      ).toEqual([{ offers: 0 }]);
+
+      // Under a live lease and a running brake all three tables accept real rows.
+      await setPaused(true);
+      await admin.query("SELECT acquire_reward_run_lease_v1('admission-run-one',600,600)");
+      await setPaused(false);
+      const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "lease-live",
+      });
+      expect(await plan(legId, "funding-effect-lease-live")).toBeNull();
+      expect(
+        (
+          await admin.query(
+            `SELECT (SELECT count(*)::integer FROM song_reward_offers) AS offers,
+                    (SELECT count(*)::integer FROM song_reward_offer_legs) AS legs,
+                    (SELECT count(*)::integer FROM song_reward_leg_funding_effects) AS funding`,
+          )
+        ).rows,
+      ).toEqual([{ offers: 1, legs: 1, funding: 1 }]);
+
+      // Once the lease has expired, each table refuses a further real row, though
+      // the brake row still says running and no job has paused it.
+      await admin.query(
+        `UPDATE reward_operations_run_lease
+            SET expires_at = clock_timestamp() - interval '1 second' WHERE singleton`,
+      );
+      expect(await plan(legId, "funding-effect-lease-expired")).toBe("RewardOperationsPaused");
+      const clone = (table: string, key: string, from: string, to: string) =>
+        sqlState(() =>
+          admin.query(
+            `INSERT INTO ${table}
+             SELECT (jsonb_populate_record(source, jsonb_build_object($2::text, $3::text))).*
+               FROM ${table} source WHERE ${key} = $1`,
+            [from, key, to],
+          ),
+        );
+      expect(await clone("song_reward_offers", "offer_id", offerId, "offer-lease-expired")).toBe(
+        "PR001",
+      );
+      expect(await clone("song_reward_offer_legs", "leg_id", legId, "leg-lease-expired")).toBe(
+        "PR001",
+      );
+      expect(
+        await clone(
+          "song_reward_leg_funding_effects",
+          "funding_effect_id",
+          "funding-effect-lease-live",
+          "funding-effect-lease-clone",
+        ),
+      ).toBe("PR001");
+      expect(
+        (
+          await admin.query(
+            `SELECT (SELECT count(*)::integer FROM song_reward_offers) AS offers,
+                    (SELECT count(*)::integer FROM song_reward_offer_legs) AS legs,
+                    (SELECT count(*)::integer FROM song_reward_leg_funding_effects) AS funding,
+                    (SELECT paused FROM reward_operations_control) AS paused`,
+          )
+        ).rows,
+      ).toEqual([{ offers: 1, legs: 1, funding: 1, paused: false }]);
     });
     completedTestCount += 1;
   });
@@ -3142,6 +3417,16 @@ suite("Postgres 17 Megapot rewards persistence", () => {
             ),
           ).rejects.toMatchObject({ _tag: "RewardRefundRejected", reason: "effect-conflict" });
         }
+        await assertPausedReservation(admin, () =>
+          refundStore.reserveNonce({
+            candidate,
+            effectId: input.effectId,
+            observedPendingNonce: input.blockNumber,
+            observedBlockNumber: input.blockNumber,
+            observedBlockHash: bytes32(input.hashByte),
+            observedAt: new Date().toISOString(),
+          }),
+        );
         const reservation = await Effect.runPromise(
           refundStore.reserveNonce({
             candidate,
@@ -3152,41 +3437,56 @@ suite("Postgres 17 Megapot rewards persistence", () => {
             observedAt: new Date().toISOString(),
           }),
         );
-        const transactionHash = bytes32(input.hashByte);
-        await Effect.runPromise(
-          refundStore.prepare({
-            reservation,
-            calldata: encodeMegapotUsdcTransfer(
-              candidate.destinationAddress,
-              candidate.amountAtomic,
-            ),
-            calldataHash: hash(input.hashByte),
-            signedTransaction: "0x090a",
-            signedTransactionHash: transactionHash,
-            preparedAt: new Date().toISOString(),
-          }),
+        await admin.query(
+          "SELECT set_reward_operations_paused_v1(revision,TRUE,'admitted_refund_retry') FROM reward_operations_control WHERE singleton",
         );
-        await Effect.runPromise(
-          refundStore.recordSubmission({
-            effectId: reservation.effectId,
-            transactionHash,
-            submittedAt: new Date().toISOString(),
-            outcome: "accepted",
-          }),
-        );
-        await Effect.runPromise(
-          refundStore.confirm({
-            effectId: reservation.effectId,
-            transactionHash,
-            transferLogIndex: Number(input.blockNumber),
-            amountAtomic: input.amountAtomic,
-            custodyBalanceAfterAtomic: input.balanceAfterAtomic,
-            blockNumber: input.blockNumber + 1n,
-            blockHash: bytes32(input.hashByte),
-            receiptHash: hash(input.hashByte),
-            confirmations: 3,
-            confirmedAt: new Date().toISOString(),
-          }),
+        const noncesBeforeRetry = (
+          await admin.query(
+            "SELECT next_nonce::text,fence_version::text FROM reward_signer_nonces ORDER BY chain_id,signer_address",
+          )
+        ).rows;
+        await expect(
+          admin.query(`UPDATE reward_signer_nonces
+          SET next_nonce=next_nonce+1,fence_version=fence_version+1,updated_at=clock_timestamp()`),
+        ).rejects.toMatchObject({ code: "PR001" });
+        await expect(
+          Effect.runPromise(refundStore.findProgress(reservation.effectId)),
+        ).resolves.toMatchObject({
+          state: "nonce_reserved",
+          reservation: { nonce: reservation.nonce },
+        });
+        const retry = await finishAdmittedRefund({
+          store: refundStore,
+          reservation,
+          blockNumber: input.blockNumber + 1n,
+          blockHash: bytes32(input.hashByte),
+          balanceAfterAtomic: input.balanceAfterAtomic,
+          signedTransaction: `0x09${input.hashByte.repeat(2)}`,
+        });
+        expect(retry.outcome).toMatchObject({ kind: "confirmed", effectId: reservation.effectId });
+        expect({
+          receiptReads: retry.receiptReads,
+          sends: retry.sends,
+          signatures: retry.signatures,
+          // One read before the send, in case an earlier send went unrecorded, and
+          // one after it for the receipt.
+        }).toEqual({ receiptReads: 2, sends: 1, signatures: 1 });
+        const { transactionHash } = retry;
+        await expect(
+          Effect.runPromise(refundStore.findProgress(reservation.effectId)),
+        ).resolves.toMatchObject({ state: "confirmed", transactionHash });
+        expect(
+          (
+            await admin.query(
+              "SELECT next_nonce::text,fence_version::text FROM reward_signer_nonces ORDER BY chain_id,signer_address",
+            )
+          ).rows,
+        ).toEqual(noncesBeforeRetry);
+        expect(
+          (await admin.query("SELECT paused FROM reward_operations_control WHERE singleton")).rows,
+        ).toEqual([{ paused: true }]);
+        await admin.query(
+          "SELECT set_reward_operations_paused_v1(revision,FALSE,'next_isolated_refund') FROM reward_operations_control WHERE singleton",
         );
       };
 
@@ -3691,11 +3991,14 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       await admin.query("SET session_replication_role = replica");
       try {
         await admin.query(
+          // This drawing existed before cutoff; a fresh microsecond timestamp
+          // can otherwise exceed the coordinator's millisecond freeze time.
           `INSERT INTO megapot_pool_drawings (
              pool_leg_id, drawing_id, observation_id, status,
-             entry_cutoff_at, ticket_price_ceiling_atomic
+             entry_cutoff_at, ticket_price_ceiling_atomic, created_at, updated_at
            ) SELECT $1, 100, observation_id, 'entry_open',
-                    drawing_time - interval '300 seconds', 10000
+                    drawing_time - interval '300 seconds', 10000,
+                    drawing_time - interval '10 minutes', drawing_time - interval '10 minutes'
                FROM megapot_drawing_observations
               WHERE observation_id='drawing-observation-cutoff-empty'`,
           [legId],
@@ -3713,7 +4016,8 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         sharedSponsorDailyTicketCeiling: 10,
         sharedSponsorDailySpendCeilingAtomic: 100_000n,
       });
-      await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toMatchObject([
+      const outcomes = await Effect.runPromise(coordinator.freezeDue());
+      expect(outcomes).toMatchObject([
         {
           poolLegId: legId,
           drawingId: 100n,
@@ -3837,6 +4141,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
       const commitment = makeMegapotCommitmentCoordinator({
+        authority: { ensure: () => Effect.void },
         store: commitmentStore,
         signer: {
           sign: async () => ({
@@ -3899,6 +4204,442 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         beneficiaryCount: 0,
       });
       await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toEqual([]);
+    });
+    completedTestCount += 1;
+  });
+
+  // A chain as the funding coordinator reads it: one receipt whose status, block
+  // identity and depth the test moves, with a count of receipt reads.
+  const fundingChain = (input: {
+    readonly transactionHash: Hex;
+    readonly amountAtomic: bigint;
+  }) => {
+    const transfer = parseAbi([
+      "event Transfer(address indexed from, address indexed to, uint256 amount)",
+    ]);
+    const blockHash = bytes32("c") as Hex;
+    const state = {
+      head: 201n,
+      status: "success" as "success" | "reverted",
+      canonicalBlockHash: blockHash as string,
+      mined: true,
+      receiptReads: 0,
+    };
+    const rpc = {
+      attestDeployment: async () => ({}),
+      readReceipt: async () => {
+        state.receiptReads += 1;
+        if (!state.mined) return null;
+        return {
+          chainId: 84_532,
+          status: state.status,
+          transactionHash: input.transactionHash,
+          from: address("b"),
+          to: address("1"),
+          blockHash,
+          blockNumber: 200n,
+          logs:
+            state.status === "reverted"
+              ? []
+              : [
+                  {
+                    address: address("1"),
+                    topics: encodeEventTopics({
+                      abi: transfer,
+                      eventName: "Transfer",
+                      args: { from: address("b") as Hex, to: address("4") as Hex },
+                    }),
+                    data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [
+                      input.amountAtomic,
+                    ]),
+                    logIndex: 4,
+                    transactionHash: input.transactionHash,
+                    blockHash,
+                    blockNumber: 200n,
+                  },
+                ],
+        };
+      },
+      readBlock: async () => ({ blockNumber: 200n, blockHash: state.canonicalBlockHash }),
+      readHead: async () => ({ blockNumber: state.head, blockHash: bytes32("d") }),
+    } as unknown as MegapotV2RpcClient;
+    return { rpc, state };
+  };
+  const insertBoundFunding = (
+    admin: Client,
+    input: {
+      readonly fundingEffectId: string;
+      readonly legId: string;
+      readonly accountId: string;
+      readonly amountAtomic: bigint;
+      readonly transactionHash: string;
+    },
+  ) =>
+    admin.query(
+      `INSERT INTO song_reward_leg_funding_effects (
+         funding_effect_id, leg_id, funder_account_id, chain_id, token_address,
+         sender_address, recipient_address, expected_amount_atomic,
+         required_confirmations, state, transaction_hash
+       ) VALUES ($1,$2,$3,84532,$4,$5,$6,$7,3,'confirming',$8)`,
+      [
+        input.fundingEffectId,
+        input.legId,
+        input.accountId,
+        address("1"),
+        address("b"),
+        address("4"),
+        input.amountAtomic.toString(),
+        input.transactionHash,
+      ],
+    );
+  const fundingRow = async (admin: Client, fundingEffectId: string) =>
+    (
+      await admin.query<{
+        readonly state: string;
+        readonly funded_atomic: string;
+        readonly leg_status: string;
+      }>(
+        `SELECT funding.state, leg.funded_atomic::text, leg.status AS leg_status
+           FROM song_reward_leg_funding_effects funding
+           JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+          WHERE funding.funding_effect_id=$1`,
+        [fundingEffectId],
+      )
+    ).rows[0];
+
+  test("jobs confirms a first payment once after the sponsor left and the offer ended", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-jobs", address("b"));
+      await seedMegapotAuthority(admin);
+      const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-jobs",
+        expired: true,
+      });
+      // The leg has never been funded: this transfer is its first and only payment.
+      // Leg accounting never moves backwards, so the fixture is rewound with triggers off.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE song_reward_offer_legs
+              SET status='funding', funded_atomic=0, activated_at=NULL WHERE leg_id=$1`,
+          [legId],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const transactionHash = bytes32("b") as Hex;
+      // The sponsor paid and left: the HTTP Worker bound the hash and nothing else ran.
+      await insertBoundFunding(admin, {
+        fundingEffectId: "funding-jobs-bound",
+        legId,
+        accountId: identity.accountId,
+        amountAtomic: 100_000n,
+        transactionHash,
+      });
+      await admin.query(
+        `INSERT INTO song_reward_leg_funding_effects (
+           funding_effect_id, leg_id, funder_account_id, chain_id, token_address,
+           sender_address, recipient_address, expected_amount_atomic,
+           required_confirmations, state
+         ) VALUES ('funding-jobs-unbound',$1,$2,84532,$3,$4,$5,123,3,'planned')`,
+        [legId, identity.accountId, address("1"), address("b"), address("4")],
+      );
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const work = makeControlPlaneMegapotWorkStore(layer);
+      const terminalStore = makeControlPlaneRewardOfferTerminalStore(layer);
+      const pending = () => Effect.runPromise(work.loadPendingFunding({ limit: 10, cursor: 0 }));
+      expect(await pending()).toEqual(["funding-jobs-bound"]);
+      // A bound transfer holds expiry; without a server-side observer it held it forever.
+      expect(await Effect.runPromise(terminalStore.closeExpired(10))).toEqual([]);
+
+      const chain = fundingChain({ transactionHash, amountAtomic: 100_000n });
+      const coordinator = makeRewardFundingCoordinator({
+        store: makeControlPlaneRewardFundingStore(layer),
+        rpc: chain.rpc,
+      });
+      const reconcile = () => Effect.runPromise(coordinator.reconcile("funding-jobs-bound"));
+
+      // Two confirmations: nothing is credited and the effect stays in the work list.
+      expect((await reconcile()).kind).toBe("confirming");
+      expect(await fundingRow(admin, "funding-jobs-bound")).toMatchObject({
+        state: "confirming",
+        funded_atomic: "0",
+      });
+      expect(await pending()).toHaveLength(1);
+
+      chain.state.head = 202n;
+      expect((await reconcile()).kind).toBe("confirmed");
+      // The offer has ended, so the paid leg is credited but never opened to activity.
+      expect(await fundingRow(admin, "funding-jobs-bound")).toEqual({
+        state: "confirmed",
+        funded_atomic: "100000",
+        leg_status: "funding",
+      });
+      expect(await pending()).toEqual([]);
+
+      // A later cycle neither credits the leg again nor re-reads the chain.
+      const readsAtConfirmation = chain.state.receiptReads;
+      expect((await reconcile()).kind).toBe("confirmed");
+      expect((await fundingRow(admin, "funding-jobs-bound"))?.funded_atomic).toBe("100000");
+      expect(chain.state.receiptReads).toBe(readsAtConfirmation);
+
+      // The ended offer now closes and the whole payment becomes refundable.
+      expect(await Effect.runPromise(terminalStore.closeExpired(10))).toMatchObject([
+        { offerId, legIds: [legId] },
+      ]);
+      expect(await Effect.runPromise(work.loadRefunds(10))).toEqual(["funding-jobs-bound"]);
+      const unbound = await admin.query<{ readonly state: string }>(
+        "SELECT state FROM song_reward_leg_funding_effects WHERE funding_effect_id='funding-jobs-unbound'",
+      );
+      expect(unbound.rows).toEqual([{ state: "reclaimable_failed" }]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("a confirmation whose commit is applied but never acknowledged is not credited twice", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-lost-ack", address("b"));
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-lost-ack",
+      });
+      const transactionHash = bytes32("b") as Hex;
+      await insertBoundFunding(admin, {
+        fundingEffectId: "funding-lost-ack",
+        legId,
+        accountId: identity.accountId,
+        amountAtomic: 500n,
+        transactionHash,
+      });
+      const chain = fundingChain({ transactionHash, amountAtomic: 500n });
+      chain.state.head = 202n;
+
+      // A real session whose COMMIT reaches the server and applies, but whose
+      // answer never comes back: the caller cannot tell whether it committed.
+      let commitsApplied = 0;
+      const unacknowledged = makeDirectPostgresControlPlaneLayer(scopedConnection, {
+        statementTimeoutMs: 400,
+        logger: { info: () => undefined, error: () => undefined },
+        clientFactory: (_connectionString, config) => {
+          const client = new Client(config);
+          return {
+            connection: { stream: { destroy: () => undefined } },
+            connect: () => client.connect(),
+            end: () => client.end(),
+            query: async ({ text, values }) => {
+              const result = await client.query({ text, values: [...(values ?? [])] });
+              if (text === "COMMIT") {
+                commitsApplied += 1;
+                return new Promise(() => undefined);
+              }
+              return result;
+            },
+          };
+        },
+      });
+      const interrupted = await Effect.runPromise(
+        makeRewardFundingCoordinator({
+          store: makeControlPlaneRewardFundingStore(unacknowledged),
+          rpc: chain.rpc,
+        })
+          .reconcile("funding-lost-ack")
+          .pipe(
+            Effect.map((outcome) => outcome.kind),
+            Effect.catch((error) => Effect.succeed(`failed:${(error as { _tag?: string })._tag}`)),
+          ),
+      );
+      // The caller is told it failed, and must not treat that as a confirmation.
+      expect(interrupted.startsWith("failed:")).toBe(true);
+      expect(commitsApplied).toBeGreaterThan(0);
+      // The server did apply it, exactly once.
+      expect(await fundingRow(admin, "funding-lost-ack")).toMatchObject({
+        state: "confirmed",
+        funded_atomic: "100500",
+      });
+
+      // The next cycle, on an ordinary session, finds it confirmed and does nothing more.
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const readsBefore = chain.state.receiptReads;
+      const repeated = await Effect.runPromise(
+        makeRewardFundingCoordinator({
+          store: makeControlPlaneRewardFundingStore(layer),
+          rpc: chain.rpc,
+        }).reconcile("funding-lost-ack"),
+      );
+      expect(repeated.kind).toBe("confirmed");
+      expect(chain.state.receiptReads).toBe(readsBefore);
+      expect(await fundingRow(admin, "funding-lost-ack")).toMatchObject({
+        state: "confirmed",
+        funded_atomic: "100500",
+      });
+      expect(
+        await Effect.runPromise(
+          makeControlPlaneMegapotWorkStore(layer).loadPendingFunding({ limit: 10, cursor: 0 }),
+        ),
+      ).toEqual([]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("ten transfers that never resolve cannot keep an eleventh payment from confirming", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-rotation", address("b"));
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-rotation",
+      });
+      const hashOf = (index: number) => `0x${index.toString(16).padStart(2, "0").repeat(32)}`;
+      for (let index = 1; index <= 11; index++) {
+        await insertBoundFunding(admin, {
+          fundingEffectId: `funding-rotation-${index.toString().padStart(2, "0")}`,
+          legId,
+          accountId: identity.accountId,
+          amountAtomic: 500n,
+          transactionHash: hashOf(index),
+        });
+      }
+      // Pending age is economic evidence: the oldest ten have waited far longer.
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `UPDATE song_reward_leg_funding_effects
+              SET created_at=clock_timestamp()-interval '2 hours',
+                  updated_at=clock_timestamp()-interval '2 hours'
+            WHERE funding_effect_id <> 'funding-rotation-11'
+              AND funding_effect_id LIKE 'funding-rotation-%'`,
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+      const ages = async () =>
+        (
+          await admin.query<{ readonly id: string; readonly at: string }>(
+            `SELECT funding_effect_id AS id, updated_at::text AS at
+               FROM song_reward_leg_funding_effects
+              WHERE funding_effect_id LIKE 'funding-rotation-%' ORDER BY 1`,
+          )
+        ).rows;
+      const before = await ages();
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const work = makeControlPlaneMegapotWorkStore(layer);
+      const window = (cursor: number) =>
+        Effect.runPromise(work.loadPendingFunding({ limit: 10, cursor }));
+
+      const first = await window(0);
+      expect(first).toHaveLength(10);
+      expect(first).not.toContain("funding-rotation-11");
+      // The same cycle minute reads the same window; the next minute moves its
+      // first candidate by one, which brings the newest transfer in.
+      expect(await window(0)).toEqual(first);
+      const second = await window(1);
+      expect(second).toHaveLength(10);
+      expect(second[0]).toBe(first[1]);
+      expect(second.at(-1)).toBe("funding-rotation-11");
+      // Each transfer leads the window exactly once in eleven consecutive minutes.
+      const leaders = new Set<string>();
+      for (let cursor = 1_000_003; cursor < 1_000_014; cursor++) {
+        const batch = await window(cursor);
+        expect(batch).toHaveLength(10);
+        leaders.add(batch[0] ?? "");
+      }
+      expect(leaders.size).toBe(11);
+      // Selection wrote nothing, so pending age still measures the wait.
+      expect(await ages()).toEqual(before);
+
+      const chain = fundingChain({ transactionHash: hashOf(11) as Hex, amountAtomic: 500n });
+      chain.state.head = 202n;
+      const coordinator = makeRewardFundingCoordinator({
+        store: makeControlPlaneRewardFundingStore(layer),
+        rpc: chain.rpc,
+      });
+      expect((await Effect.runPromise(coordinator.reconcile("funding-rotation-11"))).kind).toBe(
+        "confirmed",
+      );
+      expect(await fundingRow(admin, "funding-rotation-11")).toMatchObject({
+        state: "confirmed",
+        funded_atomic: "100500",
+      });
+      // An unmined transfer is read and left exactly as it was.
+      chain.state.mined = false;
+      expect((await Effect.runPromise(coordinator.reconcile("funding-rotation-01"))).kind).toBe(
+        "confirming",
+      );
+      expect(await window(0)).toHaveLength(10);
+      expect((await ages()).slice(0, 10)).toEqual(before.slice(0, 10));
+    });
+    completedTestCount += 1;
+  });
+
+  test("jobs records a reverted transfer and holds a reorganized one until it is canonical", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-outcomes", address("b"));
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-outcomes",
+      });
+      const revertedHash = bytes32("a") as Hex;
+      const reorganizedHash = bytes32("b") as Hex;
+      await insertBoundFunding(admin, {
+        fundingEffectId: "funding-outcomes-reverted",
+        legId,
+        accountId: identity.accountId,
+        amountAtomic: 500n,
+        transactionHash: revertedHash,
+      });
+      await insertBoundFunding(admin, {
+        fundingEffectId: "funding-outcomes-reorganized",
+        legId,
+        accountId: identity.accountId,
+        amountAtomic: 700n,
+        transactionHash: reorganizedHash,
+      });
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const work = makeControlPlaneMegapotWorkStore(layer);
+      const store = makeControlPlaneRewardFundingStore(layer);
+      const pending = () => Effect.runPromise(work.loadPendingFunding({ limit: 10, cursor: 0 }));
+
+      const reverted = fundingChain({ transactionHash: revertedHash, amountAtomic: 500n });
+      reverted.state.head = 202n;
+      reverted.state.status = "reverted";
+      expect(
+        (
+          await Effect.runPromise(
+            makeRewardFundingCoordinator({ store, rpc: reverted.rpc }).reconcile(
+              "funding-outcomes-reverted",
+            ),
+          )
+        ).kind,
+      ).toBe("reverted");
+      expect(await fundingRow(admin, "funding-outcomes-reverted")).toMatchObject({
+        state: "reverted",
+        funded_atomic: "100000",
+      });
+      expect(await pending()).toEqual(["funding-outcomes-reorganized"]);
+
+      const reorganized = fundingChain({ transactionHash: reorganizedHash, amountAtomic: 700n });
+      reorganized.state.head = 202n;
+      reorganized.state.canonicalBlockHash = bytes32("e");
+      const coordinator = makeRewardFundingCoordinator({ store, rpc: reorganized.rpc });
+      const reconcile = () =>
+        Effect.runPromise(coordinator.reconcile("funding-outcomes-reorganized"));
+      expect((await reconcile()).kind).toBe("reconciliation_required");
+      expect(await fundingRow(admin, "funding-outcomes-reorganized")).toMatchObject({
+        state: "reconciliation_required",
+        funded_atomic: "100000",
+      });
+      // It stays in the work list, and confirms once its block is canonical again.
+      expect(await pending()).toEqual(["funding-outcomes-reorganized"]);
+      reorganized.state.canonicalBlockHash = bytes32("c");
+      expect((await reconcile()).kind).toBe("confirmed");
+      expect(await fundingRow(admin, "funding-outcomes-reorganized")).toMatchObject({
+        state: "confirmed",
+        funded_atomic: "100700",
+      });
+      expect(await pending()).toEqual([]);
     });
     completedTestCount += 1;
   });

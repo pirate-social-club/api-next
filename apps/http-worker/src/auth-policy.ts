@@ -1,8 +1,14 @@
-import type { AuthPolicy, EndpointDefinition } from "@pirate/contracts";
+import {
+  type AuthPolicy,
+  type BrowserParticipationPolicy,
+  type EndpointDefinition,
+  isBrowserParticipationOperation,
+} from "@pirate/contracts";
 
 const SUPPORTED_SHARED_SECRET_POLICIES = ["hns-edge-alert", "hns-edge-status"] as const;
 
 type SupportedAuthPolicy =
+  | BrowserParticipationPolicy
   | { readonly kind: "public" }
   | { readonly kind: "admin"; readonly scope: "avatars:moderate" }
   | { readonly kind: "user" | "userOrAdmin" }
@@ -13,6 +19,9 @@ type SupportedAuthPolicy =
 
 export function supportedAuthPolicy(policy: AuthPolicy): SupportedAuthPolicy {
   switch (policy.kind) {
+    case "browserParticipation":
+      if (isBrowserParticipationOperation(policy)) return policy;
+      break;
     case "public":
     case "user":
     case "userOrAdmin":

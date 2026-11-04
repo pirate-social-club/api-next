@@ -161,6 +161,22 @@ TRUNCATE TABLE
   "data_registration_signing_attempts",
   "decision_records",
   "evidence_receipts",
+  "guest_attachment_intents",
+  "guest_credentials",
+  "guest_empty_owner_aliases",
+  "guest_learning_preferences",
+  "guest_learning_schema_phase",
+  "guest_participation_operations",
+  "guest_resource_cost_policy_snapshots",
+  "guest_resource_edge_locks",
+  "guest_resource_global_lock",
+  "guest_resource_policy_snapshots",
+  "guest_resource_provider_calls",
+  "guest_resource_release_receipts",
+  "guest_resource_session_reservations",
+  "guest_secret_issuance_operations",
+  "guest_study_spoken_captures",
+  "guest_study_spoken_checkpoints",
   "handle_account_directory_bindings",
   "handle_account_offering_grant_counters",
   "handle_claim_actions",
@@ -185,12 +201,14 @@ TRUNCATE TABLE
   "handle_reservation_actions",
   "handle_reservations",
   "handle_reserved_label_revisions",
+  "handle_spaces_membership_source_revisions",
   "hns_authority_inventories",
   "hns_authority_provision_jobs",
   "hns_community_app_host_activation_current",
   "hns_community_app_host_activation_revisions",
   "hns_community_app_host_operations",
   "hns_community_publication_jobs",
+  "hns_community_root_import_preparation_ceremonies",
   "hns_community_root_import_preparations",
   "hns_control_observer_configurations",
   "hns_control_observer_operations",
@@ -216,9 +234,12 @@ TRUNCATE TABLE
   "hns_root_import_lifecycle_jobs",
   "hns_root_import_name_proof_observations",
   "hns_root_import_observation_jobs",
+  "hns_root_import_publication_authorizations",
   "hns_root_import_recovery_authorizations",
   "hns_root_import_recovery_findings",
   "hns_root_import_retention_reviews",
+  "hns_root_import_safe_ownership_proofs",
+  "hns_root_import_separated_clocks_inventory",
   "hns_root_import_sessions",
   "hns_root_import_teardown_jobs",
   "home_feed_projection",
@@ -226,7 +247,22 @@ TRUNCATE TABLE
   "karaoke_attempts",
   "karaoke_recordings",
   "karaoke_sessions",
+  "learner_audio_account_producer_captures",
+  "learner_audio_account_provider_calls",
+  "learner_audio_account_spoken_checkpoints",
   "learner_audio_artifacts",
+  "learner_audio_delete_batch_items",
+  "learner_audio_delete_batches",
+  "learner_audio_delete_commands",
+  "learner_audio_delete_sources",
+  "learner_audio_delete_target_artifacts",
+  "learner_audio_deleted_objects",
+  "learner_audio_legacy_settlements",
+  "learner_audio_object_names",
+  "learner_audio_owner_fences",
+  "learner_audio_upload_attempts",
+  "learner_audio_upload_cleanup_commands",
+  "learner_audio_upload_terminal_facts",
   "localization_lyric_line_lineage",
   "localization_lyric_line_occurrences",
   "localization_lyric_line_study_units",
@@ -253,8 +289,14 @@ TRUNCATE TABLE
   "media_reference_evidence",
   "media_song_canonical_timings",
   "media_song_lyrics_revisions",
+  "media_song_stems",
   "media_song_video_accepted_masters",
+  "media_song_video_excerpt_grants",
   "media_song_video_masters",
+  "media_song_video_pcm_admission_policy",
+  "media_song_video_pcm_admissions",
+  "media_song_video_pcm_references",
+  "media_song_video_pcm_source_grants",
   "media_song_video_render_attempts",
   "media_song_video_render_plans",
   "media_submission_command_replays",
@@ -269,6 +311,7 @@ TRUNCATE TABLE
   "media_video_derived_artifacts",
   "media_video_enrichment_outbox",
   "media_video_original_sounds",
+  "media_video_outcome_claims",
   "media_video_publication_decisions",
   "media_video_publication_wakeups",
   "media_video_reservation_command_replays",
@@ -293,6 +336,8 @@ TRUNCATE TABLE
   "megapot_drawing_sweeps",
   "megapot_fallback_cutoff_activity_evidence",
   "megapot_fallback_cutoff_evidence",
+  "megapot_participant_claim_guards",
+  "megapot_participant_claims",
   "megapot_pool_beneficiary_snapshots",
   "megapot_pool_commitment_effects",
   "megapot_pool_drawing_transitions",
@@ -322,6 +367,8 @@ TRUNCATE TABLE
   "operator_managed_root_registry_versions",
   "operator_managed_route_activations",
   "operator_managed_route_operations",
+  "participation_owner_clocks",
+  "participation_owners",
   "persona_activity_preparation_actions",
   "persona_activity_presentation_actions",
   "persona_activity_presentations",
@@ -360,12 +407,29 @@ TRUNCATE TABLE
   "reward_chain_effects",
   "reward_eligibility_decisions",
   "reward_erc20_transfer_receipt_evidence",
+  "reward_gas_topup_daily_budgets",
+  "reward_gas_topup_wallets",
+  "reward_gas_topups",
   "reward_ledger_credits",
+  "reward_native_transfer_receipt_evidence",
+  "reward_operations_control",
+  "reward_operations_control_events",
+  "reward_operations_run_lease",
+  "reward_operations_run_lease_events",
   "reward_payout_effects",
   "reward_refund_effects",
+  "reward_safe_backing_v1",
+  "reward_safe_policies_v1",
+  "reward_safe_settlement_events_v1",
+  "reward_safe_settlements_v1",
+  "reward_safe_solvency_v1",
   "reward_signer_nonces",
   "reward_subject_consumptions",
   "reward_uniqueness_authorities",
+  "reward_winner_send_attempts",
+  "reward_winner_send_outcomes",
+  "reward_winner_send_transactions",
+  "reward_winner_sends",
   "schema_migrations",
   "song_dance_presentations",
   "song_derivative_video_policy_observations",
@@ -383,6 +447,37 @@ TRUNCATE TABLE
   "song_streak_day_activities",
   "song_streak_days",
   "song_streaks",
+  "spaces_community_route_attachments",
+  "spaces_community_route_renewals",
+  "spaces_external_conflict_observations",
+  "spaces_final_conflict_evidence",
+  "spaces_final_issuance_evidence",
+  "spaces_issuance_driver_root_enablements",
+  "spaces_issuance_verifications",
+  "spaces_namespace_authority_evidence",
+  "spaces_network_configuration",
+  "spaces_operator_assignment_current",
+  "spaces_operator_assignment_revisions",
+  "spaces_operator_capability_observations",
+  "spaces_operator_deployment_records",
+  "spaces_operator_funding_observations",
+  "spaces_operator_instances",
+  "spaces_operator_prepared_assignments",
+  "spaces_operator_service_credentials",
+  "spaces_operator_service_reports",
+  "spaces_owner_proof_ceremonies",
+  "spaces_owner_proof_evidence",
+  "spaces_owner_proof_polls",
+  "spaces_registry_acknowledgments",
+  "spaces_registry_commit_hint_claims",
+  "spaces_registry_commit_hints",
+  "spaces_registry_credentials",
+  "spaces_registry_deliveries",
+  "spaces_registry_items",
+  "spaces_registry_occupancy_observations",
+  "spaces_registry_scope_anomalies",
+  "spaces_root_observations",
+  "spaces_taproot_creation_intents",
   "sponsor_daily_ticket_totals",
   "sponsor_withdrawal_effects",
   "study_attempts_v2",
@@ -405,6 +500,15 @@ TRUNCATE TABLE
   "study_unit_exercise_eligibility",
   "subject_key_binding_events",
   "subject_keys",
+  "telegram_account_associations",
+  "telegram_bot_grants",
+  "telegram_interface_preferences",
+  "telegram_link_navigation",
+  "telegram_link_transactions",
+  "telegram_restricted_bot_affirmations",
+  "telegram_restricted_learners",
+  "telegram_restricted_study_personas",
+  "telegram_study_conversations",
   "text_content_held_revisions",
   "text_content_submissions",
   "text_moderation_cases",
@@ -414,28 +518,40 @@ TRUNCATE TABLE
   "used_action_grants",
   "users",
   "verification_completion_attempts",
-  "verification_start_reservations"
+  "verification_start_reservations",
+  "wallet_sponsored_sends"
 RESTART IDENTITY CASCADE;
 
 SET LOCAL session_replication_role = replica;
 
 INSERT INTO activity_registry VALUES ('study', 'active', 'study_session_v1', 'study_session_first_pass_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
 INSERT INTO activity_registry VALUES ('dance', 'reserved', NULL, NULL, '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
-INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@1', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+INSERT INTO activity_registry VALUES ('karaoke', 'active', 'karaoke_postgres_v2', 'karaoke_qualification_v2@2', '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+
+INSERT INTO guest_learning_schema_phase VALUES (true, 'practice_only_owner_legacy_audio_settlement_history_v6');
+
+INSERT INTO guest_resource_global_lock VALUES (true);
 
 INSERT INTO handle_account_directory_bindings VALUES ('account_directory_v1', '1', 'c81ff980a56025b99dcd24d27979a302ca28f162ca7238dda354686082496d3d', 'active', '2000-01-01 00:00:00+00');
 
 INSERT INTO handle_issuance_driver_revisions VALUES ('hns', 'hosted_persona-local', '1', 'hosted_persona_v1', 'enabled', '2000-01-01 00:00:00+00');
+INSERT INTO handle_issuance_driver_revisions VALUES ('spaces', 'spaces_native-local', '1', 'spaces_native_v1', 'disabled', '2000-01-01 00:00:00+00');
 
 INSERT INTO handle_pricing_revisions VALUES ('platform_free_handles_v1', 1, 'cb24f410dbe3ea268df0ea438d56c48dc060f2319794ab2913717585b74809f8', 'free_v1', 0, 'active', '2000-01-01 00:00:00+00');
 
 INSERT INTO handle_qualification_policy_revisions VALUES ('none_v1', 1, NULL, 'none_v1', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', 'ff413d09b7df9c5aae70c0a303a5ce03c1b4134d6b64f7a393d2825226fd1dbd', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'active', NULL, '2000-01-01 00:00:00+00', NULL);
+INSERT INTO handle_qualification_policy_revisions VALUES ('qualification_policy_spaces_members_01', 1, NULL, 'spaces_membership_v1', 'f834457fe6eef0f6c4762d043d976c3662baa87281e3c13864e79c969cd06482', 'f834457fe6eef0f6c4762d043d976c3662baa87281e3c13864e79c969cd06482', 'requirement_spaces_membership_01', 1, 'community_membership_v1', NULL, 'membership_source_v1', '1', '19a2a7128e859a7e7c4e93020d4543636e49d9b0035cf8455c4806b72781cd75', 'active', NULL, '2000-01-01 00:00:00+00', NULL);
 
 INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_01', 1, '04cfc7880c630f8e46a0b8ccfdfc7390ed704d2be542fff3bbe17b233c2307ed', 'hns', '{abuse,admin,api,app,auth,billing,blog,cdn,dev,docs,gateway,help,hns,login,logout,mail,mod,moderator,new,official,pirate,root,security,settings,staff,staging,status,support,system,www}', '{}', 'active', '2000-01-01 00:00:00+00');
+INSERT INTO handle_reserved_label_revisions VALUES ('reserved_labels_spaces_01', 1, '3d5a10206a026110dd19d837b34f508023a9c0e19053dd1ef33eece26e1e3fb1', 'spaces', '{abuse,admin,api,app,auth,billing,blog,cdn,dev,docs,gateway,help,hns,login,logout,mail,mod,moderator,new,official,pirate,root,security,settings,staff,staging,status,support,system,www}', '{}', 'active', '2000-01-01 00:00:00+00');
+
+INSERT INTO handle_spaces_membership_source_revisions VALUES (1, 'spec-016-active-membership-v1', '19a2a7128e859a7e7c4e93020d4543636e49d9b0035cf8455c4806b72781cd75', '2000-01-01 00:00:00+00');
 
 INSERT INTO hns_control_observer_configurations VALUES ('hns-owner-production', 'hns-owner-config-v1', '536c663d21e8dad2894788fb7d9a447235484f437b71426b185d2895aaa46489', '\x7b2276657273696f6e223a227069726174652d686e732d636f6e74726f6c2d6f627365727665722d636f6e66696775726174696f6e2d7631222c2270726f76696465725f6964223a22686e732e6f776e65722e7631222c2270726f76696465725f636f6e66696775726174696f6e5f7265666572656e6365223a22686e732d6f776e65722d70726f64756374696f6e222c2270726f76696465725f636f6e66696775726174696f6e5f76657273696f6e223a22686e732d6f776e65722d636f6e6669672d7631222c22656e7669726f6e6d656e74223a2270726f64756374696f6e222c226f776e6572736869705f736f7572636573223a5b22686e735f706172656e745f636861696e5f747874225d2c22636861696e223a7b226472697665725f7265666572656e6365223a226873642d6a736f6e2d7270633a70726f64756374696f6e2d7072696d617279222c226e6574776f726b223a226d61696e222c2267656e657369735f626c6f636b5f68617368223a2235623665663264336331663363646361646664396130333062613138313165666464313737343066313465313636343839373630373431643037353939326530222c226d696e696d756d5f766572696669636174696f6e5f70726f67726573735f6d696c6c696f6e746873223a3939393030302c226d6178696d756d5f7469705f6167655f7365636f6e6473223a333630302c226d6178696d756d5f6675747572655f7469705f7365636f6e6473223a373230302c2265787065637465645f626c6f636b5f696e74657276616c5f7365636f6e6473223a3630302c226d696e696d756d5f736166655f72656d61696e696e675f626c6f636b73223a3134342c226578706972795f7361666574795f626c6f636b73223a3134342c22726573706f6e73655f6d61785f6279746573223a313034383537367d2c22617574686f72697461746976655f646e73223a6e756c6c2c2265766964656e63655f6c656173655f7365636f6e6473223a323539323030302c226f627365727665725f646561646c696e655f6d73223a31323030302c226f627365727665725f7265736572766174696f6e5f6c656173655f7365636f6e6473223a31352c22736e617073686f745f73746f72655f7265666572656e6365223a22706f7374677265733a686e732d636f6e74726f6c2d6f627365727665722d7631227d', '2000-01-01 00:00:00+00');
 
 INSERT INTO hns_lifecycle_schema_cutover VALUES ('0169', '{pirate-hns-authority-provisioner-v2}', '{hns-lifecycle-job-envelope-v1,hns-root-observation-envelope-v1}', '2000-01-01 00:00:00+00');
+
+INSERT INTO media_song_video_pcm_admission_policy VALUES (true, false);
 
 INSERT INTO moderation_platform_floor_revisions VALUES ('moderation-platform-floor-v1', 1, '["moderation-platform-floor-v1","moderation-platform-floor-v1",[["harassment","permit"],["harassment/threatening","review"],["hate","review"],["hate/threatening","review"],["illicit","permit"],["illicit/violent","review"],["self-harm","permit"],["self-harm/intent","review"],["self-harm/instructions","review"],["sexual","permit"],["sexual/minors","block"],["violence","permit"],["violence/graphic","permit"]]]', '9c75ee8001386da6856c1cc1248273b3ed7c27de78f30b9a11fa570dc9896d58', '2000-01-01 00:00:00+00');
 
@@ -460,9 +576,16 @@ INSERT INTO platform_pirate_label_policy_revisions VALUES (1, 'pirate_ascii_ldh_
 INSERT INTO qualification_policy_versions VALUES ('study_session_first_pass_v2@1', 'study', 'study_session_first_pass_v2', '{"required_correct_bps": 7000}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v1@1', 'karaoke', 'karaoke_qualification_v1', '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
 INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@1', 'karaoke', 'karaoke_qualification_v2', '{"minimum_coverage_bps": 8500, "eligible_playback_kinds": ["full_mix"], "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
+INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@2', 'karaoke', 'karaoke_qualification_v2', '{"minimum_coverage_bps": 8500, "eligible_playback_kinds": ["instrumental"], "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}', '2000-01-01 00:00:00+00');
 
 INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_control_events VALUES (0, true, 'environment_initially_paused', 'migration_owner', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_operations_run_lease VALUES (true, false, NULL, 0, NULL, NULL, NULL);
 
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-v1', 'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d', '{"base_url_origin":"https://api.openai.com","decision_mapper_revision":"openai-text-v1","model":"omni-moderation-latest","normalization_revision":"text-moderation-input-v1","provider_id":"openai","sexual_minors_block_threshold":0.95,"timeout_ms":10000,"version":"text-moderation-policy-v1"}', '{"model": "omni-moderation-latest", "version": "text-moderation-policy-v1", "timeout_ms": 10000, "provider_id": "openai", "base_url_origin": "https://api.openai.com", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-text-v1", "sexual_minors_block_threshold": 0.95}', 'openai', 'omni-moderation-latest', 'https://api.openai.com', 10000, 0.95, 'text-moderation-input-v1', 'openai-text-v1', '2000-01-01 00:00:00+00');
 INSERT INTO text_moderation_policy_revisions VALUES ('text-moderation-policy-openai-omni-2024-09-26-v1', '1af8908f175d351a6aa9398ea203d7724955de7c8a40967ccd394de4d5e2555a', '{"base_url":"https://api.openai.com/v1","decision_mapper_revision":"openai-boolean-categories-v1","model":"omni-moderation-2024-09-26","normalization_revision":"text-moderation-input-v1","provider_id":"openai","timeout_ms":10000,"version":"text-moderation-policy-openai-omni-2024-09-26-v1"}', '{"model": "omni-moderation-2024-09-26", "version": "text-moderation-policy-openai-omni-2024-09-26-v1", "base_url": "https://api.openai.com/v1", "timeout_ms": 10000, "provider_id": "openai", "normalization_revision": "text-moderation-input-v1", "decision_mapper_revision": "openai-boolean-categories-v1"}', 'openai', 'omni-moderation-2024-09-26', 'https://api.openai.com/v1', 10000, 0, 'text-moderation-input-v1', 'openai-boolean-categories-v1', '2000-01-01 00:00:00+00');

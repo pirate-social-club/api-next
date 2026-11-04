@@ -3,12 +3,17 @@ import { canonicalJson } from "@pirate/domain";
 import { Data, Effect, Option, Schema } from "effect";
 import {
   type NamespaceOwnershipProviderCompleteResult,
+  type NamespaceOwnershipProviderFailure,
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderMisconfigured,
+  NamespaceOwnershipProviderPublicationClosed,
   NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnavailable,
   NamespaceOwnershipProviderUnboundRejected,
+  NamespaceOwnershipProviderUnsupportedProtocol,
   type RouteAttachmentOwnershipSession,
 } from "./adapter.ts";
+import { HNS_TXT_IMPORT_PROTOCOL_VERSION } from "./hns-import-publication-poll.ts";
 import type { NamespaceOwnershipProviderRegistryService } from "./registry.ts";
 
 const Identifier = Schema.NonEmptyString.check(
@@ -38,10 +43,26 @@ export type CompleteRouteAttachmentOwnershipInput = Schema.Schema.Type<
   typeof CompleteRouteAttachmentOwnershipInput
 >;
 
+/**
+ * The database publication window of the community root import that owns a
+ * namespace session, when that import has exposed its plan. Null for every
+ * other session, which keeps the unchanged hns-txt-v1 rules.
+ */
+export type RouteAttachmentImportPublicationWindow = Readonly<{
+  readonly root_import_session_id: string;
+  readonly root_label: string;
+  readonly publish_plan_sha256: string;
+  readonly challenge_value_sha256: string;
+  readonly window_open: boolean;
+  readonly reason: string;
+  readonly valid_until: string | null;
+}>;
+
 export type RouteAttachmentCompletionStored = Readonly<{
   readonly namespace_session_id: string;
   readonly revision: number;
   readonly session: RouteAttachmentOwnershipSession;
+  readonly import_publication: RouteAttachmentImportPublicationWindow | null;
   readonly status: "pending" | "completed" | "failed" | "expired";
   readonly terminal: null | Readonly<{
     readonly status: "verified" | "rejected" | "expired";
@@ -55,6 +76,11 @@ export type RouteAttachmentCompletionReservation = Readonly<{
   readonly fence_token: number;
   readonly evidence_ref: string;
   readonly lease_expires_at: string;
+  /**
+   * Whether this attempt already counted toward the budget before this lease.
+   * A counted attempt is never refunded by a not-attempted release.
+   */
+  readonly counted_before: boolean;
 }>;
 
 export type RouteAttachmentCompletionReservationOutcome =
@@ -64,6 +90,7 @@ export type RouteAttachmentCompletionReservationOutcome =
     }>
   | Readonly<{ readonly kind: "replay"; readonly stored: RouteAttachmentCompletionStored }>
   | Readonly<{ readonly kind: "in_flight"; readonly retry_after_seconds: number }>
+  | Readonly<{ readonly kind: "window_closed"; readonly reason: string }>
   | Readonly<{ readonly kind: "budget_exhausted" | "conflict" | "not_found" }>;
 
 export type RouteAttachmentCompletionFinalizeOutcome =
@@ -97,6 +124,8 @@ export interface RouteAttachmentCompletionStore {
     readonly completion_request_sha256: string;
     readonly reservation: RouteAttachmentCompletionReservation;
     readonly retryable_observation?: boolean;
+    /** Nothing was observed; the attempt does not count toward the budget. */
+    readonly not_attempted?: boolean;
   }) => Effect.Effect<"released" | "lease_lost", RouteAttachmentCompletionStorageFailed>;
   readonly finalize: (input: {
     readonly request: CompleteRouteAttachmentOwnershipInput;
@@ -133,8 +162,11 @@ export class RouteAttachmentCompletionRejected extends Data.TaggedError(
     | "in_flight"
     | "attempt_budget_exhausted"
     | "provider_unavailable"
-    | "provider_misconfigured";
+    | "provider_misconfigured"
+    | "publication_window_closed";
   readonly retry_after_seconds?: number;
+  /** Why an exposed import's publication window refused the check. */
+  readonly window_reason?: string;
 }> {}
 
 export class RouteAttachmentCompletionStorageFailed extends Data.TaggedError(
@@ -145,6 +177,8 @@ const exact = { onExcessProperty: "error" } as const;
 const encoder = new TextEncoder();
 const MAX_ATTEMPTS = 3;
 const LEASE_MARGIN_MS = 1_000;
+/** How soon to ask again when the verifier cannot yet answer an import poll. */
+const IMPORT_PROTOCOL_UNAVAILABLE_RETRY_SECONDS = 60;
 
 async function sha256Bytes(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
@@ -204,11 +238,45 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
       return yield* new RouteAttachmentCompletionRejected({ reason: "conflict" });
     }
     const provider = yield* services.registry.resolve(stored.session.route.family);
+    const importWindow = stored.import_publication;
+    if (
+      importWindow !== null &&
+      (!importWindow.window_open ||
+        importWindow.valid_until === null ||
+        Date.parse(importWindow.valid_until) <= Date.now())
+    ) {
+      return yield* new RouteAttachmentCompletionRejected({
+        reason: "publication_window_closed",
+        window_reason: importWindow.window_open ? "deadline_passed" : importWindow.reason,
+      });
+    }
     if (
       provider.manifest.provider_id !== stored.session.provider_id ||
-      provider.completeRouteAttachment === undefined
+      (importWindow === null && provider.completeRouteAttachment === undefined)
     ) {
       return yield* new RouteAttachmentCompletionRejected({ reason: "provider_unavailable" });
+    }
+    // An exposed import is polled under hns-txt-import-v1 when the pinned
+    // provider entry advertises it. Without it, a challenge still inside its
+    // own hour keeps the unchanged hns-txt-v1 poll; past that hour no attempt
+    // is reserved, so the three-attempt budget is untouched while a verifier
+    // catches up.
+    const completeImport = provider.completeRouteAttachmentImport;
+    const useImport = importWindow !== null && completeImport !== undefined;
+    if (
+      importWindow !== null &&
+      !useImport &&
+      (provider.completeRouteAttachment === undefined ||
+        Date.parse(stored.session.expires_at) <= Date.now())
+    ) {
+      yield* Effect.logWarning("hns-txt-import-v1 is not advertised; import check deferred");
+      return response(
+        stored,
+        "unavailable",
+        false,
+        null,
+        IMPORT_PROTOCOL_UNAVAILABLE_RETRY_SECONDS,
+      );
     }
     const completionRequestSha256 = yield* Effect.promise(() =>
       sha256({
@@ -243,6 +311,12 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
         retry_after_seconds: reserved.retry_after_seconds,
       });
     }
+    if (reserved.kind === "window_closed") {
+      return yield* new RouteAttachmentCompletionRejected({
+        reason: "publication_window_closed",
+        window_reason: reserved.reason,
+      });
+    }
     if (reserved.kind === "budget_exhausted") {
       return yield* new RouteAttachmentCompletionRejected({ reason: "attempt_budget_exhausted" });
     }
@@ -256,46 +330,104 @@ export const completeRouteAttachmentOwnership = Effect.fn("completeRouteAttachme
       return yield* new RouteAttachmentCompletionRejected({ reason: "conflict" });
     }
     const reservation = reserved.reservation;
-    const providerResult = yield* provider
-      .completeRouteAttachment(
-        { session: stored.session, submission: { channel: "poll_result", payload: {} } },
-        {
-          namespace_session_id: stored.namespace_session_id,
-          observation_id: yield* Effect.promise(() =>
-            sha256({
-              attempt: reservation.completion_attempt_id,
-              fence: reservation.fence_token,
-            }),
-          ),
-        },
-      )
-      .pipe(
-        Effect.matchEffect({
-          onSuccess: (value) => Effect.succeed(value),
-          onFailure: (error) =>
-            services.store
-              .release({
-                request: input,
-                completion_request_sha256: completionRequestSha256,
-                reservation,
-              })
-              .pipe(
-                Effect.flatMap(() =>
-                  Effect.fail(
-                    new RouteAttachmentCompletionRejected({
-                      reason:
-                        error instanceof NamespaceOwnershipProviderRejected ||
-                        error instanceof NamespaceOwnershipProviderUnboundRejected ||
-                        error instanceof NamespaceOwnershipProviderInvalidResponse ||
-                        error instanceof NamespaceOwnershipProviderMisconfigured
-                          ? "provider_misconfigured"
-                          : "provider_unavailable",
-                    }),
+    const context = {
+      namespace_session_id: stored.namespace_session_id,
+      observation_id: yield* Effect.promise(() =>
+        sha256({
+          attempt: reservation.completion_attempt_id,
+          fence: reservation.fence_token,
+        }),
+      ),
+    };
+    const submission = { channel: "poll_result" as const, payload: {} };
+    const providerCall: Effect.Effect<
+      NamespaceOwnershipProviderCompleteResult,
+      NamespaceOwnershipProviderFailure | RouteAttachmentCompletionRejected
+    > =
+      useImport && importWindow !== null && completeImport !== undefined
+        ? completeImport(
+            {
+              session: stored.session,
+              binding: {
+                protocol_version: HNS_TXT_IMPORT_PROTOCOL_VERSION,
+                root_import_session_id: importWindow.root_import_session_id,
+                root_label: importWindow.root_label,
+                publish_plan_sha256: importWindow.publish_plan_sha256,
+                challenge_value_sha256: importWindow.challenge_value_sha256,
+                valid_until: importWindow.valid_until as string,
+              },
+              submission,
+            },
+            context,
+          )
+        : provider.completeRouteAttachment !== undefined
+          ? provider.completeRouteAttachment({ session: stored.session, submission }, context)
+          : Effect.fail(new RouteAttachmentCompletionRejected({ reason: "provider_unavailable" }));
+    const attempted = yield* providerCall.pipe(
+      Effect.matchEffect({
+        onSuccess: (value) => Effect.succeed({ kind: "observed" as const, value }),
+        onFailure: (error) =>
+          error instanceof NamespaceOwnershipProviderUnsupportedProtocol ||
+          error instanceof NamespaceOwnershipProviderPublicationClosed ||
+          (useImport && error instanceof NamespaceOwnershipProviderUnavailable)
+            ? // Nothing about the owner's proof was judged: the verifier could
+              // not answer the protocol, was unreachable, or found the window
+              // closed. Only an answer that judged the proof spends an attempt,
+              // so the reservation is released as not attempted.
+              services.store
+                .release({
+                  request: input,
+                  completion_request_sha256: completionRequestSha256,
+                  reservation,
+                  not_attempted: true,
+                })
+                .pipe(
+                  Effect.as(
+                    error instanceof NamespaceOwnershipProviderPublicationClosed
+                      ? { kind: "window_closed" as const }
+                      : { kind: "deferred" as const },
+                  ),
+                )
+            : services.store
+                .release({
+                  request: input,
+                  completion_request_sha256: completionRequestSha256,
+                  reservation,
+                })
+                .pipe(
+                  Effect.flatMap(() =>
+                    Effect.fail(
+                      new RouteAttachmentCompletionRejected({
+                        reason:
+                          error instanceof NamespaceOwnershipProviderRejected ||
+                          error instanceof NamespaceOwnershipProviderUnboundRejected ||
+                          error instanceof NamespaceOwnershipProviderInvalidResponse ||
+                          error instanceof NamespaceOwnershipProviderMisconfigured
+                            ? "provider_misconfigured"
+                            : "provider_unavailable",
+                      }),
+                    ),
                   ),
                 ),
-              ),
-        }),
+      }),
+    );
+    if (attempted.kind === "window_closed") {
+      return yield* new RouteAttachmentCompletionRejected({
+        reason: "publication_window_closed",
+        window_reason: "verifier_denied",
+      });
+    }
+    if (attempted.kind === "deferred") {
+      yield* Effect.logWarning("verifier did not answer hns-txt-import-v1; import check deferred");
+      return response(
+        stored,
+        "unavailable",
+        false,
+        null,
+        IMPORT_PROTOCOL_UNAVAILABLE_RETRY_SECONDS,
       );
+    }
+    const providerResult = attempted.value;
     if (providerResult.status === "pending" || providerResult.status === "unavailable") {
       yield* services.store.release({
         retryable_observation: true,

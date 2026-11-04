@@ -14,10 +14,12 @@ import type { MegapotV2RpcClient } from "../../../packages/platform-cf/src/megap
 import { makeDirectPostgresControlPlaneLayer } from "../../../packages/platform-cf/src/postgres.ts";
 import { makeRewardFundingCoordinator } from "../../../packages/platform-cf/src/reward-funding-coordinator.ts";
 import { makeControlPlaneRewardFundingStore } from "../../../packages/platform-cf/src/reward-funding-repository.ts";
+import { makeRewardOperationsRunningReader } from "../../../packages/platform-cf/src/reward-operations-control.ts";
 import { makeControlPlaneRewardProjectionStore } from "../../../packages/platform-cf/src/reward-projection-repository.ts";
 import { seedMegapotAuthority } from "../../../packages/platform-cf/src/rewards-composed-pool.pg-fixture.ts";
 import { makeControlPlaneSongRewardOfferStore } from "../../../packages/platform-cf/src/song-reward-offer-repository.ts";
 import { rehearsalInput } from "../../../scripts/megapot-golden-multi.fixture.ts";
+import { makeRewardOperationsGuard } from "./reward-operations-guard.ts";
 import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
 import { createHttpWorker } from "./transport.ts";
 
@@ -109,6 +111,9 @@ export async function goldenRetryFixture(admin: Client, connection: string) {
     readHead: async () => ({ blockNumber: 202n, blockHash: hash("c") }),
   } as unknown as MegapotV2RpcClient;
   const handlers = makeSongRewardOfferHandlers({
+    requireRewardOperationsRunning: makeRewardOperationsGuard({
+      readRunning: () => Effect.runPromise(makeRewardOperationsRunningReader(layer)()),
+    }),
     rewardCatalogAuthority: { environment: "staging", attestationId: "megapot-base-sepolia-v2" },
     clock: { now: Effect.sync(Date.now) },
     ids: { next: Effect.sync(randomUUID) },

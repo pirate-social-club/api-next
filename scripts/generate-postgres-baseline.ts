@@ -18,19 +18,26 @@ const localPassword = "postgres";
 const migrationsDirectory = new URL("../db/postgres/migrations/", import.meta.url);
 const baselineSeedTables = [
   "activity_registry",
+  "guest_learning_schema_phase",
+  "guest_resource_global_lock",
   "handle_account_directory_bindings",
   "handle_issuance_driver_revisions",
   "handle_pricing_revisions",
   "handle_qualification_policy_revisions",
   "handle_reserved_label_revisions",
+  "handle_spaces_membership_source_revisions",
   "hns_control_observer_configurations",
   "hns_lifecycle_schema_cutover",
+  "media_song_video_pcm_admission_policy",
   "moderation_platform_floor_category_decisions",
   "moderation_platform_floor_current",
   "moderation_platform_floor_revisions",
   "platform_pirate_label_policy_revisions",
   "qualification_policy_versions",
   "recovery_inspection_cursors",
+  "reward_operations_control",
+  "reward_operations_control_events",
+  "reward_operations_run_lease",
   "text_moderation_policy_current",
   "text_moderation_policy_revisions",
 ] as const;
@@ -186,7 +193,7 @@ async function startLocalPostgres(): Promise<{
     }
     throw new Error("Postgres container did not become ready within 30 seconds");
   } catch (error) {
-    await runCommand(["docker", "rm", "--force", container]);
+    await runCommand(["docker", "rm", "--force", "--volumes", container]);
     await removeSocketDirectory(socketDirectory);
     throw error;
   }
@@ -401,7 +408,7 @@ export async function generatePostgresBaseline(
     );
   } finally {
     if (container !== undefined) {
-      await runCommand(["docker", "rm", "--force", container]);
+      await runCommand(["docker", "rm", "--force", "--volumes", container]);
     }
     if (socketDirectory !== undefined) {
       await removeSocketDirectory(socketDirectory);

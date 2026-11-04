@@ -192,6 +192,44 @@ describe("original-audio video policy", () => {
     ).toBe("safety_binding");
   });
 
+  test("allow needs minor-safety evidence or the v1 sampled-frame gate's own evidence, never both", () => {
+    const state = sealedState();
+    const allowWith = (safetyRequest: Partial<ReturnType<typeof analysis>["safetyRequest"]>) =>
+      validateVideoTrustedAnalysis(
+        state,
+        {
+          ...analysis(),
+          mediaSafety: "allow",
+          safetyRequest: { ...analysis().safetyRequest, ...safetyRequest },
+        },
+        null,
+      );
+    // Minor-safety evidence alone still allows.
+    expect(allowWith({ minorSafetyEvidenceRef: "minor-safety:fixture" })).toBeNull();
+    // The v1 gate allows with its own evidence and null minor-safety evidence.
+    expect(
+      allowWith({
+        minorSafetyEvidenceRef: null,
+        gateKind: "sampled_frame_openai_v1",
+        sampledFrameEvidenceRef: "sampled_frame_openai_v1_x",
+      }),
+    ).toBeNull();
+    // Neither kind of evidence cannot allow.
+    expect(allowWith({ minorSafetyEvidenceRef: null })).toBe("safety_binding");
+    // The gate without its evidence cannot allow.
+    expect(allowWith({ minorSafetyEvidenceRef: null, gateKind: "sampled_frame_openai_v1" })).toBe(
+      "safety_binding",
+    );
+    // The gate never stands beside a minor-safety claim.
+    expect(
+      allowWith({
+        minorSafetyEvidenceRef: "minor-safety:fixture",
+        gateKind: "sampled_frame_openai_v1",
+        sampledFrameEvidenceRef: "sampled_frame_openai_v1_x",
+      }),
+    ).toBe("safety_binding");
+  });
+
   test("publishes no-match, genuine inconclusive, and proved self-owned recordings", () => {
     const state = sealedState();
     const allowed: OriginalAudioVerification[] = [

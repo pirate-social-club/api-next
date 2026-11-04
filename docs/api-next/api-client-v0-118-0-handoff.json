@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.118.0",
+  "sourceBranch": "feat/guest-study-authority",
+  "sourceBase": "4a791f27fb7c983689fe75150953be67ed25f709",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Admits eleven browser-authority and five prepared Study learning declarations with exact original wire schemas. Guest practice has no account/persona/membership/Palm prerequisite; server scoring and successful provider checkpoints retain original source, owner, resource and operation through recovery. Five attachment-result/target and owner-credit accounting operations remain disabled; practice_only cannot create an entry or chance.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.118.0.tgz",
+    "sha256": "f84355cb956dcf9e7544740ab78bef057c2b9ac4b84596db3b4f224500b55abd"
+  },
+  "provenance": {
+    "schemaVersion": 1,
+    "package": "@pirate/api-client",
+    "version": "0.118.0",
+    "sourceIdentifier": "api-next-contracts@08d420b6754170d2a16810276fc4b1bddfb79081188734a5cb8290a34d3faba0",
+    "openapiSha256": "08d420b6754170d2a16810276fc4b1bddfb79081188734a5cb8290a34d3faba0",
+    "clientSha256": "68b92996381ce0cf6f16f72f544d229067d606de0f5e315fde81e57de76f460c"
+  },
+  "validation": {
+    "status": "Generated from source-admitted registry; exact candidate local/hosted checks and canonical learning acceptance remain pending.",
+    "operationalBoundary": "No live schema application, role provisioning, feature activation, provider or funded operation, staging deployment or production activation. Managed nonproduction runtime, four distinct restricted roles and concrete native readiness are mandatory; metadata alone supplies no authority."
+  },
+  "compatibility": {
+    "integrationBaseline": "4a791f27fb7c983689fe75150953be67ed25f709",
+    "predecessorVersion": "0.117.0",
+    "preservedVersions": [
+      "0.115.0",
+      "0.116.0",
+      "0.117.0"
+    ],
+    "disposition": "Source learning admission with unchanged operation wire shapes and empty breaking-change waiver list. All historical immutable archives and handoffs retained byte-for-byte."
+  },
+  "consumerRequirements": {
+    "minimumClientVersion": "0.118.0",
+    "guestImplementation": "Use only after canonical learning/client handoff. Accounting follows accepted learning serially; guest UI can parallel accounting under the frozen contract after combined Solid handoff. Reward-capable mode remains unavailable until accounting acceptance.",
+    "beforeActivation": "Original-drawing participation and positive held allocations must survive signup, proof loss and deadlines without late share, substitution, expiry, rollover or forfeiture. Complete account/Karaoke compatibility, shared scheduler custody, separately accepted anonymous scored Karaoke adapters and composed staging/provider/device/host/Very readiness. Production paused.",
+    "preparedReadiness": "Two exercise types, six bands, bounded target-language tags; resource policy and current disclosure gate new paid work while exact successful captured work can recover without current policy/key."
+  }
+}

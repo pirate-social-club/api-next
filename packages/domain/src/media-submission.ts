@@ -4,6 +4,10 @@ import {
   MODERATION_RATING_RULE_V2,
   type ModerationPolicyCategoryV1,
 } from "./content/community-moderation-policy.ts";
+import {
+  canonicalTextModerationInput,
+  normalizeTextModerationInput,
+} from "./content/text-moderation.ts";
 
 export type SongType = "original" | "remix";
 export type MediaSubmissionPhase =
@@ -492,7 +496,7 @@ export type MediaSubmissionRejection =
         | "revision_superseded"
         | "terminal_status";
     }>
-  | Readonly<{ _tag: "stale_revision"; expected: number; actual: number }>
+  | Readonly<{ _tag: "stale_revision"; expected: number | string; actual: number | string }>
   | Readonly<{
       _tag: "transition_not_allowed";
       state: MediaSubmissionStatus | "none";
@@ -1022,6 +1026,31 @@ export function transitionMediaSubmission(
           expectedRevision: current.analysisRevision + 1,
           actualRevision: command.analysis.analysisRevision,
         });
+      const moderation = command.analysis.contentModeration;
+      if (moderation === undefined)
+        return reject({ _tag: "decision_evidence_invalid", reasonCode: "required_stage_missing" });
+      if (!validId(moderation.inputSha256))
+        return reject({ _tag: "decision_evidence_invalid", reasonCode: "input_hash_mismatch" });
+      const normalized = normalizeTextModerationInput({
+        surface: "text_post",
+        title: current.title,
+        body: current.lyrics?.text ?? null,
+      });
+      const canonical =
+        normalized.kind === "accepted" ? canonicalTextModerationInput(normalized.input) : null;
+      const expectedHash = canonical?.kind === "accepted" ? canonical.sha256 : "invalid";
+      if (moderation.inputSha256 !== expectedHash)
+        return reject({
+          _tag: "stale_revision",
+          expected: expectedHash,
+          actual: moderation.inputSha256,
+        });
+      const classifiedRevision =
+        command.analysis.lyricsAnalysis.status === "not_applicable"
+          ? 0
+          : command.analysis.lyricsAnalysis.lyricsRevision;
+      if (validRevision(classifiedRevision) && classifiedRevision !== current.lyricsRevision)
+        return stale(classifiedRevision, current.lyricsRevision);
       if (
         current.audio === null ||
         command.expectedCanonicalAudioSha256 !== current.audio.canonicalSha256 ||

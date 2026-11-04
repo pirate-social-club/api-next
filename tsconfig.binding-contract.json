@@ -15,6 +15,7 @@
     "scripts/secret-drift-audit.ts",
     "scripts/secret-drift-audit.test.ts",
     "scripts/infisical-secret-drift-audit.ts",
-    "scripts/infisical-secret-drift-audit.test.ts"
+    "scripts/infisical-secret-drift-audit.test.ts",
+    "scripts/infisical-production-palm-policy.test.ts"
   ]
 }

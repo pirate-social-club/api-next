@@ -15,6 +15,7 @@ import { Client } from "pg";
 import { makeHnsCommunityPublicationQueue } from "../../../packages/platform-cf/src/hns-community-publication-queue.ts";
 import { makeControlPlaneHnsCommunityRootImportStartStore } from "../../../packages/platform-cf/src/hns-community-root-import-repository.ts";
 import { makeHnsOwnerServiceBindingTransport } from "../../../packages/platform-cf/src/namespace-ownership/hns-owner-service-binding.ts";
+import { makeControlPlaneHnsImportPublicationAuthorizer } from "../../../packages/platform-cf/src/namespace-ownership/hns-root-import-publication-authorization-postgres.ts";
 import { makePlatformNamespaceOwnershipProviderRegistry } from "../../../packages/platform-cf/src/namespace-ownership/provider-registry.ts";
 import { makeDirectPostgresControlPlaneLayer } from "../../../packages/platform-cf/src/postgres.ts";
 import { makeControlPlaneRouteAttachmentCompletionStore } from "../../../packages/platform-cf/src/route-attachment-completion-repository.ts";
@@ -119,8 +120,12 @@ pgTest.each(["complete", "revoked", "publication_window", "limited"] as const)(
               HNS_PROVIDER_ENVIRONMENT: "staging",
               HNS_PROVIDER_CONFIGURATION_REFERENCE: configuration.reference,
               HNS_PROVIDER_CONFIGURATION_VERSION: configuration.version,
+              HNS_PROVIDER_CAPABILITIES: "hns-txt-import-v1",
             },
-            { targetObserver: attachmentObserverFixture(chain) },
+            {
+              targetObserver: attachmentObserverFixture(chain),
+              importAuthorizer: makeControlPlaneHnsImportPublicationAuthorizer(layer),
+            },
           );
         },
       });
@@ -132,6 +137,7 @@ pgTest.each(["complete", "revoked", "publication_window", "limited"] as const)(
             provider_configuration: configuration,
             environments: ["staging"],
             target_observation_contract: "v2",
+            import_protocol_enabled: true,
           },
         }),
       );
@@ -483,10 +489,17 @@ pgTest.each(["complete", "revoked", "publication_window", "limited"] as const)(
       expect(
         (await admin.query("SELECT state FROM hns_community_publication_jobs")).rows[0].state,
       ).toBe("completed");
+      // The legacy observe_root_v1 request is recorded only in the cutover
+      // disposition; the lifecycle runner observes, from the one current
+      // observation the acknowledgement made due.
+      expect(
+        (await admin.query("SELECT state, failure_code FROM hns_root_import_observation_jobs"))
+          .rows,
+      ).toEqual([{ state: "failed", failure_code: "readiness_single_owner_cutover" }]);
       expect(
         (
           await admin.query(
-            "SELECT count(*)::integer AS count FROM hns_root_import_observation_jobs",
+            "SELECT count(*)::integer AS count FROM hns_root_import_lifecycle_jobs WHERE job_kind='observe_current' AND state='queued'",
           )
         ).rows[0].count,
       ).toBe(1);
@@ -529,6 +542,15 @@ pgTest.each(["complete", "revoked", "publication_window", "limited"] as const)(
                 ),
                 readiness_observed_at=NULL
           WHERE lifecycle.root_import_session_id=$1`,
+        [starting.root_import_session_id],
+      );
+      // This suite forces the phase past current and safe observation (the
+      // scheduling gate performs them), so the observation it stands in for
+      // is closed out with it.
+      await admin.query(
+        `UPDATE hns_root_import_lifecycle_jobs
+            SET state='completed', completed_at=clock_timestamp(), updated_at=clock_timestamp()
+          WHERE root_import_session_id=$1 AND job_kind='observe_current' AND state='queued'`,
         [starting.root_import_session_id],
       );
       await admin.query(

@@ -164,6 +164,10 @@ export {
 } from "./hns-owner-recovery-start-repository.ts";
 export { makeControlPlaneHnsRootHealthRenewalStatusStore } from "./hns-root-health-renewal-status.ts";
 export {
+  HNS_TXT_ATTACHMENT_PREPARATION_TTL_SECONDS,
+  makeControlPlaneHnsTxtAttachmentStore,
+} from "./hns-txt-attachment-repository.ts";
+export {
   type CanonicalIdentity,
   type IdentityRepository,
   IdentityRepositoryError,
@@ -297,14 +301,20 @@ export {
   queueRetryBackoffSeconds,
   queueRetryDelaySeconds,
 } from "./queue-retry";
+export * from "./reward-effect-attestation-repository.ts";
 export * from "./reward-funding-coordinator.ts";
 export * from "./reward-funding-repository.ts";
+export * from "./reward-gas-topup-coordinator.ts";
+export * from "./reward-gas-topup-repository.ts";
+export type * from "./reward-obligation-authority.ts";
 export * from "./reward-offer-terminal-repository.ts";
 export * from "./reward-payout-coordinator.ts";
 export * from "./reward-payout-repository.ts";
 export * from "./reward-projection-repository.ts";
 export * from "./reward-refund-coordinator.ts";
 export * from "./reward-refund-repository.ts";
+export * from "./reward-winner-send-chain.ts";
+export * from "./reward-winner-send-repository.ts";
 export { makeControlPlaneRouteAttachmentCompletionStore } from "./route-attachment-completion-repository.ts";
 export {
   makeControlPlaneRouteAttachmentOwnershipStartAuthorityResolver,
@@ -354,6 +364,15 @@ export {
 } from "./session-tokens";
 export * from "./song-owner-video-policy-repository.ts";
 export * from "./song-reward-offer-repository.ts";
+export {
+  makeSpacesFinalIssuanceVerifier,
+  type SpacesVerifierCredentials,
+  type SpacesVerifierFetch,
+} from "./spaces-final-issuance-verifier.ts";
+export {
+  makeControlPlaneSpacesSaleNamespaceRepository,
+  makeControlPlaneSpacesSaleNamespaceStore,
+} from "./spaces-sale-namespace-repository.ts";
 export * from "./study-spoken-answer-recovery.ts";
 export * from "./study-translation-repository.ts";
 export {

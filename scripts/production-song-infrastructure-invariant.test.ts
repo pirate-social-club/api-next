@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-const PRODUCTION_HYPERDRIVE_ID = "884b68c5a7904982a86620ed90032b77";
+const PRODUCTION_HYPERDRIVE_ID = "0c215865d7994c92b940d905f54ece37";
 const ACCOUNT_ID = "08a4c22cf52e2ecae883e36f80a33f4a";
 
 type JsonRecord = Record<string, unknown>;
@@ -37,22 +37,41 @@ const configs = {
   http: productionOf(await readJsonc("apps/http-worker/wrangler.jsonc")),
   jobs: productionOf(await readJsonc("apps/jobs-worker/wrangler.jsonc")),
   media: productionOf(await readJsonc("apps/media-processor-worker/wrangler.jsonc")),
+  gateway: productionOf(await readJsonc("apps/video-source-gateway/wrangler.jsonc")),
 };
 
-describe("disabled production song infrastructure", () => {
-  test("keeps production song runtime gates disabled with the independent HNS cron", () => {
+describe("narrow production v1 song infrastructure", () => {
+  test("enables the v1 media and practice gates while excluding financial and guest serving", () => {
     expect(configs.http.vars).toMatchObject({
-      MEDIA_UPLOADS_ENABLED: "false",
+      MEDIA_UPLOADS_ENABLED: "true",
+      SONG_PLAYBACK_ENABLED: "true",
+      VIDEO_DELIVERY_ENABLED: "true",
+      VIDEO_SONG_REFERENCE_ENABLED: "true",
+      VIDEO_PCM_REFERENCE_GATE_ENABLED: "true",
+      KARAOKE_FINALIZATION_RECOVERY_ENABLED: "true",
+      STUDY_GENERATION_ENABLED: "true",
+      STUDY_PROFILE_COVERAGE_ENABLED: "true",
+      STUDY_SPOKEN_RERECORD_ENABLED: "false",
+      GUEST_STUDY_SERVING_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
     });
     expect(configs.jobs.vars).toMatchObject({
       COMMUNITY_MAINTENANCE_ENABLED: "false",
-      MEDIA_PROCESSING_ENABLED: "false",
+      MEDIA_PROCESSING_ENABLED: "true",
+      VIDEO_ANALYSIS_ENABLED: "true",
+      VIDEO_DELIVERY_ENABLED: "true",
+      SONG_VIDEO_PCM_ADMISSION_ENABLED: "true",
+      KARAOKE_FINALIZATION_RECOVERY_ENABLED: "true",
       DATA_REGISTRATION_ENABLED: "false",
       MEGAPOT_REWARDS_ENABLED: "false",
     });
     expect(configs.media.vars).toMatchObject({
-      MEDIA_PROCESSING_ENABLED: "false",
+      OPENAI_MODERATION_ENABLED: "true",
+      MEDIA_PROCESSING_ENABLED: "true",
+      VIDEO_ANALYSIS_ENABLED: "true",
+      VIDEO_DELIVERY_ENABLED: "true",
+      VIDEO_CLOUDCONVERT_RENDER_ENABLED: "true",
+      SONG_VIDEO_PCM_ADMISSION_ENABLED: "true",
       DATA_REGISTRATION_ENABLED: "false",
       DATA_REGISTRATION_CHAIN_ID: "1315",
     });
@@ -63,18 +82,18 @@ describe("disabled production song infrastructure", () => {
     });
     expect(configs.jobs.vars.HNS_ROOT_HEALTH_RENEWAL_ENABLED).toBe("true");
     expect(configs.jobs.vars.HNS_OWNERSHIP_ENABLED).toBe("false");
-    expect(configs.jobs.triggers).toEqual({ crons: ["*/30 * * * *"] });
+    expect(configs.jobs.triggers).toEqual({ crons: ["* * * * *"] });
   });
 
   test("keeps queue and schedule Workers off public workers.dev routes", () => {
-    for (const worker of [configs.jobs, configs.media, configs.data]) {
+    for (const worker of [configs.jobs, configs.media, configs.data, configs.gateway]) {
       expect(worker.workers_dev).toBe(false);
       expect(worker.preview_urls).toBe(false);
     }
   });
 
   test("reuses the reviewed production Hyperdrive everywhere", () => {
-    for (const worker of [configs.http, configs.jobs, configs.media, configs.data]) {
+    for (const worker of Object.values(configs)) {
       expect(worker.hyperdrive).toEqual([
         {
           binding: "CONTROL_PLANE",
@@ -112,6 +131,17 @@ describe("disabled production song infrastructure", () => {
       "pirate-media-immutable-production",
       "pirate-media-derived-production",
     ]);
+    expect(configs.jobs.r2_buckets).toEqual([
+      { binding: "MEDIA_INGRESS", bucket_name: "pirate-media-ingress-production" },
+      { binding: "LEARNER_AUDIO", bucket_name: "pirate-learner-audio-production" },
+    ]);
+    expect(configs.gateway.r2_buckets).toEqual([
+      { binding: "MEDIA_IMMUTABLE_ORIGINALS", bucket_name: "pirate-media-immutable-production" },
+    ]);
+    expect(configs.http.vars).toMatchObject({
+      SONG_PLAYBACK_R2_ACCOUNT_ID: ACCOUNT_ID,
+      SONG_PLAYBACK_R2_BUCKET: "pirate-media-immutable-production",
+    });
     expect(resourceNames(configs.data.r2_buckets, "bucket_name")).toEqual([
       "pirate-media-immutable-production",
     ]);
@@ -169,22 +199,61 @@ describe("disabled production song infrastructure", () => {
     expect(configs.jobs.vars.MEGAPOT_REWARDS_ENABLED).toBe("false");
     expect((configs.jobs.secrets as JsonRecord).required).toEqual([
       "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+      "VIDEO_WORKFLOW_READ_TOKEN",
     ]);
   });
 
-  test("does not require provider credentials while media processing is disabled", () => {
-    expect(configs.media.vars.MEDIA_PROCESSING_ENABLED).toBe("false");
-    expect((configs.media.secrets as JsonRecord).required).toEqual([]);
+  test("pins v1 providers and credential declarations on their owning Workers", () => {
+    expect(configs.media.vars.MEDIA_PROCESSING_ENABLED).toBe("true");
+    expect((configs.media.secrets as JsonRecord).required).toEqual([
+      "CLOUDCONVERT_RENDER_API_KEY",
+      "VIDEO_WORKFLOW_READ_TOKEN",
+      "VIDEO_STREAM_API_TOKEN",
+      "ACRCLOUD_ACCESS_KEY",
+      "ACRCLOUD_ACCESS_SECRET",
+      "ELEVENLABS_API_KEY",
+      "OPENAI_API_KEY",
+      "OPENROUTER_API_KEY",
+      "QENCODE_API_KEY",
+    ]);
+    expect((configs.http.secrets as JsonRecord).required).toEqual(
+      expect.arrayContaining([
+        "ELEVENLABS_API_KEY",
+        "OPENROUTER_API_KEY",
+        "SONG_PLAYBACK_R2_ACCESS_KEY_ID",
+        "SONG_PLAYBACK_R2_SECRET_ACCESS_KEY",
+        "SONG_PLAYBACK_SOURCE_HMAC_BASE64",
+        "VIDEO_STREAM_SIGNING_JWK_BASE64",
+        "VIDEO_PLAYBACK_SOURCE_HMAC_BASE64",
+      ]),
+    );
+    expect((configs.http.secrets as JsonRecord).required).not.toContain(
+      "CLOUDCONVERT_RENDER_API_KEY",
+    );
+    for (const worker of [configs.jobs, configs.media]) {
+      expect(worker.vars).toMatchObject({
+        VIDEO_WORKFLOW_ACCOUNT_ID: ACCOUNT_ID,
+        VIDEO_WORKFLOW_NAME: "pirate-video-analysis-production",
+        VIDEO_WORKFLOW_SCRIPT_NAME: "pirate-media-processor-worker-production",
+      });
+    }
+    // These public values are bound to the reviewed canonical-account provider evidence.
+    expect(configs.http.vars.VIDEO_STREAM_CUSTOMER_HOST).toBe(
+      "customer-ma1pwa54r5492drw.cloudflarestream.com",
+    );
+    expect(configs.http.vars.VIDEO_STREAM_SIGNING_KEY_ID).toBe("f9429a3e99739200172de35e525f6d75");
+    expect(configs.media.vars.VIDEO_SOURCE_GATEWAY_ORIGIN).toBe("https://video-source.pirate.sc");
+    expect(configs.media.vars.ACRCLOUD_IDENTIFY_HOST).toBe("identify-eu-west-1.acrcloud.com");
   });
 
-  test("keeps browser CORS aligned with the reviewed production origins", async () => {
+  test("prepares wildcard upload-ingress CORS with only PUT and Content-Type", async () => {
     const policy = JSON.parse(
       await Bun.file("infra/cloudflare/song-production/media-ingress-production-cors.json").text(),
     ) as { rules: readonly JsonRecord[] };
     expect(policy.rules).toEqual([
       {
         allowed: {
-          origins: ["https://app.pirate", "https://pirate.app", "https://pirate.sc"],
+          origins: ["*"],
           methods: ["PUT"],
           headers: ["Content-Type"],
         },
@@ -192,5 +261,19 @@ describe("disabled production song infrastructure", () => {
         maxAgeSeconds: 3600,
       },
     ]);
+  });
+
+  test("admits signed GET redemption from ordinary and HNS origins without credentials or writes", async () => {
+    const policy = JSON.parse(
+      await Bun.file(
+        "infra/cloudflare/song-production/media-immutable-production-cors.json",
+      ).text(),
+    ) as JsonRecord;
+    // Exact equality also excludes additional rules, credentials, write methods,
+    // allowed request headers, or another policy option widening this boundary.
+    // Object privacy and signed-URL validity remain separate authorization gates.
+    expect(policy).toEqual({
+      rules: [{ allowed: { origins: ["*"], methods: ["GET"] } }],
+    });
   });
 });
