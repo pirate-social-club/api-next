@@ -95,6 +95,36 @@ export async function assertTelegramLedger(db: pg.Client, count: 333 | 334) {
   requireTelegram(isDeepStrictEqual(actual, expected), "full-contiguous-migration-prefix-differs");
   return { count, sha256: sha256(expected.map((r) => `${r.version}:${r.checksum}`).join("\n")) };
 }
+export function telegramDatabaseClientConfig(url: string, readOnly: boolean): pg.ClientConfig {
+  const connection = new URL(url);
+  // pg parses URL options over explicit Client options. Put the selected GUCs
+  // in that authoritative location, including startup read-only for RO work.
+  connection.searchParams.set(
+    "options",
+    `-c search_path=api_next,pg_catalog -c transaction_timeout=170000${readOnly ? " -c default_transaction_read_only=on" : ""}`,
+  );
+  return {
+    connectionString: connection.toString(),
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: 10_000,
+    query_timeout: 15_000,
+  };
+}
+export function assertTelegramDatabasePrincipal(
+  row: Readonly<Record<string, unknown>> | undefined,
+  role: string,
+) {
+  requireTelegram(
+    (role === policy.database.owner || role === policy.database.runtime) &&
+      row?.current_role === role &&
+      row.session_role === role &&
+      row.database === policy.database.name &&
+      row.schema === policy.database.schema &&
+      row.rolsuper === false &&
+      row.rolbypassrls === (role === policy.database.owner),
+    "actual-database-principal-refused",
+  );
+}
 /** Caller supplies only the maintained injected URL, or an explicitly disposable local fixture. */
 export async function telegramDatabase<T>(
   url: string,
@@ -102,13 +132,7 @@ export async function telegramDatabase<T>(
   readOnly: boolean,
   action: (db: pg.Client) => Promise<T>,
 ) {
-  const db = new pg.Client({
-    connectionString: url,
-    connectionTimeoutMillis: 5_000,
-    statement_timeout: 10_000,
-    query_timeout: 15_000,
-    options: `-c search_path=api_next,pg_catalog -c transaction_timeout=170000${readOnly ? " -c default_transaction_read_only=on" : ""}`,
-  });
+  const db = new pg.Client(telegramDatabaseClientConfig(url, readOnly));
   try {
     await db.connect();
     await db.query(readOnly ? "BEGIN READ ONLY" : "BEGIN");
@@ -118,15 +142,7 @@ export async function telegramDatabase<T>(
       current_database() AS database,current_schema() AS schema,rolsuper,rolbypassrls
       FROM pg_roles WHERE rolname=current_user`)
     ).rows[0];
-    requireTelegram(
-      row?.current_role === role &&
-        row.session_role === role &&
-        row.database === policy.database.name &&
-        row.schema === policy.database.schema &&
-        row.rolsuper === false &&
-        row.rolbypassrls === false,
-      "actual-database-principal-refused",
-    );
+    assertTelegramDatabasePrincipal(row, role);
     return await action(db);
   } finally {
     await db.query("ROLLBACK").catch(() => undefined);

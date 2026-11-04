@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import pg from "pg";
 import { decodeTelegramConfiguration } from "../packages/platform-cf/src/telegram-configuration.ts";
 import { directoryIdentity } from "./production-release/production-operation-evidence.ts";
 import { HTTP_RELEASE, sha256 } from "./public-post-http-release-core.ts";
@@ -23,7 +24,12 @@ import {
   createTelegramWrappingKey,
   telegramSecretMetadata,
 } from "./telegram-production-release-credentials.ts";
-import { assertTelegramMatrix, TELEGRAM_GRANTS } from "./telegram-production-release-database.ts";
+import {
+  assertTelegramDatabasePrincipal,
+  assertTelegramMatrix,
+  TELEGRAM_GRANTS,
+  telegramDatabaseClientConfig,
+} from "./telegram-production-release-database.ts";
 import {
   TELEGRAM_RELEASE as policy,
   TELEGRAM_PHASES,
@@ -47,6 +53,77 @@ afterEach(() => {
 });
 const hash = "a".repeat(64),
   now = Date.parse("2026-11-03T07:00:00Z");
+
+test("pg resolves the helper-selected startup options over conflicting URL options", () => {
+  const url = new URL("postgres://fixture:fixture@127.0.0.1:1/postgres?sslmode=disable");
+  url.searchParams.set(
+    "options",
+    "-c search_path=public -c transaction_timeout=1 -c default_transaction_read_only=off",
+  );
+  for (const readOnly of [true, false]) {
+    const config = telegramDatabaseClientConfig(url.toString(), readOnly);
+    const client = new pg.Client(config);
+    // The installed driver's resolved parameters expose the URL precedence bug.
+    // Constructing a Client performs no network operation.
+    const resolved = Reflect.get(client, "connectionParameters") as { options: unknown };
+    expect(resolved.options).toBe(
+      `-c search_path=api_next,pg_catalog -c transaction_timeout=170000${readOnly ? " -c default_transaction_read_only=on" : ""}`,
+    );
+    expect(new URL(config.connectionString ?? "").username).toBe("fixture");
+    expect(new URL(config.connectionString ?? "").searchParams.get("sslmode")).toBe("disable");
+  }
+});
+
+test("only the fixed nonsuper owner admits observed RLS bypass; runtime remains restricted", () => {
+  for (const role of [policy.database.owner, policy.database.runtime]) {
+    const row = {
+      current_role: role,
+      session_role: role,
+      database: policy.database.name,
+      schema: policy.database.schema,
+      rolsuper: false,
+      rolbypassrls: role === policy.database.owner,
+    };
+    expect(() => assertTelegramDatabasePrincipal(row, role)).not.toThrow();
+    for (const change of [
+      { current_role: "wrong" },
+      { session_role: "wrong" },
+      { database: "wrong" },
+      { schema: "wrong" },
+      { schema: null },
+      { rolsuper: true },
+      { rolsuper: null },
+      { rolbypassrls: role !== policy.database.owner },
+      { rolbypassrls: "true" },
+      { rolbypassrls: null },
+    ])
+      expect(() => assertTelegramDatabasePrincipal({ ...row, ...change }, role)).toThrow(
+        "actual-database-principal-refused",
+      );
+    expect(() => assertTelegramDatabasePrincipal(undefined, role)).toThrow();
+    expect(() =>
+      assertTelegramDatabasePrincipal(
+        row,
+        role === policy.database.owner ? policy.database.runtime : policy.database.owner,
+      ),
+    ).toThrow();
+  }
+  for (const bypass of [false, true])
+    expect(() =>
+      assertTelegramDatabasePrincipal(
+        {
+          current_role: "unknown",
+          session_role: "unknown",
+          database: policy.database.name,
+          schema: policy.database.schema,
+          rolsuper: false,
+          rolbypassrls: bypass,
+        },
+        "unknown",
+      ),
+    ).toThrow("actual-database-principal-refused");
+});
+
 function admissionFixture() {
   const directory = fixture();
   const file = (name: string, value: unknown) => {
