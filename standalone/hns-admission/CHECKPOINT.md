@@ -2,6 +2,12 @@
 
 The bounded slice is implemented through ReadyToSubmit, reported as waiting/submission_not_enabled. It includes read-only HSD transport, current/safe observations, ownership epochs, record planning, controller/installation HTTP authorization, controller consent, resumable operations, Alchemy Domain persistence/polling and the Worker/Alchemy entrypoint. It produces no admission, receipt or installed namespace proof. A later executor must re-observe before submitting.
 
+## Current cloud review successor
+
+The cloud review at 7db3bd7c returned HOLD. [CLOUD-REVIEW-FIXES.md](CLOUD-REVIEW-FIXES.md) records each disposition and the remaining two-observer policy question. The current corrective source passes TypeScript/formatting and all 40 focused tests. Current HSD, offline bundling and independent delta review are unrun at this source checkpoint. No historical CLEAR or test result below is promoted to this changed source.
+
+## Historical qualification through 7db3bd7c
+
 The qualified executable source is 3cba0689dda7cb36476f451424f71ecfd408b364. The following published checkpoint changes documentation and sanitized evidence only. Package TypeScript/formatting pass, all 29 focused cases pass, all four HSD cases pass, and offline Alchemy Worker compilation passes. Independent source delta review returned CLEAR for f96396b4 through 3cba0689. Start with [REVIEW.md](REVIEW.md); [REVIEW-FIXES.md](REVIEW-FIXES.md) explains the corrections, and [recorded results](review-evidence/2026-11-14/checks.json) retain the current qualification.
 
 Focused cases cover literal preimages, real ephemeral EOA signatures, HTTP progress after committed transitions, stale/partitioned evidence, cancellation/deadlines, revision fences, late observations, overflow and multi-chain conflicts. Controlled Domain/Effect clocks cover more than two hours of known outages, coalescing and late-wake expiry. They do not qualify deployed platform recovery.

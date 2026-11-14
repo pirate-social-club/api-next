@@ -144,6 +144,24 @@ test(
         status: "waiting",
         reason: "transfer_pending",
       });
+      n.rpc("sendcancel", ["observertest"], true);
+      mine(10);
+      const cancelled = await read("observertest");
+      assert.equal(cancelled.transferPending, false);
+      assert.equal(cancelled.resourceDigest, mature.resourceDigest);
+      assert.equal(cancelled.ownershipEpoch, mature.ownershipEpoch);
+      assert.equal(
+        cancelled.inclusionHeight,
+        mature.inclusionHeight,
+        "an empty transfer-cancelling UPDATE preserves original resource inclusion",
+      );
+      assert.equal(cancelled.inclusionTime, mature.inclusionTime);
+      n.rpc(
+        "sendtransfer",
+        ["observertest", n.rpc("getnewaddress", [], true)],
+        true,
+      );
+      mine(1);
       mine(10);
       const finalizeTx = n.rpc("sendfinalize", ["observertest"], true) as {
         hash: string;

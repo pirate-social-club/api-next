@@ -6,7 +6,11 @@ import {
   type Snapshot,
   type ChainConfig,
 } from "./hsd-snapshot.ts";
-import { agree, type Observation } from "./observation.ts";
+import {
+  agree,
+  MAX_FUTURE_BLOCK_SECONDS,
+  type Observation,
+} from "./observation.ts";
 import { inspectRecords, RecordConflict } from "./records.ts";
 export interface ObserverConfig extends ChainConfig {
   nodes: readonly [RpcConfig, RpcConfig];
@@ -65,7 +69,10 @@ export function observerLayer(
               );
             // Freshness and stable ownership are prerequisites for any authority
             // decision, including absence. Old or provisional absence is not revocation.
-            if (now() - a.tipTime > 21600 || a.tipTime > now() + 120)
+            if (
+              now() - a.tipTime > 21600 ||
+              a.tipTime > now() + MAX_FUTURE_BLOCK_SECONDS
+            )
               return Effect.fail(
                 new AdmissionError({ reason: "chain_freshness_unconfirmed" }),
               );

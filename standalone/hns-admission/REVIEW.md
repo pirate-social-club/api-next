@@ -1,6 +1,6 @@
 # Independent review entry point
 
-Review standalone/hns-admission in this pull request. The qualified executable source is 3cba0689dda7cb36476f451424f71ecfd408b364. The following checkpoint adds documentation and sanitized evidence without changing that source or its dependency graph. Review the complete package and the corrective f96396b4-to-3cba0689 delta; a clear delta review does not replace reviewing the initial implementation.
+Review standalone/hns-admission at the current pull-request head, including its correction after the cloud review's HOLD at 7db3bd7c. Start with [CLOUD-REVIEW-FIXES.md](CLOUD-REVIEW-FIXES.md) for current dispositions and remaining policy/deployment gaps. TypeScript/formatting and all 40 focused cases pass at this corrective source checkpoint; its HSD, offline bundle and fresh independent review remain unrun. Historical source 3cba0689 and documentation 7db3bd7c remain preserved with their own results. Review the complete package and current delta; a clear delta does not replace reviewing the initial implementation.
 
 This packet needs no access to the original machine, wallet, HNS providers or Cloudflare account. [CHECKPOINT.md](CHECKPOINT.md) and [recorded results](review-evidence/2026-11-14/checks.json) distinguish executed checks from unrun acceptance. Original machine-specific evidence remains private; these are derived summaries and selected raw test outputs.
 
@@ -12,7 +12,7 @@ Read [PROTOCOL.md](PROTOCOL.md) for exact bytes/signatures, [PROVENANCE.md](PROV
 
 src/ceremony.ts owns the pure transition function and seven phases. src/aggregate.ts owns durable commands/revisions/reservations; src/automation.ts schedules observations and deadlines. src/hsd-rpc.ts and src/hsd-snapshot.ts obtain bounded read-only chain snapshots and canonical ownership history. src/hsd-observer.ts compares the observers; src/observation.ts normalizes evidence. src/http.ts, src/access.ts and src/service.ts expose and authorize resumable operations. src/worker.ts, src/cloudflare.ts and alchemy.run.ts compose Effect services with Alchemy Domain and Cloudflare hosting.
 
-The normal path is AwaitingConsent, AwaitingPublication, Maturing, ReadyToSubmit. Cancelled, Expired and Suspended are explicit phases. Unavailable evidence preserves progress and applicable deadlines. Timely publication learned late has a bounded publication-expiry recovery path; cancellation never revives. Missing TXT is publication_pending. Pending transfer, provisional ownership changes, reorgs, stale nodes and confirmed stable authority loss require separate decisions.
+The normal path is AwaitingConsent, AwaitingPublication, Maturing, ReadyToSubmit. Cancelled, Expired and Suspended are explicit phases. Unavailable evidence preserves progress and applicable deadlines. Expiry stops scheduled work; explicit fresh verification can recover an original timely publication after a publication or maturity timeout. Consent renewal does not extend those deadlines or establish readiness alone. Cancellation never revives. Missing TXT is publication_pending. Pending transfer, provisional ownership changes, reorgs, stale nodes and confirmed stable authority loss require separate decisions.
 
 ## Review priorities
 

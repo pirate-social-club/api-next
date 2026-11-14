@@ -100,6 +100,23 @@ export function makeSnapshotReader(
       await call("getnameinfo", [tld, true]),
     );
     const cache = new Map<string, Tx>();
+    // Reuse immutable, canonical-checked headers only within this bracketed
+    // snapshot. A later poll or reorg must obtain its own canonical checks.
+    const headers = new Map<string, typeof Header.Type>();
+    const readHeader = async (hash: string) => {
+      let header = headers.get(hash);
+      if (!header) {
+        header = decode(Header, await call("getblockheader", [hash, true]));
+        if (
+          header.hash !== hash ||
+          header.height > tip.height ||
+          (await call("getblockhash", [header.height])) !== hash
+        )
+          throw new HsdUnavailable("ownership_history_unavailable");
+        headers.set(hash, header);
+      }
+      return header;
+    };
     const readTx = async (hash: string) => {
       let tx = cache.get(hash);
       if (!tx) {
@@ -123,18 +140,14 @@ export function makeSnapshotReader(
           output.covenant.items[0] !== name.nameHash
         )
           throw new HsdUnavailable("ownership_history_unavailable");
-        const header = decode(
-          Header,
-          await call("getblockheader", [tx.blockhash, true]),
-        );
-        if (
-          header.hash !== tx.blockhash ||
-          header.height > tip.height ||
-          (await call("getblockhash", [header.height])) !== tx.blockhash
-        )
-          throw new HsdUnavailable("ownership_history_unavailable");
+        const header = await readHeader(tx.blockhash);
         const action = output.covenant.action;
-        if (action === "REGISTER" || action === "UPDATE") {
+        // An empty UPDATE cancels a transfer without replacing resource data.
+        // It cannot break the resource's continuous inclusion history.
+        if (
+          action === "REGISTER" ||
+          (action === "UPDATE" && output.covenant.items[2] !== "")
+        ) {
           if (output.covenant.items[2] === name.data && continuous)
             inclusion = {
               hash: "0x" + header.hash,

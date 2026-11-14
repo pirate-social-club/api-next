@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { Binding, Seconds } from "./protocol.ts";
 import { Hash } from "./records.ts";
-import { Observation } from "./observation.ts";
+import { Observation, MAX_FUTURE_BLOCK_SECONDS } from "./observation.ts";
 import { Code, ConflictDetail } from "./outcomes.ts";
 export const State = Schema.Struct({
   id: Hash,
@@ -56,16 +56,50 @@ export type Action =
 const terminal = (s: State) =>
   ["Cancelled", "Expired", "Suspended"].includes(s.phase);
 export function advance(state: State, event: Action): State {
-  if (event.now < state.updatedAt) throw new Error("clock_regression");
+  event = { ...event, now: Math.max(event.now, state.updatedAt) };
+  const deadlineExpired =
+    state.phase === "Expired" &&
+    ["publication_deadline", "maturity_deadline"].includes(state.condition);
+  // Expiry stops automatic work, not reuse of an already timely publication.
+  // Only an explicit newly verified controller consent can renew this mandate.
+  if (deadlineExpired && event.type === "Consent") {
+    if (event.deadline <= event.now || event.deadline > event.now + 259200)
+      throw new Error("invalid_consent_deadline");
+    return {
+      ...state,
+      revision: state.revision + 1,
+      updatedAt: event.now,
+      consentDeadline: event.deadline,
+      consented: true,
+    };
+  }
+  if (deadlineExpired && event.type === "Cancel")
+    return {
+      ...state,
+      revision: state.revision + 1,
+      updatedAt: event.now,
+      phase: "Cancelled",
+      condition: "cancelled",
+    };
+  const matureEvidence =
+    event.type === "Observed" &&
+    event.safe &&
+    !event.transferPending &&
+    event.includedAt !== null &&
+    event.includedAt <= event.now &&
+    event.includedAt <= state.publicationDeadline &&
+    (state.ownershipEpoch === null ||
+      state.ownershipEpoch === event.ownershipEpoch);
   // Late observation may establish publication before its deadline. It never revives cancellation.
   if (
     event.type === "Observed" &&
     event.includedAt !== null &&
     event.includedAt <= state.publicationDeadline &&
-    event.includedAt <= event.now + 120 &&
-    event.now < event.includedAt + 86400 &&
+    event.includedAt <= event.now + MAX_FUTURE_BLOCK_SECONDS &&
+    (event.now < event.includedAt + 86400 || matureEvidence) &&
     ((state.phase !== "Expired" && !terminal(state)) ||
-      (state.phase === "Expired" && state.condition === "publication_deadline"))
+      (deadlineExpired &&
+        (state.condition === "publication_deadline" || matureEvidence)))
   ) {
     state = {
       ...state,
@@ -88,7 +122,8 @@ export function advance(state: State, event: Action): State {
   if (
     s.maturedAt === null &&
     s.maturityDeadline !== null &&
-    event.now >= s.maturityDeadline
+    event.now >= s.maturityDeadline &&
+    !matureEvidence
   )
     return { ...s, phase: "Expired", condition: "maturity_deadline" };
   if (event.type === "Suspend")
@@ -104,13 +139,21 @@ export function advance(state: State, event: Action): State {
       condition: "publication_pending",
     };
   }
-  if (event.now >= s.consentDeadline)
+  if (event.now >= s.consentDeadline) {
+    if (
+      event.type === "Tick" &&
+      state.phase === "AwaitingConsent" &&
+      !state.consented &&
+      state.condition === "consent_expired"
+    )
+      return state;
     return {
       ...s,
       phase: "AwaitingConsent",
       condition: "consent_expired",
       consented: false,
     };
+  }
   if (event.type === "Unavailable")
     return {
       ...s,
@@ -142,7 +185,11 @@ export function advance(state: State, event: Action): State {
       maturityDeadline: event.includedAt + 86400,
       ownershipEpoch: event.ownershipEpoch,
     };
-    if (s.maturedAt === null && event.now >= s.maturityDeadline!)
+    if (
+      s.maturedAt === null &&
+      event.now >= s.maturityDeadline! &&
+      !matureEvidence
+    )
       return { ...s, phase: "Expired", condition: "maturity_deadline" };
     return {
       ...s,

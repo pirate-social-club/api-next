@@ -6,6 +6,9 @@ const Manifest = Schema.Struct({
   network: Schema.Literals(["main", "regtest"]),
   genesis: Hash,
   treeInterval: Schema.Int,
+  maxHistory: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 256 })),
+  ),
   nodes: Schema.Tuple([Schema.String, Schema.String]),
   profiles: Schema.Array(AccessProfile),
   publicationEnabled: Schema.Boolean,

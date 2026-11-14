@@ -1,5 +1,7 @@
 # Authority availability review correction
 
+This page records the earlier f96396b4-to-3cba0689 review. The subsequent cloud HOLD at 7db3bd7c and its current corrective boundary are in [CLOUD-REVIEW-FIXES.md](CLOUD-REVIEW-FIXES.md). The earlier CLEAR below does not cover that new delta.
+
 The independent review of source f96396b4 returned HOLD for three P2 findings. This successor changes only authority evidence ordering, timestamp agreement, and HTTP progress retention. The prior source and private proposal images remain preserved. Submission stays disabled at ReadyToSubmit.
 
 Current and safe ownership epochs must agree before a changed owner can produce terminal rejection. A provisional FINALIZE remains unavailable; a rollback can restore the original ceremony. The production observer now checks tip freshness before classifying an inactive name, so matching stale nodes cannot revoke current control. Both the production pair and normalizer compare tipTime and inclusionTime instead of choosing one node's contradictory timestamps.

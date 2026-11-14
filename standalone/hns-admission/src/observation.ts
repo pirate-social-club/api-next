@@ -1,6 +1,8 @@
 import { Schema } from "effect";
 import { Hash, parseDelegation, type Delegation } from "./records.ts";
 import { Seconds } from "./protocol.ts";
+// Pinned HSD chain.verifyContext permits network time plus two hours.
+export const MAX_FUTURE_BLOCK_SECONDS = 7200;
 export const Observation = Schema.Struct({
   network: Schema.Literals(["main", "regtest"]),
   genesis: Hash,
@@ -78,7 +80,7 @@ export function agree(
       (o) =>
         o.fetchedAt > now ||
         now - o.fetchedAt > 60 ||
-        o.tipTime > now + 120 ||
+        o.tipTime > now + MAX_FUTURE_BLOCK_SECONDS ||
         o.safeHeight > o.tipHeight,
     )
   )

@@ -36,11 +36,13 @@ test("provisional FINALIZE is unavailable, rollback recovers, and only stable ow
   });
 });
 
-function absentObserver(ageSeconds: number) {
+function absentObserver(ageSeconds: number, oneDown = false) {
   const now = Math.floor(Date.now() / 1000),
     tip = "22".repeat(32),
     genesis = "11".repeat(32);
   const transport: typeof fetch = async (_url, init) => {
+    if (oneDown && String(_url).includes("b.fixture"))
+      throw Error("fixture_observer_down");
     const query = JSON.parse(init!.body as string);
     let result: unknown;
     if (query.method === "getblockchaininfo")
@@ -76,6 +78,36 @@ function absentObserver(ageSeconds: number) {
     transport,
   );
 }
+
+test("one unreachable observer remains unavailable under the current explicit two-observer policy", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const observer = yield* HnsObserver;
+      assert.equal(
+        (yield* observer.baseline(binding).pipe(Effect.flip)).reason,
+        "observer_timeout",
+      );
+      assert.equal(
+        (yield* observer.observe(state()).pipe(Effect.flip)).reason,
+        "observer_timeout",
+      );
+    }).pipe(Effect.provide(absentObserver(0, true))),
+  );
+});
+
+test("matching tips within HSD's two-hour future allowance do not make existing mature proof unavailable", () => {
+  const future = { ...observation(), tipTime: 8200 };
+  assert.equal(agree(future, future, 1000, expected).status, "verified");
+  assert.equal(
+    agree(
+      { ...future, tipTime: 8201 },
+      { ...future, tipTime: 8201 },
+      1000,
+      expected,
+    ).status,
+    "unavailable",
+  );
+});
 
 test("stale agreeing absence cannot revoke or refuse current control", async () => {
   await Effect.runPromise(

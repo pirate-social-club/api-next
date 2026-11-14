@@ -164,18 +164,6 @@ export const instructions = Effect.fn("Admission.instructions")(function* (
   s: State,
 ) {
   if (!s.consented || s.phase !== "AwaitingPublication") return undefined;
-  const observer = yield* HnsObserver;
-  const baseline = yield* observer.baseline(s.binding);
-  if (baseline.ownershipEpoch !== s.ownershipEpoch)
-    return yield* fail("ownership_changed");
-  const current = yield* attempt(() =>
-    preflightEncodeHnsResourceV1(baseline.records),
-  );
-  if (
-    "0x" + current.sha256 !== s.beforeResourceDigest &&
-    "0x" + current.sha256 !== s.resourceDigest
-  )
-    return yield* fail("resource_snapshot_changed");
   const records = yield* Effect.try({
     try: () =>
       JSON.parse(s.publicationJson) as readonly HnsRootResourceRecordV1[],
@@ -189,13 +177,33 @@ export const instructions = Effect.fn("Admission.instructions")(function* (
     beforeResourceDigest: s.beforeResourceDigest,
     resourceDigest: s.resourceDigest,
     publicationDeadline: s.publicationDeadline,
+    source: "retained_plan" as const,
+    compareCurrentResourceBeforePublishing: true,
   };
+});
+const validateResource = Effect.fn("Admission.validateResource")(function* (
+  s: State,
+) {
+  const observer = yield* HnsObserver;
+  const baseline = yield* observer.baseline(s.binding);
+  if (baseline.ownershipEpoch !== s.ownershipEpoch)
+    return yield* fail("ownership_changed");
+  const current = yield* attempt(() =>
+    preflightEncodeHnsResourceV1(baseline.records),
+  );
+  if (
+    "0x" + current.sha256 !== s.beforeResourceDigest &&
+    "0x" + current.sha256 !== s.resourceDigest
+  )
+    return yield* fail("resource_snapshot_changed");
 });
 export const consent = Effect.fn("Admission.consent")(function* (
   id: string,
   input: typeof ConsentInput.Type,
 ) {
   const s = yield* current(id);
+  if (input.expectedRevision !== s.revision)
+    return yield* fail("revision_conflict");
   const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
   if (
     input.issuedAt > now ||
@@ -219,6 +227,9 @@ export const consent = Effect.fn("Admission.consent")(function* (
     }),
   );
   if (!valid) return yield* fail("invalid_signature");
+  // Live preflight is an explicit consent effect, never unthrottled GET work.
+  // A failed observer/preflight leaves the original revision and nonce retryable.
+  yield* validateResource(s);
   const model = yield* Ceremony;
   yield* model.send(
     id,
@@ -251,7 +262,8 @@ export const observe = Effect.fn("Admission.observe")(function* (id: string) {
   if (
     s.phase === "Cancelled" ||
     s.phase === "Suspended" ||
-    (s.phase === "Expired" && s.condition !== "publication_deadline")
+    (s.phase === "Expired" &&
+      !["publication_deadline", "maturity_deadline"].includes(s.condition))
   )
     return s;
   if (!s.consented || s.phase === "ReadyToSubmit") return s;
@@ -356,5 +368,9 @@ export function envelope(s: State) {
     ...(status === "action_required" ? { responsibleRole: "operator" } : {}),
     binding: s.binding,
     observation: s.lastObservation,
+    ...(s.phase === "Expired" &&
+    ["publication_deadline", "maturity_deadline"].includes(s.condition)
+      ? { recovery: "reobserve_existing_ceremony" as const }
+      : {}),
   };
 }

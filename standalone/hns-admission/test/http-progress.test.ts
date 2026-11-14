@@ -9,7 +9,7 @@ import { state, hash } from "./fixtures.ts";
 import { bindingDigest, consentData } from "../src/protocol.ts";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
-test("observer failure while reading publication instructions preserves resumable status", async () => {
+test("corrupt retained publication data preserves resumable operation identity", async () => {
   const observer = Layer.succeed(
     HnsObserver,
     HnsObserver.of({
@@ -47,7 +47,7 @@ test("observer failure while reading publication instructions preserves resumabl
         assert.equal(response.status, 503);
         const body = yield* Effect.promise(() => response.json());
         assert.equal(body.status, "unavailable");
-        assert.equal(body.reason, "observer_timeout");
+        assert.equal(body.reason, "internal_error");
         assert.equal(body.operationId, hash);
         assert.equal(body.phase, retained.phase);
         assert.equal(body.revision, retained.revision);
@@ -60,7 +60,7 @@ test("observer failure while reading publication instructions preserves resumabl
   );
 });
 
-test("an unavailable consent response retains the transition that already committed", async () => {
+test("an unavailable consent preflight retains the original nonce and retryable revision", async () => {
   const account = privateKeyToAccount(generatePrivateKey());
   const binding = {
     ...state().binding,
@@ -123,13 +123,14 @@ test("an unavailable consent response retains the transition that already commit
       assert.equal(response.status, 503);
       const body = yield* Effect.promise(() => response.json());
       assert.equal(body.operationId, created.operationId);
-      assert.equal(body.revision, created.revision + 1);
-      assert.equal(body.phase, "AwaitingPublication");
+      assert.equal(body.revision, created.revision);
+      assert.equal(body.phase, "AwaitingConsent");
       assert.equal(body.reason, "observer_timeout");
       const model = yield* Ceremony,
         retained = (yield* model.get(created.operationId))!;
       assert.equal(retained.revision, body.revision);
-      assert.equal(retained.consented, true);
+      assert.equal(retained.consented, false);
+      assert.equal(retained.nonce, created.consent.nonce);
     }).pipe(Effect.provide(live)),
   );
 });

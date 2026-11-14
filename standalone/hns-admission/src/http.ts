@@ -174,9 +174,18 @@ export const handle = Effect.fn("Admission.http")(
       request.method === "POST" &&
       kind === "ceremonies" &&
       action === "consent"
-    )
-      result = yield* consent(id, yield* parse(ConsentInput, body));
-    else if (
+    ) {
+      const accepted = yield* consent(
+        id,
+        yield* parse(ConsentInput, body),
+      ).pipe(Effect.result);
+      if (accepted._tag === "Failure")
+        return errorResponse(
+          accepted.failure,
+          (yield* model.get(id)) ?? stored,
+        );
+      result = accepted.success;
+    } else if (
       request.method === "POST" &&
       kind === "ceremonies" &&
       action === "cancel"
