@@ -1,0 +1,93 @@
+{
+  "date": "2026-11-14",
+  "sourceCommit": "c59b601f58d8506a6710a2aaccb8cf2970149a6f",
+  "scope": "Pre-submission service; following publication adds documentation/evidence only. No quorum change or live effects.",
+  "checks": [
+    {
+      "argv": [
+        "npm",
+        "run",
+        "check"
+      ],
+      "sourceCommit": "c59b601f58d8506a6710a2aaccb8cf2970149a6f",
+      "exitCode": 0,
+      "includes": [
+        "TypeScript noEmit",
+        "Prettier check"
+      ],
+      "stdout": "check.stdout.txt"
+    },
+    {
+      "argv": [
+        "npm",
+        "test"
+      ],
+      "sourceCommit": "c59b601f58d8506a6710a2aaccb8cf2970149a6f",
+      "exitCode": 0,
+      "tests": 41,
+      "pass": 41,
+      "fail": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "durationMs": 2051.42223,
+      "stdout": "unit.stdout.txt"
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "check:bundle"
+      ],
+      "sourceCommit": "c59b601f58d8506a6710a2aaccb8cf2970149a6f",
+      "exitCode": 0,
+      "bundleHash": "432eef261de76738f71e028bace18c46068f8cce5d3582aa6b2a8127444bcd88",
+      "stdout": "offline-bundle.stdout.txt",
+      "qualification": "offline compilation only; no DO exports discovery or runtime/deployment acceptance"
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "test:regtest"
+      ],
+      "sourceCommit": "13d9e14ce4eec30d15ccb5f9da86b5b0e37f98e2",
+      "exitCode": 0,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "durationMs": 65312.346893,
+      "stdout": "hsd-13d9e14c.stdout.txt",
+      "qualification": "Actual HSD8.0.0, including transfer cancellation. Current c59b601f rerun remains UNRUN; no promotion across the clock correction."
+    }
+  ],
+  "independentSourceReview": {
+    "base": "7db3bd7cdbcc4179238d4b033f934b50b27500fb",
+    "head": "c59b601f58d8506a6710a2aaccb8cf2970149a6f",
+    "result": "CLEAR",
+    "codeP1P2Remaining": 0,
+    "checksExecutedByReviewer": false,
+    "intermediateHold": {
+      "sourceCommit": "13d9e14ce4eec30d15ccb5f9da86b5b0e37f98e2",
+      "finding": "Observation reservation could erase the durable time watermark after a backward clock step.",
+      "regression": "Actual observe()/Domain path reproduced ReadyToSubmit with known expired consent before repair; verified and outage branches now pass."
+    }
+  },
+  "openPolicy": "Current code requires both configured observers. Trusted primary/fallback policy remains OPEN and has not been implemented or deployed.",
+  "unrunAtCurrentSource": [
+    "Full four-case HSD rerun after clock correction",
+    "Parent local application gates",
+    "Deployed Cloudflare DO discovery, alarms, eviction and crash recovery",
+    "Live node readiness and provider qualification",
+    "Contract admission/refresh, sponsorship, sender/receipt recovery and full Wizard/member journey"
+  ],
+  "historicalParentCi": "Inherited Hono/node-forge dependency-audit failures remain separate; standalone checks do not waive parent CI.",
+  "cleanup": "All owned HSD processes, containers and networks absent after 13d9e14c run. No source/dependency changes during that command.",
+  "evidenceSha256": {
+    "check.stdout.txt": "bbdc0d2aa8e9916dae07f2aba3e814512609aa522d2abd3e95451cd97c6f4eec",
+    "hsd-13d9e14c.stdout.txt": "3bf88b9f96afbc6901762e1eca6f013569485463622ba591a2fdee361b8a7337",
+    "offline-bundle.stdout.txt": "83eddcd50dc6ff292e65facc0c6cf05709be7e8e8a1f4748fef3ff9db9bd6722",
+    "unit.stdout.txt": "43d30f8412682671d62f766f739fedf6f1093c1d7ff0d4c06d7310be7d18caf9"
+  }
+}

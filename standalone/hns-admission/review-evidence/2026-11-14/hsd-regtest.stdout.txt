@@ -1,0 +1,23 @@
+
+> @pirate/hns-admission@0.1.0 test:regtest
+> node --test --test-concurrency=1 test/regtest/*.test.ts
+
+fetch failed
+fetch failed
+{"message":"EOF (offset=512).","code":-22}
+{"image":"sha256:7a9aca3e77d828f23bf78a76daefcf2d9c718b2215a5ff083e10b998917ecc1f","genesis":"ae3895cf597eff05b19e02a70ceeeecb9dc72dbfe6504a50e9343a72f06a87c5","before":108,"after":267,"delta":159,"tx":"dfdaa754019373eb7de4126fbdeb073f5a45a53eedee9c7e3ad567773a2ab18e","hsdVersion":"8.0.0"}
+✔ first gate: real HSD accepts exactly 159 added resource bytes and preserves NS/DS (5726.795046ms)
+fetch failed
+✔ two real HSD nodes on partitioned branches produce Unavailable (26436.223837ms)
+✔ actual HSD safe-root method matches fixed mainnet entry/root vectors (303.874405ms)
+fetch failed
+fetch failed
+✔ real RPC adapter separates current/safe data and follows ownership epochs (35457.6972ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 69895.520626
