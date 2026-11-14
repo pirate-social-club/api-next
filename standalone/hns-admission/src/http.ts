@@ -16,7 +16,13 @@ import {
 } from "./service.ts";
 import type { Binding } from "./protocol.ts";
 import { strictJson } from "./strict-json.ts";
-import { unavailableCodes, actionCodes } from "./outcomes.ts";
+import {
+  unavailableCodes,
+  actionCodes,
+  type Code,
+  type ConflictDetail,
+} from "./outcomes.ts";
+import type { State } from "./ceremony.ts";
 export class HttpAccess extends Context.Service<
   HttpAccess,
   {
@@ -80,6 +86,41 @@ const parse = <A>(
       }),
     catch: () => new AdmissionError({ reason: "invalid_request" }),
   });
+const errorResponse = (
+  error: { reason: Code; detail?: ConflictDetail },
+  retained?: State,
+) =>
+  Response.json(
+    {
+      ...(retained
+        ? envelope(retained)
+        : { schema: "pirate.namespace-admission/1" }),
+      status: unavailableCodes.includes(error.reason)
+        ? "unavailable"
+        : actionCodes.includes(error.reason)
+          ? "action_required"
+          : "denied",
+      reason: error.reason,
+      ...(error.detail ? { detail: error.detail } : {}),
+      ...(actionCodes.includes(error.reason)
+        ? { responsibleRole: "operator" }
+        : {}),
+    },
+    {
+      status: unavailableCodes.includes(error.reason)
+        ? 503
+        : [
+              "invalid_signature",
+              "not_allowlisted",
+              "authorization_expired",
+              "publication_not_enabled",
+            ].includes(error.reason)
+          ? 403
+          : ["revision_conflict", "request_conflict"].includes(error.reason)
+            ? 409
+            : 400,
+    },
+  );
 export const handle = Effect.fn("Admission.http")(
   function* (request: Request) {
     const url = new URL(request.url),
@@ -153,44 +194,16 @@ export const handle = Effect.fn("Admission.http")(
       result = yield* observe(id);
     } else
       return Response.json({ error: "endpoint_not_enabled" }, { status: 404 });
-    const publication = yield* instructions(result);
+    const planned = yield* instructions(result).pipe(Effect.result);
+    // An instruction-read failure must not discard the durable operation envelope,
+    // including when a consent transition already committed successfully.
+    if (planned._tag === "Failure")
+      return errorResponse(planned.failure, result);
+    const publication = planned.success;
     return Response.json({
       ...envelope(result),
       ...(publication ? { publication } : {}),
     });
   },
-  Effect.catch((e) =>
-    Effect.succeed(
-      Response.json(
-        {
-          schema: "pirate.namespace-admission/1",
-          status: unavailableCodes.includes(e.reason)
-            ? "unavailable"
-            : actionCodes.includes(e.reason)
-              ? "action_required"
-              : "denied",
-          reason: e.reason,
-          ...("detail" in e && e.detail ? { detail: e.detail } : {}),
-          ...(actionCodes.includes(e.reason)
-            ? { responsibleRole: "operator" }
-            : {}),
-        },
-        {
-          status: unavailableCodes.includes(e.reason)
-            ? 503
-            : [
-                  "invalid_signature",
-                  "not_allowlisted",
-                  "authorization_expired",
-                  "publication_not_enabled",
-                ].includes(e.reason)
-              ? 403
-              : e.reason === "revision_conflict" ||
-                  e.reason === "request_conflict"
-                ? 409
-                : 400,
-        },
-      ),
-    ),
-  ),
+  Effect.catch((e) => Effect.succeed(errorResponse(e))),
 );

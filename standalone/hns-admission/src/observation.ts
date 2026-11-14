@@ -89,6 +89,7 @@ export function agree(
     "genesis",
     "tipHash",
     "tipHeight",
+    "tipTime",
     "safeRoot",
     "safeResourceDigest",
     "safeOwnershipEpoch",
@@ -97,6 +98,7 @@ export function agree(
     "ownershipEpoch",
     "inclusionHash",
     "inclusionHeight",
+    "inclusionTime",
     "canonical",
     "transferPending",
     "expired",
@@ -113,6 +115,10 @@ export function agree(
     return { status: "unavailable", reason: "observer_disagreement" };
   if (now - a.tipTime > 21600)
     return { status: "unavailable", reason: "chain_freshness_unconfirmed" };
+  // Current/safe ownership disagreement is provisional, even when both nodes
+  // agree on the tip. A reorg must be able to restore the original ceremony.
+  if (a.ownershipEpoch !== a.safeOwnershipEpoch)
+    return { status: "unavailable", reason: "observer_stale" };
   if (
     a.expired ||
     (expected.ownershipEpoch && a.ownershipEpoch !== expected.ownershipEpoch)

@@ -16,6 +16,7 @@ const equal = (a: Snapshot, b: Snapshot) =>
     "active",
     "tipHash",
     "tipHeight",
+    "tipTime",
     "safeHeight",
     "safeRoot",
     "resourceDigest",
@@ -24,6 +25,7 @@ const equal = (a: Snapshot, b: Snapshot) =>
     "safeOwnershipEpoch",
     "inclusionHash",
     "inclusionHeight",
+    "inclusionTime",
     "transferPending",
   ].every((k) => a[k as keyof Snapshot] === b[k as keyof Snapshot]);
 export function observerLayer(
@@ -56,13 +58,23 @@ export function observerLayer(
               reason: e instanceof HsdUnavailable ? e.reason : "observer_stale",
             }),
         }).pipe(
-          Effect.flatMap(([a, b]) =>
-            equal(a, b)
-              ? Effect.succeed(a)
-              : Effect.fail(
-                  new AdmissionError({ reason: "observer_disagreement" }),
-                ),
-          ),
+          Effect.flatMap(([a, b]) => {
+            if (!equal(a, b))
+              return Effect.fail(
+                new AdmissionError({ reason: "observer_disagreement" }),
+              );
+            // Freshness and stable ownership are prerequisites for any authority
+            // decision, including absence. Old or provisional absence is not revocation.
+            if (now() - a.tipTime > 21600 || a.tipTime > now() + 120)
+              return Effect.fail(
+                new AdmissionError({ reason: "chain_freshness_unconfirmed" }),
+              );
+            if (a.ownershipEpoch !== a.safeOwnershipEpoch)
+              return Effect.fail(
+                new AdmissionError({ reason: "observer_stale" }),
+              );
+            return Effect.succeed(a);
+          }),
         );
       return HnsObserver.of({
         baseline: (binding) =>
@@ -76,13 +88,6 @@ export function observerLayer(
               });
             if (snapshot.transferPending)
               return yield* new AdmissionError({ reason: "transfer_pending" });
-            if (
-              now() - snapshot.tipTime > 21600 ||
-              snapshot.tipTime > now() + 120
-            )
-              return yield* new AdmissionError({
-                reason: "chain_freshness_unconfirmed",
-              });
             return {
               records: snapshot.records,
               ownershipEpoch: snapshot.ownershipEpoch,
