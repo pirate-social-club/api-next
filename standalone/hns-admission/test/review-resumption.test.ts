@@ -19,6 +19,7 @@ import {
 import { handle, HttpAccess } from "../src/http.ts";
 import { consentData } from "../src/protocol.ts";
 import { advance } from "../src/ceremony.ts";
+import { nextWake } from "../src/automation.ts";
 import { binding, hash, state, observation } from "./fixtures.ts";
 
 test("expired consent can be renewed while status polling keeps its revision stable", async () => {
@@ -244,6 +245,10 @@ test("deadline recovery cannot revive cancellation, changed ownership or late pu
 test("a backward clock read does not throw or reopen a deadline", () => {
   const s = { ...state(), updatedAt: 1000 };
   assert.deepEqual(advance(s, { type: "Tick", now: 999 }), s);
+  assert.equal(
+    nextWake({ ...s, consented: true, phase: "AwaitingPublication" }, 999),
+    1001,
+  );
 });
 
 test("expired maturity accepts renewed consent without extending publication or republishing", () => {
@@ -279,4 +284,85 @@ test("expired maturity accepts renewed consent without extending publication or 
     advance(renewed, { type: "Cancel", now: 90001 }).phase,
     "Cancelled",
   );
+});
+
+test("observation reservation and retry preserve a known expiry across a backward clock", async () => {
+  for (const available of [true, false]) {
+    let now = 87402;
+    const memory = make({ manual: true, now: () => now * 1000 });
+    const observer = Layer.succeed(
+      HnsObserver,
+      HnsObserver.of({
+        baseline: () => Effect.die("unexpected_baseline"),
+        observe: () =>
+          Effect.sync(() =>
+            available
+              ? {
+                  status: "verified" as const,
+                  observation: {
+                    ...observation(),
+                    inclusionTime: 1000,
+                    fetchedAt: now,
+                    tipTime: now,
+                  },
+                }
+              : {
+                  status: "unavailable" as const,
+                  reason: "observer_timeout" as const,
+                },
+          ),
+      }),
+    );
+    const live = Layer.merge(
+      observer,
+      AdmissionModel.layer(Layer.empty).pipe(Layer.provide(memory.layer)),
+    );
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const actual = yield* Clock.Clock;
+        const clock: Clock.Clock = Object.assign(Object.create(actual), {
+          currentTimeMillisUnsafe: () => now * 1000,
+          currentTimeMillis: Effect.sync(() => now * 1000),
+        });
+        yield* Effect.gen(function* () {
+          const model = yield* Ceremony;
+          yield* model.send(
+            hash,
+            new CreateCeremony({
+              snapshot: {
+                ...state(),
+                phase: "Maturing",
+                consented: true,
+                consentDeadline: 87401,
+                firstIncludedAt: 1000,
+                maturityDeadline: 87400,
+                updatedAt: 87000,
+              },
+            }),
+          );
+          const expired = yield* current(hash);
+          assert.equal(expired.phase, "Expired");
+          assert.equal(expired.updatedAt, 87402);
+          now = 87399;
+          const result = yield* observe(hash);
+          assert.notEqual(
+            result.phase,
+            "ReadyToSubmit",
+            "known expired consent cannot become usable after rollback",
+          );
+          assert.ok(
+            result.updatedAt >= expired.updatedAt,
+            "reservation must preserve the durable time watermark",
+          );
+          assert.ok(
+            result.nextObservationAt >= expired.updatedAt + 60,
+            "retry scheduling must use monotonic effective time",
+          );
+        }).pipe(
+          Effect.provide(live),
+          Effect.provideService(Clock.Clock, clock),
+        );
+      }),
+    );
+  }
 });

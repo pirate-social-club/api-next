@@ -80,7 +80,10 @@ export class Ceremony extends Domain.Aggregate("Ceremony", {
     ApplyObservation: (s, c, ctx) => {
       if (!s || s.revision !== c.expectedRevision)
         return new StateConflict({ reason: "revision_conflict" });
-      const now = Math.floor(DateTime.toEpochMillis(ctx.now) / 1000);
+      const now = Math.max(
+        s.updatedAt,
+        Math.floor(DateTime.toEpochMillis(ctx.now) / 1000),
+      );
       const next = advance(s, { ...c.action, now });
       const observing = ["Observed", "Unavailable", "Suspend"].includes(
         c.action.type,
@@ -109,7 +112,10 @@ export class Ceremony extends Domain.Aggregate("Ceremony", {
     ReserveObservation: (s, c, ctx) => {
       if (!s || s.revision !== c.expectedRevision)
         return new StateConflict({ reason: "revision_conflict" });
-      const now = Math.floor(DateTime.toEpochMillis(ctx.now) / 1000);
+      const now = Math.max(
+        s.updatedAt,
+        Math.floor(DateTime.toEpochMillis(ctx.now) / 1000),
+      );
       if (now < s.nextObservationAt)
         return new StateConflict({ reason: "observation_pending" });
       return [
@@ -125,7 +131,10 @@ export class Ceremony extends Domain.Aggregate("Ceremony", {
     },
     Wake: (s, _c, ctx) => {
       if (!s) return [];
-      const now = Math.floor(DateTime.toEpochMillis(ctx.now) / 1000);
+      const now = Math.max(
+        s.updatedAt,
+        Math.floor(DateTime.toEpochMillis(ctx.now) / 1000),
+      );
       const next = advance(s, { type: "Tick", now });
       const events: (StateRecorded | ObservationDue)[] =
         next === s ? [] : [new StateRecorded({ snapshot: next })];

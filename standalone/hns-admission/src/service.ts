@@ -204,7 +204,10 @@ export const consent = Effect.fn("Admission.consent")(function* (
   const s = yield* current(id);
   if (input.expectedRevision !== s.revision)
     return yield* fail("revision_conflict");
-  const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+  const now = Math.max(
+    s.updatedAt,
+    Math.floor((yield* Clock.currentTimeMillis) / 1000),
+  );
   if (
     input.issuedAt > now ||
     now - input.issuedAt > 300 ||

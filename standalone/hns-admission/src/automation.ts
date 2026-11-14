@@ -5,6 +5,7 @@ import { HnsObserver, observe } from "./service.ts";
 import type { State } from "./ceremony.ts";
 
 export function nextWake(s: State, now: number): number | undefined {
+  now = Math.max(now, s.updatedAt);
   if (["Cancelled", "Expired", "Suspended"].includes(s.phase)) return undefined;
   const deadlines = [
     ...(s.firstIncludedAt === null ? [s.publicationDeadline] : []),
