@@ -1,7 +1,8 @@
 import { Schema } from "effect";
 import { Binding, Seconds } from "./protocol.ts";
 import { Hash } from "./records.ts";
-import { Code } from "./outcomes.ts";
+import { Observation } from "./observation.ts";
+import { Code, ConflictDetail } from "./outcomes.ts";
 export const State = Schema.Struct({
   id: Hash,
   binding: Binding,
@@ -22,6 +23,8 @@ export const State = Schema.Struct({
     "Suspended",
   ]),
   condition: Code,
+  conditionDetail: Schema.NullOr(ConflictDetail),
+  lastObservation: Schema.NullOr(Observation),
   createdAt: Seconds,
   consentDeadline: Seconds,
   publicationDeadline: Seconds,
@@ -31,6 +34,8 @@ export const State = Schema.Struct({
   ownershipEpoch: Schema.NullOr(Hash),
   consented: Schema.Boolean,
   updatedAt: Seconds,
+  nextObservationAt: Seconds,
+  observationFailures: Schema.Int,
 });
 export type State = typeof State.Type;
 export type Action =
@@ -38,9 +43,10 @@ export type Action =
   | { type: "Suspend"; now: number; reason: Code }
   | { type: "Cancel"; now: number }
   | { type: "Tick"; now: number }
-  | { type: "Unavailable"; now: number; reason: Code }
+  | { type: "Unavailable"; now: number; reason: Code; detail?: ConflictDetail }
   | {
       type: "Observed";
+      evidence?: Observation;
       now: number;
       includedAt: number | null;
       ownershipEpoch: string;
@@ -56,20 +62,25 @@ export function advance(state: State, event: Action): State {
     event.type === "Observed" &&
     event.includedAt !== null &&
     event.includedAt <= state.publicationDeadline &&
-    event.includedAt <= event.now &&
+    event.includedAt <= event.now + 120 &&
     event.now < event.includedAt + 86400 &&
     ((state.phase !== "Expired" && !terminal(state)) ||
       (state.phase === "Expired" && state.condition === "publication_deadline"))
   ) {
     state = {
       ...state,
-      phase: "Maturing",
+      phase: state.consented ? "Maturing" : "AwaitingConsent",
       firstIncludedAt: event.includedAt,
       maturityDeadline: event.includedAt + 86400,
     };
   }
   if (terminal(state)) return state;
-  let s = { ...state, revision: state.revision + 1, updatedAt: event.now };
+  let s = {
+    ...state,
+    revision: state.revision + 1,
+    updatedAt: event.now,
+    conditionDetail: null as ConflictDetail | null,
+  };
   if (event.type === "Cancel")
     return { ...s, phase: "Cancelled", condition: "cancelled" };
   if (s.firstIncludedAt === null && event.now >= s.publicationDeadline)
@@ -100,8 +111,14 @@ export function advance(state: State, event: Action): State {
       condition: "consent_expired",
       consented: false,
     };
-  if (event.type === "Unavailable") return { ...s, condition: event.reason };
+  if (event.type === "Unavailable")
+    return {
+      ...s,
+      condition: event.reason,
+      conditionDetail: event.detail ?? null,
+    };
   if (event.type === "Observed") {
+    s = { ...s, lastObservation: event.evidence ?? null };
     if (s.ownershipEpoch !== null && s.ownershipEpoch !== event.ownershipEpoch)
       return { ...s, phase: "Suspended", condition: "ownership_changed" };
     if (event.transferPending)
@@ -115,10 +132,9 @@ export function advance(state: State, event: Action): State {
         maturedAt: null,
         condition: "publication_pending",
       };
-    if (
-      event.includedAt > s.publicationDeadline ||
-      event.includedAt > event.now
-    )
+    if (event.includedAt > event.now)
+      return { ...s, condition: "observer_stale" };
+    if (event.includedAt > s.publicationDeadline)
       return { ...s, phase: "Expired", condition: "publication_deadline" };
     s = {
       ...s,

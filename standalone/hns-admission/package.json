@@ -7,9 +7,10 @@
     "node": ">=24"
   },
   "scripts": {
-    "check": "tsc --noEmit && prettier --check src test package.json tsconfig.json",
+    "check": "tsc --noEmit && prettier --check src test alchemy.run.ts package.json tsconfig.json",
     "test": "node --test test/*.test.ts",
-    "test:regtest": "node --test --test-concurrency=1 test/regtest/*.test.ts"
+    "test:regtest": "node --test --test-concurrency=1 test/regtest/*.test.ts",
+    "check:bundle": "node test/qualification/bundle.ts"
   },
   "dependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.87",
@@ -19,6 +20,7 @@
     "viem": "2.57.16"
   },
   "devDependencies": {
+    "@effect/platform-node": "4.1.4",
     "@types/node": "24.19.2",
     "prettier": "3.6.2",
     "typescript": "7.0.2"

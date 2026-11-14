@@ -67,7 +67,7 @@ test("actual EOA consent is bound to the whole resource and never consumed on fa
         signature,
       });
       assert.equal(accepted.phase, "AwaitingPublication");
-      assert.equal((yield* instructions(accepted))!.records.length, 3);
+      assert.equal((yield* instructions(accepted))!.records.length, 4);
     }).pipe(Effect.provide(layers)),
   );
 });

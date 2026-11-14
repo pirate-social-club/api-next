@@ -1,3 +1,4 @@
+import type { ConflictDetail } from "./outcomes.ts";
 import { Schema } from "effect";
 import { preflightEncodeHnsResourceV1 } from "./resource-codec.ts";
 import type { HnsRootResourceRecordV1 as Record } from "./resource-types.ts";
@@ -67,6 +68,15 @@ export function toHex(bytes: Uint8Array): string {
     "0x" + Array.from(bytes, (x) => x.toString(16).padStart(2, "0")).join("")
   );
 }
+export class RecordConflict extends Error {
+  readonly reason: "delegation_conflict" | "delegation_target_inactive";
+  readonly detail: ConflictDetail;
+  constructor(reason: RecordConflict["reason"], detail: ConflictDetail) {
+    super(reason);
+    this.reason = reason;
+    this.detail = detail;
+  }
+}
 export async function preflight(
   existing: readonly Record[],
   delegation: Delegation,
@@ -74,21 +84,17 @@ export async function preflight(
 ) {
   const text = delegationRecord(delegation),
     challenge = challengeRecord(digest);
-  const existingProof = existing.filter(
-    (r) =>
-      r.type === "TXT" &&
-      Array.isArray(r.txt) &&
-      r.txt.some(
-        (s: unknown) =>
-          typeof s === "string" &&
-          (s.startsWith("pd1:") || s.startsWith("pc1:")),
-      ),
-  );
-  // Replacement needs a separately consented before-image; never silently remove an old proof.
-  if (existingProof.length) throw new Error("proof_record_conflict");
+  const selected = inspectRecords(existing, delegation);
+  // An existing freshness record may belong to another in-flight ceremony.
+  // Replacing it requires an explicit replacement flow, outside this slice.
+  if (selected.challenge)
+    throw new RecordConflict("delegation_conflict", "challenge_present");
   const records = [
     ...existing,
-    { type: "TXT", txt: [text] },
+    ...(selected.routing
+      ? []
+      : [{ type: "NS", ns: routingRecord(delegation) }]),
+    ...(selected.delegation ? [] : [{ type: "TXT", txt: [text] }]),
     { type: "TXT", txt: [challenge] },
   ];
   const before = await preflightEncodeHnsResourceV1(existing);
@@ -101,4 +107,90 @@ export async function preflight(
     sha256: after.sha256,
     beforeSha256: before.sha256,
   };
+}
+
+export function routingRecord(d: Pick<Delegation, "registry" | "chainId">) {
+  return `${d.registry}.${d.chainId}._evm.`;
+}
+/** Matches the frozen resolver grammar; no legacy resolver runtime dependency. */
+export function inspectRecords(
+  existing: readonly Record[],
+  expected: Delegation,
+) {
+  const targets = existing.filter(
+    (r) =>
+      r.type === "NS" &&
+      typeof r.ns === "string" &&
+      /(^|\.)_evm\.?$/i.test(r.ns),
+  );
+  if (targets.length > 1)
+    throw new RecordConflict("delegation_conflict", "ambiguous_routing");
+  const routing = targets[0]?.ns as string | undefined;
+  if (routing) {
+    const match = /^0x([0-9a-f]{40})\.([1-9][0-9]{0,19})\._evm\.?$/i.exec(
+      routing,
+    );
+    if (!match)
+      throw new RecordConflict("delegation_conflict", "malformed_record");
+    if (BigInt(match[2]) !== BigInt(expected.chainId))
+      throw new RecordConflict(
+        "delegation_target_inactive",
+        "active_registry_mismatch",
+      );
+    if (`0x${match[1].toLowerCase()}` !== expected.registry)
+      throw new RecordConflict(
+        "delegation_conflict",
+        "active_registry_mismatch",
+      );
+  }
+  const chains = new Set<number>();
+  let delegation: string | undefined, challenge: string | undefined;
+  for (const r of existing) {
+    if (r.type !== "TXT" || !Array.isArray(r.txt)) continue;
+    // Protocol records are one canonical string in their own TXT record.
+    for (const value of r.txt) {
+      if (typeof value !== "string" || !/^(pd1:|pc1:)/.test(value)) continue;
+      if (r.txt.length !== 1)
+        throw new RecordConflict("delegation_conflict", "malformed_record");
+      if (value.startsWith("pc1:")) {
+        let valid = false;
+        try {
+          valid =
+            value.length === 47 && unbase64url(value.slice(4)).length === 32;
+        } catch {
+          /* classified below */
+        }
+        if (challenge || !valid)
+          throw new RecordConflict("delegation_conflict", "malformed_record");
+        challenge = value;
+      } else {
+        let d: Delegation;
+        try {
+          d = parseDelegation(value);
+        } catch {
+          throw new RecordConflict("delegation_conflict", "malformed_record");
+        }
+        if (chains.has(d.chainId))
+          throw new RecordConflict("delegation_conflict", "duplicate_chain");
+        chains.add(d.chainId);
+        if (d.chainId === expected.chainId) {
+          if (
+            value !==
+            delegationRecord({
+              chainId: expected.chainId,
+              registry: expected.registry,
+              controller: expected.controller,
+              communityId: expected.communityId,
+            })
+          )
+            throw new RecordConflict(
+              "delegation_conflict",
+              "active_registry_mismatch",
+            );
+          delegation = value;
+        }
+      }
+    }
+  }
+  return { routing, delegation, challenge };
 }

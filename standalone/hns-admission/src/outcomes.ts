@@ -25,7 +25,14 @@ export const Code = Schema.Literals([
   "resource_snapshot_changed",
   "resource_capacity_exceeded",
   "delegation_conflict",
+  "delegation_target_inactive",
+  "observation_pending",
   "internal_error",
+  "ownership_history_unavailable",
+  "namespace_not_owned",
+  "not_allowlisted",
+  "publication_not_enabled",
+  "authorization_expired",
 ]);
 export type Code = typeof Code.Type;
 export const unavailableCodes: readonly Code[] = [
@@ -34,4 +41,23 @@ export const unavailableCodes: readonly Code[] = [
   "observer_disagreement",
   "chain_freshness_unconfirmed",
   "internal_error",
+  "ownership_history_unavailable",
 ];
+
+export const actionCodes: readonly Code[] = [
+  "delegation_conflict",
+  "delegation_target_inactive",
+  "resource_capacity_exceeded",
+  "resource_snapshot_changed",
+  "publication_not_enabled",
+  "consent_expired",
+];
+
+export const ConflictDetail = Schema.Literals([
+  "duplicate_chain",
+  "malformed_record",
+  "ambiguous_routing",
+  "active_registry_mismatch",
+  "challenge_present",
+]);
+export type ConflictDetail = typeof ConflictDetail.Type;

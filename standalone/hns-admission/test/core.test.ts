@@ -83,7 +83,7 @@ test("whole-resource overflow refuses instructions and retains existing records"
         delegation,
         hash,
       ),
-    /proof_record_conflict/,
+    /delegation_conflict/,
   );
 });
 test("literal mainnet boundary expectations include both sides of the 12-block branch", () => {
@@ -191,6 +191,32 @@ test("outages never suppress expiry, cancellation, or authority change", () => {
     }).phase,
     "Suspended",
   );
+});
+test("a slightly future-dated canonical inclusion waits without expiring the ceremony", () => {
+  const s = advance(state(), {
+    type: "Observed",
+    now: 100,
+    includedAt: 111,
+    ownershipEpoch: hash,
+    safe: true,
+    transferPending: false,
+  });
+  assert.equal(s.phase, "AwaitingConsent");
+  assert.equal(s.condition, "observer_stale");
+  let nearDeadline = advance(
+    { ...state(), consented: true, phase: "AwaitingPublication" },
+    {
+      type: "Observed",
+      now: 172790,
+      includedAt: 172799,
+      ownershipEpoch: hash,
+      safe: true,
+      transferPending: false,
+    },
+  );
+  nearDeadline = advance(nearDeadline, { type: "Tick", now: 172801 });
+  assert.equal(nearDeadline.phase, "Maturing");
+  assert.equal(nearDeadline.firstIncludedAt, 172799);
 });
 test("binding and consent domains change for chain, install and expiry", async () => {
   const digest = bindingDigest(binding);

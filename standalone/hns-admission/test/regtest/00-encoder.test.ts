@@ -27,7 +27,10 @@ test(
         },
       ];
       const plan = await preflight(
-        records,
+        [
+          ...records,
+          { type: "NS", ns: "0x" + "11".repeat(20) + ".6343._evm." },
+        ],
         {
           chainId: 6343,
           registry: "0x" + "11".repeat(20),

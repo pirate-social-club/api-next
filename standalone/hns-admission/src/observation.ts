@@ -9,6 +9,8 @@ export const Observation = Schema.Struct({
   tipTime: Seconds,
   fetchedAt: Seconds,
   safeRoot: Hash,
+  safeResourceDigest: Hash,
+  safeOwnershipEpoch: Hash,
   safeHeight: Seconds,
   resourceDigest: Hash,
   ownershipEpoch: Hash,
@@ -29,7 +31,9 @@ export type EvidenceOutcome =
         | "observer_timeout"
         | "observer_stale"
         | "observer_disagreement"
-        | "chain_freshness_unconfirmed";
+        | "chain_freshness_unconfirmed"
+        | "ownership_history_unavailable"
+        | "internal_error";
     }
   | {
       status: "waiting";
@@ -86,6 +90,8 @@ export function agree(
     "tipHash",
     "tipHeight",
     "safeRoot",
+    "safeResourceDigest",
+    "safeOwnershipEpoch",
     "safeHeight",
     "resourceDigest",
     "ownershipEpoch",
@@ -132,7 +138,11 @@ export function agree(
     a.resourceDigest !== expected.resourceDigest
   )
     return { status: "waiting", reason: "publication_pending" };
-  if (a.inclusionHeight > a.safeHeight)
+  if (
+    a.inclusionHeight > a.safeHeight ||
+    a.safeResourceDigest !== a.resourceDigest ||
+    a.safeOwnershipEpoch !== a.ownershipEpoch
+  )
     return { status: "waiting", reason: "maturity_pending", observation: a };
   return { status: "verified", observation: a };
 }

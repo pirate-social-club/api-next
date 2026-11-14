@@ -1,5 +1,5 @@
 import { Context, Effect, Schema } from "effect";
-import { Ceremony } from "./model.ts";
+import { Ceremony } from "./aggregate.ts";
 import {
   AdmissionError,
   HnsObserver,
@@ -16,7 +16,7 @@ import {
 } from "./service.ts";
 import type { Binding } from "./protocol.ts";
 import { strictJson } from "./strict-json.ts";
-import { unavailableCodes } from "./outcomes.ts";
+import { unavailableCodes, actionCodes } from "./outcomes.ts";
 export class HttpAccess extends Context.Service<
   HttpAccess,
   {
@@ -84,6 +84,19 @@ export const handle = Effect.fn("Admission.http")(
   function* (request: Request) {
     const url = new URL(request.url),
       access = yield* HttpAccess;
+    if (request.method === "GET" && url.pathname === "/v1/capabilities")
+      return Response.json({
+        schema: "pirate.namespace-admission-capabilities/1",
+        enabled: ["ceremony", "consent", "status", "observe", "cancel"],
+        disabled: [
+          "admission",
+          "refresh",
+          "installation_proof",
+          "submission",
+          "reconciliation",
+          "sender_recovery",
+        ],
+      });
     const match =
       /^\/v1\/(ceremonies|operations)\/(0x[0-9a-f]{64})(?:\/(consent|cancel|observe))?$/.exec(
         url.pathname,
@@ -153,13 +166,24 @@ export const handle = Effect.fn("Admission.http")(
           schema: "pirate.namespace-admission/1",
           status: unavailableCodes.includes(e.reason)
             ? "unavailable"
-            : "denied",
+            : actionCodes.includes(e.reason)
+              ? "action_required"
+              : "denied",
           reason: e.reason,
+          ...("detail" in e && e.detail ? { detail: e.detail } : {}),
+          ...(actionCodes.includes(e.reason)
+            ? { responsibleRole: "operator" }
+            : {}),
         },
         {
           status: unavailableCodes.includes(e.reason)
             ? 503
-            : e.reason === "invalid_signature"
+            : [
+                  "invalid_signature",
+                  "not_allowlisted",
+                  "authorization_expired",
+                  "publication_not_enabled",
+                ].includes(e.reason)
               ? 403
               : e.reason === "revision_conflict" ||
                   e.reason === "request_conflict"

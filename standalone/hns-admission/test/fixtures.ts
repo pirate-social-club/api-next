@@ -33,6 +33,8 @@ export function state(): State {
     revision: 1,
     phase: "AwaitingConsent",
     condition: "consent_required",
+    conditionDetail: null,
+    lastObservation: null,
     createdAt: 0,
     consentDeadline: 259200,
     publicationDeadline: 172800,
@@ -42,6 +44,8 @@ export function state(): State {
     ownershipEpoch: hash,
     consented: false,
     updatedAt: 0,
+    nextObservationAt: 0,
+    observationFailures: 0,
   };
 }
 const delegation = {
@@ -59,6 +63,8 @@ export function observation(): Observation {
     tipTime: 1000,
     fetchedAt: 1000,
     safeRoot: hash,
+    safeResourceDigest: hash,
+    safeOwnershipEpoch: hash,
     safeHeight: 48,
     resourceDigest: hash,
     ownershipEpoch: hash,
