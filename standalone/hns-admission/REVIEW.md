@@ -46,6 +46,15 @@ The pinned sha256:7a9aca3e77d828f23bf78a76daefcf2d9c718b2215a5ff083e10b998917ecc
 
 ## Contract and integration boundary
 
+The joint HNS/V4 cloud review has a source-pinned
+[integration proposal](V4-INTEGRATION-PROPOSAL.md) and
+[draft encoding vectors](review-evidence/v4-integration-proposal/encoding-vectors.json).
+They propose stable authority versus rolling observation commitments,
+constrained admin custody, automatic enrollment and a post-admission lease
+lifecycle. They are unimplemented proposals; no Solidity cross-check, accepted
+certificate protocol or V4 producer/consumer join is claimed. Current runtime
+scope and the qualified executable source are unchanged.
+
 Namespace identity follows SharedNameKeys.sol at pirate-registry 56d63ad2738e0e6816b6157dba7174198700f2fa, with literal vectors here. The retained source/ABI comparison found the selected application's claim tuple aligned, but V3 admission and attestation remain admin-only. Service consent is not an accepted wrapper permit or V3 claim. Wrapper/certificate, sponsorship, member authorization, resolver pd1 enforcement and the Wizard namespaceProofCollector remain separate joins. Local selection identity, service binding digest and on-chain revisions are not interchangeable.
 
 There is no minimum remaining HNS renewal horizon. Current valid control is sufficient; already expired names and the later contract attestation lease remain distinct. Staleness or revocation must affect new authorization without deleting existing ownership or receipts.
