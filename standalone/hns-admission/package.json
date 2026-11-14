@@ -1,0 +1,26 @@
+{
+  "name": "@pirate/hns-admission",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && prettier --check src test package.json tsconfig.json",
+    "test": "node --test test/*.test.ts",
+    "test:regtest": "node --test --test-concurrency=1 test/regtest/*.test.ts"
+  },
+  "dependencies": {
+    "@alchemy.run/cloudflare": "2.0.0-beta.87",
+    "@alchemy.run/domain": "2.0.0-beta.87",
+    "alchemy": "2.0.0-beta.87",
+    "effect": "4.1.4",
+    "viem": "2.57.16"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "prettier": "3.6.2",
+    "typescript": "7.0.2"
+  }
+}
