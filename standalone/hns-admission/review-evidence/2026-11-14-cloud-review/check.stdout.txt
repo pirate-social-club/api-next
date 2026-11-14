@@ -1,0 +1,6 @@
+
+> @pirate/hns-admission@0.1.0 check
+> tsc --noEmit && prettier --check src test alchemy.run.ts package.json tsconfig.json
+
+Checking formatting...
+All matched files use Prettier code style!
