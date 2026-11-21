@@ -1,0 +1,94 @@
+{
+  "sourceCommit": "3cba0689dda7cb36476f451424f71ecfd408b364",
+  "date": "2026-11-14",
+  "scope": "Standalone pre-submission package; following checkpoint changes documentation/evidence only.",
+  "toolchain": {
+    "node": "24.14.0",
+    "npm": "11.21.2",
+    "typescript": "7.0.2",
+    "effect": "4.1.4",
+    "alchemy": "2.0.0-beta.87"
+  },
+  "checks": [
+    {
+      "argv": [
+        "npm",
+        "run",
+        "check"
+      ],
+      "exitCode": 0,
+      "includes": [
+        "TypeScript noEmit",
+        "Prettier check"
+      ]
+    },
+    {
+      "argv": [
+        "npm",
+        "test"
+      ],
+      "exitCode": 0,
+      "tests": 29,
+      "pass": 29,
+      "fail": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "durationMs": 1642.896387
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "test:regtest"
+      ],
+      "exitCode": 0,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "durationMs": 69895.520626,
+      "stdout": "hsd-regtest.stdout.txt",
+      "stderrEmpty": true
+    },
+    {
+      "argv": [
+        "npm",
+        "run",
+        "check:bundle"
+      ],
+      "exitCode": 0,
+      "stdout": "offline-bundle.stdout.txt",
+      "stderrEmpty": true,
+      "bundleHash": "6ff5027027449f5ecdba072fa1c6ea454672899e2829423a40789f6a9eb144b6",
+      "qualification": "offline compilation only; no DO exports discovery or runtime/deployment acceptance"
+    }
+  ],
+  "independentDeltaReview": {
+    "base": "f96396b4cf15f3b09b7c61700ff5906598135ab0",
+    "head": "3cba0689dda7cb36476f451424f71ecfd408b364",
+    "result": "CLEAR",
+    "patchSha256": "c068ef50d33f44df66915b5b74d4d0d5a5afe18ca7ed89b77dade814a2d428c6",
+    "findingsClosed": "All three P2 findings; no new P1/P2 in HTTP progress retention.",
+    "checksExecutedByReviewer": false
+  },
+  "runDisclosure": {
+    "batchOuterExitCode": 143,
+    "reason": "Coordinator withdrew the later phase. Orchestration was deliberately stopped after HSD completed successfully; the bundle ran separately later.",
+    "hsdExitEvidence": "Retained wait status0 and complete four-pass output.",
+    "testResourcesCleaned": true,
+    "sourceAndDependenciesUnchangedDuringTests": true
+  },
+  "unrun": [
+    "Parent local application checks; dependencies absent in this checkout",
+    "Deployed Cloudflare DO export discovery, alarms, eviction and crash recovery",
+    "MegaETH submission, gas, nonce and recovery qualification",
+    "Live HNS manual ceremony and complete installation/issuance journey"
+  ],
+  "hostedCiDisclosure": "Earlier parent dependency audit failed on Hono/node-forge advisories in the untouched graph; standalone checks do not waive parent CI.",
+  "imageAvailability": "The pinned local HSD image content ID is not a public registry reference. Cloud reruns need the exact image independently supplied.",
+  "evidenceSha256": {
+    "hsd-regtest.stdout.txt": "e220ffdf20de4d712b9f0caf9cac153ea5c53169d612d80e01ab531e4706872d",
+    "offline-bundle.stdout.txt": "cdc25fcda2a7c27cc74f9b30c708488987ca33952d7213787ee9a91cab00cb09"
+  }
+}

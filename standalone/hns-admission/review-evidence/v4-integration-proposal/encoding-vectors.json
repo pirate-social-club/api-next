@@ -1,0 +1,581 @@
+{
+  "status": "PROPOSAL_ENCODING_ONLY",
+  "sourceReferences": {
+    "hns": "9b64b1f7ee65807a67c4ee65f6d15482e5f12b38",
+    "registry": "87e5f518730abfd6d987788503c214cbae0cf31f"
+  },
+  "qualification": "Computed locally with installed viem2.57.16. Mutation invariants passed. No Solidity cross-check, valid controller signature, HNS proof, contract effect or accepted enrollment protocol is asserted. All numeric policy values are synthetic fixture values, not live policy.",
+  "definitions": {
+    "HnsDelegationV1": [
+      {
+        "name": "chainId",
+        "type": "uint256"
+      },
+      {
+        "name": "registry",
+        "type": "address"
+      },
+      {
+        "name": "controller",
+        "type": "address"
+      },
+      {
+        "name": "communityId",
+        "type": "bytes32"
+      }
+    ],
+    "HnsNamespaceAuthorizationV1": [
+      {
+        "name": "networkHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "genesis",
+        "type": "bytes32"
+      },
+      {
+        "name": "namespaceId",
+        "type": "bytes32"
+      },
+      {
+        "name": "chainId",
+        "type": "uint256"
+      },
+      {
+        "name": "registry",
+        "type": "address"
+      },
+      {
+        "name": "ownershipEpoch",
+        "type": "bytes32"
+      },
+      {
+        "name": "delegationHash",
+        "type": "bytes32"
+      }
+    ],
+    "EnrollmentPolicyV1": [
+      {
+        "name": "chainId",
+        "type": "uint256"
+      },
+      {
+        "name": "registry",
+        "type": "address"
+      },
+      {
+        "name": "gateway",
+        "type": "address"
+      },
+      {
+        "name": "submitter",
+        "type": "address"
+      },
+      {
+        "name": "paymentToken",
+        "type": "address"
+      },
+      {
+        "name": "namespaceClaimLimit",
+        "type": "uint64"
+      },
+      {
+        "name": "scopeClaimLimit",
+        "type": "uint64"
+      },
+      {
+        "name": "annualRenewalPrice",
+        "type": "uint256"
+      },
+      {
+        "name": "maxLeaseSeconds",
+        "type": "uint64"
+      },
+      {
+        "name": "maxMaintenanceSeconds",
+        "type": "uint64"
+      },
+      {
+        "name": "minimumRefreshIntervalSeconds",
+        "type": "uint64"
+      }
+    ],
+    "NamespaceDelegationMandate": [
+      {
+        "name": "namespaceId",
+        "type": "bytes32"
+      },
+      {
+        "name": "namespaceAuthorizationHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "communityId",
+        "type": "bytes32"
+      },
+      {
+        "name": "installationId",
+        "type": "bytes32"
+      },
+      {
+        "name": "controller",
+        "type": "address"
+      },
+      {
+        "name": "grantSigner",
+        "type": "address"
+      },
+      {
+        "name": "installationKey",
+        "type": "address"
+      },
+      {
+        "name": "registry",
+        "type": "address"
+      },
+      {
+        "name": "sourceProfileDigest",
+        "type": "bytes32"
+      },
+      {
+        "name": "policyDigest",
+        "type": "bytes32"
+      },
+      {
+        "name": "maintenanceUntil",
+        "type": "uint64"
+      },
+      {
+        "name": "nonce",
+        "type": "bytes32"
+      },
+      {
+        "name": "issuedAt",
+        "type": "uint64"
+      },
+      {
+        "name": "deadline",
+        "type": "uint64"
+      }
+    ],
+    "CommunityMandateEvidenceV1": [
+      {
+        "name": "mandateDigest",
+        "type": "bytes32"
+      },
+      {
+        "name": "controllerSignatureHash",
+        "type": "bytes32"
+      }
+    ],
+    "HnsObservationEvidenceV1": [
+      {
+        "name": "namespaceAuthorizationHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "tipHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "tipHeight",
+        "type": "uint64"
+      },
+      {
+        "name": "safeRoot",
+        "type": "bytes32"
+      },
+      {
+        "name": "safeHeight",
+        "type": "uint64"
+      },
+      {
+        "name": "resourceDigest",
+        "type": "bytes32"
+      },
+      {
+        "name": "safeResourceDigest",
+        "type": "bytes32"
+      },
+      {
+        "name": "inclusionHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "inclusionHeight",
+        "type": "uint64"
+      },
+      {
+        "name": "inclusionTime",
+        "type": "uint64"
+      },
+      {
+        "name": "observerPolicyDigest",
+        "type": "bytes32"
+      },
+      {
+        "name": "proofArtifactDigest",
+        "type": "bytes32"
+      },
+      {
+        "name": "observedAt",
+        "type": "uint64"
+      }
+    ],
+    "ScopeAuthorization": [
+      {
+        "name": "namespaceId",
+        "type": "bytes32"
+      },
+      {
+        "name": "communityId",
+        "type": "bytes32"
+      },
+      {
+        "name": "installationId",
+        "type": "bytes32"
+      },
+      {
+        "name": "controller",
+        "type": "address"
+      },
+      {
+        "name": "namespaceAuthorizationHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "namespaceAuthorizationRevision",
+        "type": "uint64"
+      },
+      {
+        "name": "evidenceHash",
+        "type": "bytes32"
+      }
+    ]
+  },
+  "baseInput": {
+    "network": "regtest",
+    "genesis": "0xae3895cf597eff05b19e02a70ceeeecb9dc72dbfe6504a50e9343a72f06a87c5",
+    "tld": "testname",
+    "chainId": 6343,
+    "registry": "0x4040404040404040404040404040404040404040",
+    "gateway": "0x5050505050505050505050505050505050505050",
+    "controller": "0x1010101010101010101010101010101010101010",
+    "grantSigner": "0x2020202020202020202020202020202020202020",
+    "installationKey": "0x3030303030303030303030303030303030303030",
+    "submitter": "0x6060606060606060606060606060606060606060",
+    "paymentToken": "0x7070707070707070707070707070707070707070",
+    "communityId": "0x9191919191919191919191919191919191919191919191919191919191919191",
+    "installationId": "0x9292929292929292929292929292929292929292929292929292929292929292",
+    "ownershipEpoch": "0x8181818181818181818181818181818181818181818181818181818181818181",
+    "sourceProfileDigest": "0xd8538d178fd94bcdf69a5ccb5faa02a37aedc13b2b75dbd38352da4c5b3bf484",
+    "controllerSignatureHash": "0x8f012c8799b732ed83cd70104be262a6ab04fb7df13f7fa72263810987bcb814",
+    "hostingOrigin": "https://community.example.test",
+    "deploymentDigest": "0x9393939393939393939393939393939393939393939393939393939393939393",
+    "nonce": "0x9494949494949494949494949494949494949494949494949494949494949494",
+    "issuedAt": 1699999900,
+    "deadline": 1700259100,
+    "maintenanceUntil": 1700604800,
+    "namespaceAuthorizationRevision": 1,
+    "policy": {
+      "namespaceClaimLimit": 11,
+      "scopeClaimLimit": 7,
+      "annualRenewalPrice": 3,
+      "maxLeaseSeconds": 86400,
+      "maxMaintenanceSeconds": 604800,
+      "minimumRefreshIntervalSeconds": 82800
+    },
+    "observation": {
+      "tipHash": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "tipHeight": 150,
+      "safeRoot": "0xa2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+      "safeHeight": 144,
+      "resourceDigest": "0xa3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+      "safeResourceDigest": "0xa3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+      "inclusionHash": "0xa4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
+      "inclusionHeight": 140,
+      "inclusionTime": 1699999800,
+      "observerPolicyDigest": "0x913bafeb5e3fa6cea02d139baac2169b4b65346614bd3f717a64abe816e2fec2",
+      "proofArtifactDigest": "0xbc9df7f8d191133d02551b099c021dc407fc7b1c411d044fcbee52cb073071d1",
+      "observedAt": 1700000000
+    }
+  },
+  "baseExpected": {
+    "namespaceId": "0x0788c731e5029afb9ba49ff6ef51490dfc00fabf8ac285d99f2e44b5ce086838",
+    "delegation": {
+      "chainId": 6343,
+      "registry": "0x4040404040404040404040404040404040404040",
+      "controller": "0x1010101010101010101010101010101010101010",
+      "communityId": "0x9191919191919191919191919191919191919191919191919191919191919191"
+    },
+    "delegationHash": {
+      "typeString": "HnsDelegationV1(uint256 chainId,address registry,address controller,bytes32 communityId)",
+      "typeHash": "0x00b50ca65de89a3b9ef22660fcb334a5bae8dd61857ff5df3d6985d3d555307c",
+      "encoded": "0x00b50ca65de89a3b9ef22660fcb334a5bae8dd61857ff5df3d6985d3d555307c00000000000000000000000000000000000000000000000000000000000018c7000000000000000000000000404040404040404040404040404040404040404000000000000000000000000010101010101010101010101010101010101010109191919191919191919191919191919191919191919191919191919191919191",
+      "digest": "0x7c661bfb1d2e4265df923ac757f89a6e76c9603a25669829f57bd333caa917bc"
+    },
+    "namespaceAuthorization": {
+      "typeString": "HnsNamespaceAuthorizationV1(bytes32 networkHash,bytes32 genesis,bytes32 namespaceId,uint256 chainId,address registry,bytes32 ownershipEpoch,bytes32 delegationHash)",
+      "typeHash": "0xaacc392a9c7043d387fa07186a31262e17f0ced8118492fcb3003c43891dc918",
+      "encoded": "0xaacc392a9c7043d387fa07186a31262e17f0ced8118492fcb3003c43891dc9188fa196f13f3b76c71f961e3c761813916676a945e5e02d60732ec4c2e7c44087ae3895cf597eff05b19e02a70ceeeecb9dc72dbfe6504a50e9343a72f06a87c50788c731e5029afb9ba49ff6ef51490dfc00fabf8ac285d99f2e44b5ce08683800000000000000000000000000000000000000000000000000000000000018c7000000000000000000000000404040404040404040404040404040404040404081818181818181818181818181818181818181818181818181818181818181817c661bfb1d2e4265df923ac757f89a6e76c9603a25669829f57bd333caa917bc",
+      "digest": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b"
+    },
+    "policy": {
+      "chainId": 6343,
+      "registry": "0x4040404040404040404040404040404040404040",
+      "gateway": "0x5050505050505050505050505050505050505050",
+      "submitter": "0x6060606060606060606060606060606060606060",
+      "paymentToken": "0x7070707070707070707070707070707070707070",
+      "namespaceClaimLimit": 11,
+      "scopeClaimLimit": 7,
+      "annualRenewalPrice": 3,
+      "maxLeaseSeconds": 86400,
+      "maxMaintenanceSeconds": 604800,
+      "minimumRefreshIntervalSeconds": 82800
+    },
+    "policyCommitment": {
+      "typeString": "EnrollmentPolicyV1(uint256 chainId,address registry,address gateway,address submitter,address paymentToken,uint64 namespaceClaimLimit,uint64 scopeClaimLimit,uint256 annualRenewalPrice,uint64 maxLeaseSeconds,uint64 maxMaintenanceSeconds,uint64 minimumRefreshIntervalSeconds)",
+      "typeHash": "0xcfeb044a262ecc4dbb1e39fbf6bb8fe76d90559cbda5b986261cab264411a8ab",
+      "encoded": "0xcfeb044a262ecc4dbb1e39fbf6bb8fe76d90559cbda5b986261cab264411a8ab00000000000000000000000000000000000000000000000000000000000018c70000000000000000000000004040404040404040404040404040404040404040000000000000000000000000505050505050505050505050505050505050505000000000000000000000000060606060606060606060606060606060606060600000000000000000000000007070707070707070707070707070707070707070000000000000000000000000000000000000000000000000000000000000000b0000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000151800000000000000000000000000000000000000000000000000000000000093a800000000000000000000000000000000000000000000000000000000000014370",
+      "digest": "0x53e17b206ac36f680d1b1459358ab71a82c4de5e64872cbb4b5388c95d355961"
+    },
+    "mandateDomain": {
+      "name": "PirateNamespaceDelegation",
+      "version": "proposal-1",
+      "chainId": 6343,
+      "verifyingContract": "0x5050505050505050505050505050505050505050"
+    },
+    "mandate": {
+      "namespaceId": "0x0788c731e5029afb9ba49ff6ef51490dfc00fabf8ac285d99f2e44b5ce086838",
+      "namespaceAuthorizationHash": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+      "communityId": "0x9191919191919191919191919191919191919191919191919191919191919191",
+      "installationId": "0x9292929292929292929292929292929292929292929292929292929292929292",
+      "controller": "0x1010101010101010101010101010101010101010",
+      "grantSigner": "0x2020202020202020202020202020202020202020",
+      "installationKey": "0x3030303030303030303030303030303030303030",
+      "registry": "0x4040404040404040404040404040404040404040",
+      "sourceProfileDigest": "0xd8538d178fd94bcdf69a5ccb5faa02a37aedc13b2b75dbd38352da4c5b3bf484",
+      "policyDigest": "0x53e17b206ac36f680d1b1459358ab71a82c4de5e64872cbb4b5388c95d355961",
+      "maintenanceUntil": 1700604800,
+      "nonce": "0x9494949494949494949494949494949494949494949494949494949494949494",
+      "issuedAt": 1699999900,
+      "deadline": 1700259100
+    },
+    "mandateDigest": "0x8bb397aa5df9b4cffd5cf2e10ffec64061ad4b26f4b16844cadd1ef38b00e102",
+    "scopeEvidence": {
+      "typeString": "CommunityMandateEvidenceV1(bytes32 mandateDigest,bytes32 controllerSignatureHash)",
+      "typeHash": "0x2154c8623048129d7cce76e5cdbaf8fff35fbdbdc1b4b58e49764d54efdc6fe6",
+      "encoded": "0x2154c8623048129d7cce76e5cdbaf8fff35fbdbdc1b4b58e49764d54efdc6fe68bb397aa5df9b4cffd5cf2e10ffec64061ad4b26f4b16844cadd1ef38b00e1028f012c8799b732ed83cd70104be262a6ab04fb7df13f7fa72263810987bcb814",
+      "digest": "0x89e058475ebdcaef4eed7cb9fd3177e0e152488d780152fd08a755bb0bb0fdf0"
+    },
+    "scopeDomain": {
+      "name": "PirateSharedNames",
+      "version": "4",
+      "chainId": 6343,
+      "verifyingContract": "0x4040404040404040404040404040404040404040"
+    },
+    "scopeAuthorization": {
+      "namespaceId": "0x0788c731e5029afb9ba49ff6ef51490dfc00fabf8ac285d99f2e44b5ce086838",
+      "communityId": "0x9191919191919191919191919191919191919191919191919191919191919191",
+      "installationId": "0x9292929292929292929292929292929292929292929292929292929292929292",
+      "controller": "0x1010101010101010101010101010101010101010",
+      "namespaceAuthorizationHash": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+      "namespaceAuthorizationRevision": 1,
+      "evidenceHash": "0x89e058475ebdcaef4eed7cb9fd3177e0e152488d780152fd08a755bb0bb0fdf0"
+    },
+    "scopeAuthorizationHash": "0x47f2117d62776c10ead0757c89873c552aa012f9b40ec5f75784731e40af63bf",
+    "observationEvidence": {
+      "typeString": "HnsObservationEvidenceV1(bytes32 namespaceAuthorizationHash,bytes32 tipHash,uint64 tipHeight,bytes32 safeRoot,uint64 safeHeight,bytes32 resourceDigest,bytes32 safeResourceDigest,bytes32 inclusionHash,uint64 inclusionHeight,uint64 inclusionTime,bytes32 observerPolicyDigest,bytes32 proofArtifactDigest,uint64 observedAt)",
+      "typeHash": "0x69fac0f3df18d9ce079956677cde160f5c783f2bc96b0e9a8517c9efff55aad8",
+      "encoded": "0x69fac0f3df18d9ce079956677cde160f5c783f2bc96b0e9a8517c9efff55aad84c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8ba1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10000000000000000000000000000000000000000000000000000000000000096a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a20000000000000000000000000000000000000000000000000000000000000090a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4000000000000000000000000000000000000000000000000000000000000008c000000000000000000000000000000000000000000000000000000006553f038913bafeb5e3fa6cea02d139baac2169b4b65346614bd3f717a64abe816e2fec2bc9df7f8d191133d02551b099c021dc407fc7b1c411d044fcbee52cb073071d1000000000000000000000000000000000000000000000000000000006553f100",
+      "digest": "0xd103837da6166539ebf6a3713d6b07bc545433e73e6eea1bd0916b563536b0ae"
+    },
+    "ceremonyBindingDigest": "0x898b1cea9592f9db44af8a2f925d5b7a61aa311ec62bde9d2064ad0deddd901c"
+  },
+  "cases": [
+    {
+      "id": "origin_change",
+      "change": {
+        "hostingOrigin": "https://new-community.example.test"
+      },
+      "expectedChanged": ["ceremonyBindingDigest"],
+      "expectedUnchanged": [
+        "namespaceAuthorization",
+        "scopeEvidence",
+        "scopeAuthorizationHash"
+      ],
+      "expected": {
+        "namespaceAuthorization": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+        "scopeEvidence": "0x89e058475ebdcaef4eed7cb9fd3177e0e152488d780152fd08a755bb0bb0fdf0",
+        "scopeAuthorizationHash": "0x47f2117d62776c10ead0757c89873c552aa012f9b40ec5f75784731e40af63bf",
+        "observationEvidence": "0xd103837da6166539ebf6a3713d6b07bc545433e73e6eea1bd0916b563536b0ae",
+        "ceremonyBindingDigest": "0xb4ced2e2e8aab10c18989afd2014595d99b7cb1f7c80faf01f3869f936df2caf"
+      }
+    },
+    {
+      "id": "deployment_context_change",
+      "change": {
+        "deploymentDigest": "0x9595959595959595959595959595959595959595959595959595959595959595"
+      },
+      "expectedChanged": ["ceremonyBindingDigest"],
+      "expectedUnchanged": [
+        "namespaceAuthorization",
+        "scopeEvidence",
+        "scopeAuthorizationHash"
+      ],
+      "expected": {
+        "namespaceAuthorization": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+        "scopeEvidence": "0x89e058475ebdcaef4eed7cb9fd3177e0e152488d780152fd08a755bb0bb0fdf0",
+        "scopeAuthorizationHash": "0x47f2117d62776c10ead0757c89873c552aa012f9b40ec5f75784731e40af63bf",
+        "observationEvidence": "0xd103837da6166539ebf6a3713d6b07bc545433e73e6eea1bd0916b563536b0ae",
+        "ceremonyBindingDigest": "0x8d5c81be471affbd4f403f73afd2a1d5caebe7421a5e6bdd10100e4bcbc81853"
+      }
+    },
+    {
+      "id": "ownership_epoch_change",
+      "change": {
+        "ownershipEpoch": "0x8282828282828282828282828282828282828282828282828282828282828282"
+      },
+      "expectedChanged": [
+        "namespaceAuthorization",
+        "scopeEvidence",
+        "scopeAuthorizationHash"
+      ],
+      "expectedUnchanged": [],
+      "expected": {
+        "namespaceAuthorization": "0x7a28ae0253dfeae181073c89e668733bf4167097af51f729b54c7063e7964df7",
+        "scopeEvidence": "0xf3739a190fa84557b96d196931c9f10c5d65879e007997dc02ee8dcebeeea488",
+        "scopeAuthorizationHash": "0x841d3831532ae3536f76dd6078c1d35feda4f666899d71b9b50147eba3b202f5",
+        "observationEvidence": "0xe86ed95cadf3bf3e5b479d06921086168167dba040358c054f50c4021f88d930",
+        "ceremonyBindingDigest": "0x898b1cea9592f9db44af8a2f925d5b7a61aa311ec62bde9d2064ad0deddd901c"
+      }
+    },
+    {
+      "id": "grant_signer_rotation",
+      "change": {
+        "grantSigner": "0x2121212121212121212121212121212121212121"
+      },
+      "expectedChanged": ["scopeEvidence", "scopeAuthorizationHash"],
+      "expectedUnchanged": ["namespaceAuthorization"],
+      "expected": {
+        "namespaceAuthorization": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+        "scopeEvidence": "0x56ca8307f17a1f1f2e56f0daefa97be1440fb8588610ffbdc992fafb1484eb65",
+        "scopeAuthorizationHash": "0xea9e75aa098e442497b0ce3ea269d3d3d36dcb8421b11156cc406ff997d9dddd",
+        "observationEvidence": "0xd103837da6166539ebf6a3713d6b07bc545433e73e6eea1bd0916b563536b0ae",
+        "ceremonyBindingDigest": "0x24b0873304bf566591498a73c416f206aa04dc686a584506b7c9d537b8ac5e7b"
+      }
+    },
+    {
+      "id": "namespace_semantic_revision_change",
+      "change": {
+        "namespaceAuthorizationRevision": 2
+      },
+      "expectedChanged": ["scopeAuthorizationHash"],
+      "expectedUnchanged": ["namespaceAuthorization", "scopeEvidence"],
+      "expected": {
+        "namespaceAuthorization": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+        "scopeEvidence": "0x89e058475ebdcaef4eed7cb9fd3177e0e152488d780152fd08a755bb0bb0fdf0",
+        "scopeAuthorizationHash": "0xf64b2d28b5a587d1d61f0f783db5bac31d41358e8008f2c8de6cffba776240a1",
+        "observationEvidence": "0xd103837da6166539ebf6a3713d6b07bc545433e73e6eea1bd0916b563536b0ae",
+        "ceremonyBindingDigest": "0x898b1cea9592f9db44af8a2f925d5b7a61aa311ec62bde9d2064ad0deddd901c"
+      }
+    },
+    {
+      "id": "fresh_observation",
+      "change": {
+        "observation": {
+          "tipHash": "0xa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+          "tipHeight": 156,
+          "safeRoot": "0xa6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6",
+          "safeHeight": 150,
+          "resourceDigest": "0xa3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+          "safeResourceDigest": "0xa3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+          "inclusionHash": "0xa4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
+          "inclusionHeight": 140,
+          "inclusionTime": 1699999800,
+          "observerPolicyDigest": "0x913bafeb5e3fa6cea02d139baac2169b4b65346614bd3f717a64abe816e2fec2",
+          "proofArtifactDigest": "0xa8ab04a3df8a721eae387437f9eb132e086810a264b31c83dfc655912c43c4f7",
+          "observedAt": 1700000060
+        }
+      },
+      "expectedChanged": ["observationEvidence"],
+      "expectedUnchanged": [
+        "namespaceAuthorization",
+        "scopeEvidence",
+        "scopeAuthorizationHash"
+      ],
+      "expected": {
+        "namespaceAuthorization": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+        "scopeEvidence": "0x89e058475ebdcaef4eed7cb9fd3177e0e152488d780152fd08a755bb0bb0fdf0",
+        "scopeAuthorizationHash": "0x47f2117d62776c10ead0757c89873c552aa012f9b40ec5f75784731e40af63bf",
+        "observationEvidence": "0xb476a12f0c17c111d3fe78ce22bca004abdcb858f105a6807dfe518c3c2d3b49",
+        "ceremonyBindingDigest": "0x898b1cea9592f9db44af8a2f925d5b7a61aa311ec62bde9d2064ad0deddd901c"
+      }
+    },
+    {
+      "id": "chain_change",
+      "change": {
+        "chainId": 31337
+      },
+      "expectedChanged": [
+        "namespaceAuthorization",
+        "scopeEvidence",
+        "scopeAuthorizationHash"
+      ],
+      "expectedUnchanged": [],
+      "expected": {
+        "namespaceAuthorization": "0x239eb3b555d98eb6d62d387317eec7190f8aa5881a9630490bb92a981928f993",
+        "scopeEvidence": "0xc0c74a7d3a865bdca3855d30f29cf2be3ea02fb1809fd427bb26924809c0d7bd",
+        "scopeAuthorizationHash": "0xb8576786f9828d69263e9d43ecb1f491955e518b19cc54da35033afb643df0a9",
+        "observationEvidence": "0x7ddd17ef64e058fabdb076fbd40b5c399b156eea44daa46298ed8c13c556eeb0",
+        "ceremonyBindingDigest": "0x39be2e74e167e1a9340ba21f7b6ff7efadfa7690fd5b8e713cd9c0aa591981b7"
+      }
+    },
+    {
+      "id": "gateway_change",
+      "change": {
+        "gateway": "0x5151515151515151515151515151515151515151"
+      },
+      "expectedChanged": ["scopeEvidence", "scopeAuthorizationHash"],
+      "expectedUnchanged": ["namespaceAuthorization"],
+      "expected": {
+        "namespaceAuthorization": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+        "scopeEvidence": "0xd7398d7f7a229efded854e8560f301435874701a3f22907e34762696f105d07a",
+        "scopeAuthorizationHash": "0x00f5466a03a76073917703c901ee609b0ca2f43642769e9f4926042d1bfe20f1",
+        "observationEvidence": "0xd103837da6166539ebf6a3713d6b07bc545433e73e6eea1bd0916b563536b0ae",
+        "ceremonyBindingDigest": "0x16000734e0f4cddc10d2a598ba48b12820426084c3fa554da62b912381eb528f"
+      }
+    },
+    {
+      "id": "policy_change",
+      "change": {
+        "policy": {
+          "namespaceClaimLimit": 11,
+          "scopeClaimLimit": 8,
+          "annualRenewalPrice": 3,
+          "maxLeaseSeconds": 86400,
+          "maxMaintenanceSeconds": 604800,
+          "minimumRefreshIntervalSeconds": 82800
+        }
+      },
+      "expectedChanged": ["scopeEvidence", "scopeAuthorizationHash"],
+      "expectedUnchanged": ["namespaceAuthorization"],
+      "expected": {
+        "namespaceAuthorization": "0x4c1f168b60fc52cb1e5106fe347fa39ffd13b616fdaa99f1b0afc36b92f14b8b",
+        "scopeEvidence": "0x7c4f94334dff9f49c5bf6c6abe116ca484ae14d2299d7e1805cadccafe6f17f6",
+        "scopeAuthorizationHash": "0x2b3eca91665b341311f966aad13d756f3869963598e8d0cc7dcd29ea8d8e59bd",
+        "observationEvidence": "0xd103837da6166539ebf6a3713d6b07bc545433e73e6eea1bd0916b563536b0ae",
+        "ceremonyBindingDigest": "0x898b1cea9592f9db44af8a2f925d5b7a61aa311ec62bde9d2064ad0deddd901c"
+      }
+    }
+  ],
+  "requiredRejections": [
+    "invalid or wrong-domain durable mandate signature; old origin-bound CeremonyConsent is not a durable mandate",
+    "pending transfer, stale/unavailable/disagreeing evidence, wrong ownership epoch or revoked delegation",
+    "requested community does not equal the single selected pd1 community",
+    "certificate used after observedAt+120 seconds, future observedAt or requested lease over 86400 seconds",
+    "refresh past the stored absolute maintenance ceiling; refresh changing binding/policy/caps or reviving disable/revocation",
+    "source digest, target registry/gateway, expected semantic/freshness/scope revision, nonce or installation substitution",
+    "grant signer equal to active submitter or attester role after initial enrollment or a later rotation"
+  ]
+}

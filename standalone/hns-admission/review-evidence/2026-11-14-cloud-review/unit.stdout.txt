@@ -1,0 +1,53 @@
+
+> @pirate/hns-admission@0.1.0 test
+> node --test test/*.test.ts
+
+✔ HTTP signatures bind method, path, body, installation and expiry without an operator account (162.574935ms)
+✔ mainnet publication stays disabled until the selected deployment profile is frozen (1.760839ms)
+✔ durable polling survives hours of observer outages, coalesces probes, and enforces stored expiry after a late wake (226.461278ms)
+✔ actual EOA consent is bound to the whole resource and never consumed on failed verification (220.08314ms)
+✔ mature proof survives consent expiry and late publication observations retain the valid window (8.878276ms)
+✔ canonical record size and malformed alternate encoding (2.290134ms)
+✔ whole-resource overflow refuses instructions and retains existing records (11.904414ms)
+✔ literal mainnet boundary expectations include both sides of the 12-block branch (0.603755ms)
+✔ disagreement, missing observers and matching older tips remain unavailable (2.240812ms)
+✔ pending transfer, ownership change and safe-root maturity have distinct outcomes (0.971606ms)
+✔ publication at hour 45 gets a separate maturity window (1.384312ms)
+✔ outages never suppress expiry, cancellation, or authority change (1.921481ms)
+✔ a slightly future-dated canonical inclusion waits without expiring the ceremony (2.763073ms)
+✔ binding and consent domains change for chain, install and expiry (26.360424ms)
+✔ cancellation fences a successful observation already in flight (58.970764ms)
+✔ resource overflow is an actionable capacity result and creates no ceremony (16.9835ms)
+✔ empty UPDATE preserves publication inclusion across transfer cancellation (45.834455ms)
+✔ a full 64-step snapshot reuses canonical history reads across current and safe views (23.011179ms)
+✔ history depth exhaustion is unavailable and an explicit bounded larger walk supports busy names (23.403005ms)
+✔ corrupt retained publication data preserves resumable operation identity (123.75821ms)
+✔ an unavailable consent preflight retains the original nonce and retryable revision (97.232877ms)
+✔ HTTP creates pending work, preserves idempotency and never offers submission (140.808636ms)
+✔ strict JSON rejects duplicate escaped keys and excessive nesting (1.887628ms)
+✔ Alchemy aggregate fences concurrent mutation and keeps equal-create idempotency (53.356491ms)
+✔ provisional FINALIZE is unavailable, rollback recovers, and only stable ownership change denies (6.71948ms)
+✔ one unreachable observer remains unavailable under the current explicit two-observer policy (66.509573ms)
+✔ matching tips within HSD's two-hour future allowance do not make existing mature proof unavailable (4.273311ms)
+✔ stale agreeing absence cannot revoke or refuse current control (75.247616ms)
+✔ fresh stable absence still refuses a name that is no longer owned (16.727168ms)
+✔ both decision timestamps must agree before normalized evidence is selected (2.400161ms)
+✔ production reader refuses conflicting reported timestamps for the same block hash (70.252378ms)
+✔ routing and per-chain delegation coexistence preserve unrelated NS/DS and forbid ambiguous authority (40.849515ms)
+✔ expired consent can be renewed while status polling keeps its revision stable (202.233442ms)
+✔ five authorized status reads perform zero observer reads (45.470431ms)
+✔ fresh mature evidence recovers the original ceremony after an outage across its maturity deadline (7.62484ms)
+✔ deadline recovery cannot revive cancellation, changed ownership or late publication (0.714943ms)
+✔ a backward clock read does not throw or reopen a deadline (1.082334ms)
+✔ expired maturity accepts renewed consent without extending publication or republishing (0.679126ms)
+✔ observation reservation and retry preserve a known expiry across a backward clock (8.415898ms)
+✔ RPC transport bounds responses, refuses redirects/writes and preserves unavailable history (112.362933ms)
+✔ committed service-only consent, publication and HTTP authorization vectors remain fixed (17.691891ms)
+ℹ tests 41
+ℹ suites 0
+ℹ pass 41
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2051.42223

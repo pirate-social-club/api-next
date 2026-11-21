@@ -1,0 +1,5 @@
+
+> @pirate/hns-admission@0.1.0 check:bundle
+> node test/qualification/bundle.ts
+
+{"files":[{"path":"worker.js","bytes":596598},{"path":"Redacted-Ckmg06vq.js","bytes":1039},{"path":"Stream-BG4Fi5cS.js","bytes":145486},{"path":"rolldown-runtime-Dq54dT1u.js","bytes":352},{"path":"secp256k1-Cv_54Oao.js","bytes":34010},{"path":"utils-DtqQHdd9.js","bytes":2753},{"path":"Redacted-Ckmg06vq.js.map","bytes":7700},{"path":"Stream-BG4Fi5cS.js.map","bytes":2020472},{"path":"secp256k1-Cv_54Oao.js.map","bytes":191804},{"path":"utils-DtqQHdd9.js.map","bytes":13883},{"path":"worker.js.map","bytes":4319364}],"hash":"6ff5027027449f5ecdba072fa1c6ea454672899e2829423a40789f6a9eb144b6","qualification":"offline compilation only; no DO exports discovery or runtime/deployment acceptance"}
