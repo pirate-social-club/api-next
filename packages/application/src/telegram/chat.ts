@@ -58,7 +58,10 @@ const textMessage = (text: string): TelegramMessage => ({
 });
 
 async function handle(services: TelegramServices, item: InboxRecord, record: IntegrationRecord) {
-  const study = services.study?.communityId === item.communityId ? services.study : undefined;
+  const study =
+    services.study?.communityId === item.communityId
+      ? services.study
+      : await services.communityStudy?.resolve(item.communityId);
   const callback = object(item.update.callback_query);
   if (callback) {
     const callbackId =

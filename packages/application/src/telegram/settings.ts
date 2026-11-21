@@ -5,6 +5,7 @@ import {
   type Provider,
   TelegramFailure,
   type TelegramServices,
+  telegramStudyView,
 } from "./types.ts";
 
 type Command = {
@@ -80,6 +81,10 @@ export async function connectTelegram(
     ...prepared.record,
     botEpoch: epoch,
     botId: String(bot.id),
+    study:
+      prepared.record.botId === String(bot.id)
+        ? (prepared.record.study ?? { enabled: false, botId: String(bot.id) })
+        : { enabled: false, botId: String(bot.id) },
     botUsername: bot.username,
     botToken: await services.vault.seal(
       JSON.stringify({ token: command.token, secret }),
@@ -184,6 +189,7 @@ export async function disconnectTelegram(services: TelegramServices, command: Co
       ...prepared.record,
       botEpoch: services.vault.token(),
       botId: null,
+      study: { enabled: false, botId: null },
       botUsername: null,
       botToken: null,
       webhookId: null,
@@ -197,6 +203,47 @@ export async function disconnectTelegram(services: TelegramServices, command: Co
     },
     prepared.hash,
   );
+}
+
+export async function updateTelegramStudy(
+  services: TelegramServices,
+  command: Command & { enabled: boolean },
+) {
+  const prepared = await prepare(services, command, {
+    operation: "study",
+    enabled: command.enabled,
+  });
+  if (prepared.replay) return telegramStudyView(prepared.record);
+  if (command.enabled && (prepared.record.status !== "ready" || prepared.record.botId === null))
+    throw new TelegramFailure({ reason: "invalid" });
+  return telegramStudyView(
+    await services.store.saveIntegration(
+      { ...prepared.record, study: { enabled: command.enabled, botId: prepared.record.botId } },
+      command.expected_revision,
+      command.idempotency_key,
+      prepared.hash,
+      command.accountId,
+    ),
+  );
+}
+
+export async function getTelegramStudyCatalogue(
+  services: TelegramServices,
+  communityId: string,
+  accountId: string,
+  after?: string,
+) {
+  await services.store.owner(communityId, accountId);
+  const snapshot = telegramStudyView(await services.store.integration(communityId));
+  if (!services.communityStudy)
+    return { ...snapshot, availability: "unavailable" as const, items: [], next_cursor: null };
+  const page = await services.communityStudy.catalogue(communityId, after);
+  return {
+    ...snapshot,
+    availability: "available" as const,
+    items: page.items.map((song) => ({ post_id: song.postId, title: song.title })),
+    next_cursor: page.nextCursor,
+  };
 }
 
 export async function listAssistantOptions(

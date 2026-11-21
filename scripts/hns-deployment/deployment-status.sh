@@ -236,6 +236,209 @@ for key in "${!dep[@]}"; do
   fi
 done
 
+# --- container runtime configuration ----------------------------------------
+
+# A container can run the pinned image yet differ from its release: an extra
+# Compose file (COMPOSE_FILE), a changed command, an added bind mount, or a
+# systemd drop-in that reapplies such overrides. When DEPLOYMENT records the
+# expectations below, compare them with the running containers. Releases that
+# record none of these keys skip this section entirely.
+
+# Prints one container's normalized runtime view as tab-separated lines:
+#   args <compact JSON array> | mount <dest|source|ro-or-rw> | label <key> <value>
+container_runtime_view() {
+  docker inspect "$1" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)[0]
+except Exception:
+    sys.exit(1)
+print("args\t" + json.dumps(data.get("Args") or [], separators=(",", ":")))
+for m in data.get("Mounts") or []:
+    source = "volume:" + m.get("Name", "") if m.get("Type") == "volume" else m.get("Source", "")
+    print("mount\t%s|%s|%s" % (m.get("Destination", ""), source, "rw" if m.get("RW") else "ro"))
+labels = (data.get("Config") or {}).get("Labels") or {}
+for key in ("com.docker.compose.project", "com.docker.compose.project.working_dir", "com.docker.compose.project.config_files"):
+    print("label\t%s\t%s" % (key, labels.get(key, "")))
+'
+}
+
+release_path_for() {
+  # self -> the current release; otherwise a retained release commit.
+  if [[ "$1" == self ]]; then printf '%s\n' "$deploy_root/releases/$source_commit"
+  else printf '%s\n' "$deploy_root/releases/$1"; fi
+}
+
+expand_mount_spec() {
+  # Expand ${DEPLOY_ROOT} and ${RELEASE:...} and print one sorted entry per line.
+  local spec="$1" entry
+  [[ -z "$spec" ]] && return 0
+  tr ';' '\n' <<< "$spec" | while IFS= read -r entry; do
+    entry="${entry//\$\{DEPLOY_ROOT\}/$deploy_root}"
+    entry="${entry//\$\{RELEASE:self\}/$deploy_root/releases/$source_commit}"
+    while [[ "$entry" =~ \$\{RELEASE:([a-f0-9]{40})\} ]]; do
+      entry="${entry//\$\{RELEASE:${BASH_REMATCH[1]}\}/$deploy_root/releases/${BASH_REMATCH[1]}}"
+    done
+    printf '%s\n' "$entry"
+  done | sort
+}
+
+declare -A expected_release_for=()
+declare -A runtime_checked_release=()
+runtime_expectations=0
+for key in "${!dep[@]}"; do
+  [[ "$key" == CONTAINER_RELEASE_* || "$key" == CONTAINER_ARGS_* \
+    || "$key" == CONTAINER_MOUNTS_* || "$key" == SYSTEMD_UNIT_* ]] && runtime_expectations=1
+done
+
+if (( runtime_expectations )) && ! command -v python3 >/dev/null 2>&1; then
+  mark_drift "python3 unavailable; cannot check container runtime configuration"
+elif (( runtime_expectations )); then
+  compose_project="${dep[COMPOSE_PROJECT]:-}"
+
+  # Compose provenance: which release's compose.yaml created each container.
+  for key in "${!dep[@]}"; do
+    [[ "$key" == CONTAINER_RELEASE_* ]] || continue
+    record="${dep[$key]}"
+    name="${record%%=*}"
+    release_ref="${record#*=}"
+    if [[ ! "$name" =~ ^[A-Za-z0-9_.-]+$ || ! "$release_ref" =~ ^(self|[a-f0-9]{40})$ ]]; then
+      mark_drift "$key is malformed"
+      continue
+    fi
+    expected_release_for["$name"]="$release_ref"
+    expected_dir="$(readlink -m "$(release_path_for "$release_ref")")"
+    if ! view="$(container_runtime_view "$name")"; then
+      mark_drift "container $name (expected from release $release_ref) does not exist"
+      continue
+    fi
+    project_label="$(awk -F'\t' '$1 == "label" && $2 == "com.docker.compose.project" { print $3 }' <<< "$view")"
+    workdir_label="$(awk -F'\t' '$1 == "label" && $2 == "com.docker.compose.project.working_dir" { print $3 }' <<< "$view")"
+    files_label="$(awk -F'\t' '$1 == "label" && $2 == "com.docker.compose.project.config_files" { print $3 }' <<< "$view")"
+    if [[ -n "$compose_project" && "$project_label" != "$compose_project" ]]; then
+      mark_drift "container $name belongs to Compose project '${project_label:-none}', expected '$compose_project'"
+    fi
+    if [[ "$(readlink -m "${workdir_label:-/nonexistent}")" != "$expected_dir" ]]; then
+      mark_drift "container $name was created from ${workdir_label:-an unknown directory}, expected release $release_ref ($expected_dir)"
+    fi
+    if [[ "$files_label" != "$expected_dir/compose.yaml" ]]; then
+      mark_drift "container $name was created with Compose files '${files_label:-none}', expected only $expected_dir/compose.yaml"
+    else
+      note "running: $name created from release $release_ref compose.yaml only"
+    fi
+    # A retained release still serves files to a running container, so it must
+    # exist and stay intact even though current points elsewhere.
+    if [[ "$release_ref" != self && "$release_ref" != "$source_commit" \
+      && -z "${runtime_checked_release[$release_ref]+x}" ]]; then
+      runtime_checked_release["$release_ref"]=1
+      retained_dir="$deploy_root/releases/$release_ref"
+      if [[ ! -f "$retained_dir/SHA256SUMS" ]]; then
+        mark_drift "retained release $release_ref (used by $name) is missing or has no SHA256SUMS"
+      elif (cd "$retained_dir" && sha256sum --check --quiet SHA256SUMS >/dev/null 2>&1) \
+        && [[ "$(sed 's/^[a-f0-9]\{64\}  //' "$retained_dir/SHA256SUMS" | sort)" \
+          == "$(cd "$retained_dir" && find . -type f ! -path './SHA256SUMS' -print | sort)" ]]; then
+        note "release: retained $release_ref checksums OK (used by $name)"
+      else
+        mark_drift "retained release $release_ref (used by $name) fails its checksums"
+      fi
+    fi
+  done
+
+  # Every container in the project needs an explicit expectation.
+  # A failed listing is drift, never an empty project.
+  if [[ -n "$compose_project" ]]; then
+    if ! project_containers="$(docker ps -a --filter "label=com.docker.compose.project=$compose_project" --format '{{.Names}}' 2>/dev/null)"; then
+      mark_drift "cannot list containers in Compose project $compose_project (docker ps failed)"
+    else
+      while IFS= read -r project_container; do
+        [[ -z "$project_container" ]] && continue
+        if [[ -z "${expected_release_for[$project_container]+x}" ]]; then
+          mark_drift "container $project_container in Compose project $compose_project has no recorded release expectation"
+        fi
+      done <<< "$project_containers"
+    fi
+  fi
+
+  # Exact container arguments.
+  for key in "${!dep[@]}"; do
+    [[ "$key" == CONTAINER_ARGS_* ]] || continue
+    record="${dep[$key]}"
+    name="${record%%=*}"
+    expected_args="${record#*=}"
+    if ! view="$(container_runtime_view "$name")"; then
+      mark_drift "container $name (args expectation) does not exist"
+      continue
+    fi
+    actual_args="$(awk -F'\t' '$1 == "args" { print $2 }' <<< "$view")"
+    if [[ "$actual_args" == "$expected_args" ]]; then
+      note "running: $name args match"
+    else
+      mark_drift "container $name args $actual_args differ from expected $expected_args"
+    fi
+  done
+
+  # Exact mounts.
+  for key in "${!dep[@]}"; do
+    [[ "$key" == CONTAINER_MOUNTS_* ]] || continue
+    record="${dep[$key]}"
+    name="${record%%=*}"
+    if ! view="$(container_runtime_view "$name")"; then
+      mark_drift "container $name (mounts expectation) does not exist"
+      continue
+    fi
+    expected_mounts="$(expand_mount_spec "${record#*=}")"
+    actual_mounts="$(awk -F'\t' '$1 == "mount" { print $2 }' <<< "$view" | sort)"
+    if [[ "$actual_mounts" == "$expected_mounts" ]]; then
+      note "running: $name mounts match"
+    else
+      mark_drift "container $name mounts [$(tr '\n' ';' <<< "$actual_mounts")] differ from expected [$(tr '\n' ';' <<< "$expected_mounts")]"
+    fi
+  done
+
+  # systemd units: no drop-ins and no Compose environment overrides.
+  for key in "${!dep[@]}"; do
+    [[ "$key" == SYSTEMD_UNIT_* ]] || continue
+    unit="${dep[$key]}"
+    if [[ ! "$unit" =~ ^[A-Za-z0-9@._-]+\.service$ ]]; then
+      mark_drift "$key is malformed"
+      continue
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+      mark_drift "systemctl unavailable; cannot inspect $unit"
+      continue
+    fi
+    # Any failed inspection is drift, never "no drop-ins". systemctl show
+    # succeeds with empty values for a unit that does not exist, so the unit
+    # must also be loaded.
+    if ! load_state="$(systemctl show -p LoadState --value "$unit" 2>/dev/null)"; then
+      mark_drift "cannot inspect systemd unit $unit (systemctl show LoadState failed)"
+      continue
+    fi
+    if [[ "$load_state" != loaded ]]; then
+      mark_drift "systemd unit $unit is ${load_state:-in an unknown state}, expected loaded"
+      continue
+    fi
+    if ! dropins="$(systemctl show -p DropInPaths --value "$unit" 2>/dev/null)"; then
+      mark_drift "cannot read drop-ins of systemd unit $unit (systemctl show DropInPaths failed)"
+      continue
+    fi
+    if ! environment="$(systemctl show -p Environment --value "$unit" 2>/dev/null)"; then
+      mark_drift "cannot read environment of systemd unit $unit (systemctl show Environment failed)"
+      continue
+    fi
+    unit_ok=1
+    if [[ -n "${dropins//[[:space:]]/}" ]]; then
+      mark_drift "systemd unit $unit has drop-ins: $dropins"
+      unit_ok=0
+    fi
+    if grep -Eq '(^|[[:space:]])COMPOSE_(FILE|PROJECT_NAME|PROFILES)=' <<< "$environment"; then
+      mark_drift "systemd unit $unit sets a Compose override in its environment"
+      unit_ok=0
+    fi
+    (( unit_ok )) && note "systemd: $unit has no drop-ins or Compose overrides"
+  done
+fi
+
 # --- host runtime executable integrity --------------------------------------
 
 # Some semantically load-bearing executables are intentionally host-managed

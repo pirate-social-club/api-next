@@ -18,8 +18,8 @@ PROFILES = {
         "bundle_name": "pirate-hns-observer-driver.mjs",
     },
     "community-gateway": {
-        "source_commit": "59dadfffc0364cae8618c23fb682cce377611369",
-        "bundle_sha256": "710b561ee87a15288b72bb031d428fbbac4d867bd843051645a5d82e7d2d1f04",
+        "source_commit": "97a701a7afa1274ebb73e1e9705fba1a95e61803",
+        "bundle_sha256": "34029a3cf81dda85a7f9fc6eed3d9655be08a930fb17db3f1497b7618fe72a24",
         "bundle_name": "pirate-hns-community-app-gateway.mjs",
     },
     "static-gateway": {

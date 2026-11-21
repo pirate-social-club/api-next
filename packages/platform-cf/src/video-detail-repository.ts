@@ -28,6 +28,17 @@ export const READ_VIDEO_DETAIL_SNAPSHOT_V1 = `WITH selected_identity AS MATERIAL
   FROM selected p LEFT JOIN LATERAL video_detail_access_v1($3,p.post_id) access ON TRUE
 )
 SELECT p.detail_kind, p.post_id,
+ CASE WHEN p.detail_kind='content' THEN jsonb_build_object(
+   'id',c.community_id,'object','community_preview','display_name',c.display_name,
+   'route_slug',c.route_slug,'avatar_ref',c.avatar_ref,'membership_mode',c.membership_mode,
+   'human_verification_lane',c.human_verification_lane,
+   'moderators','[]'::jsonb,'membership_gate_summaries','[]'::jsonb,'rules','[]'::jsonb,
+   'created',EXTRACT(EPOCH FROM c.created_at)) ||
+   CASE WHEN $3::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object(
+     'viewer_membership_status',CASE WHEN membership.status='member' THEN 'member'
+       WHEN membership.status='banned' THEN 'banned' ELSE 'not_member' END) END
+ END AS community,
+
  CASE WHEN p.detail_kind='content' THEN to_jsonb(p) || jsonb_build_object(
    'author_persona',video_detail_persona_v1(p.author_persona_id),
    'video_caption',video_fields.video_caption) END AS post_row,
@@ -39,6 +50,8 @@ SELECT p.detail_kind, p.post_id,
    'viewer_vote',(SELECT v.vote_value FROM post_votes v WHERE v.post_id=p.post_id AND v.community_id=p.community_id AND v.user_id=$3),
    'viewer_is_author',COALESCE(p.author_user_id=$3,FALSE)) END AS engagement
 FROM classified p
+LEFT JOIN communities c ON c.community_id=p.community_id AND c.status='active'
+LEFT JOIN community_memberships membership ON membership.community_id=p.community_id AND membership.user_id=$3
 LEFT JOIN LATERAL (SELECT ${videoPostProjectionSelect}
 FROM (SELECT 1) projection_anchor
 ${videoPostProjectionJoins.replace("AND video_projection.media_kind = 'video'", "AND video_projection.media_kind = 'video' AND p.idempotency_key='video-publication:'||video_projection.operation_id")}
@@ -110,6 +123,7 @@ export function makeControlPlaneVideoDetailStore(
           route: null,
           content: {
             post,
+            community: row.community,
             video,
             thread_snapshot: null,
             ...engagement,
@@ -121,6 +135,9 @@ export function makeControlPlaneVideoDetailStore(
             source_hash: null,
           },
         });
+        if (result.kind === "content" && result.content.community?.id !== post.community) {
+          return yield* new InternalError({ message: "Video community unavailable" });
+        }
         return { kind: "result" as const, result };
       },
       Effect.provide(runtime),

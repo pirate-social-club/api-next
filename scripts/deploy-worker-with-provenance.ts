@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  HNS_STAGING_DIRECT_CHECK_COMMAND,
   HNS_STAGING_MANIFEST_COMMAND,
   readHnsStagingGatewayPin,
   verifyHnsStagingGatewayManifest,
@@ -9,6 +10,7 @@ import {
 import { withRewardsBindingDeployment } from "./rewards-binding-deploy-preflight.ts";
 import { parseJsonc } from "./secret-drift-audit.ts";
 import { withServingFunctionPrivilegesDeployment } from "./serving-function-privileges-preflight.ts";
+import { prepareSongFundingBindingAdmission } from "./song-funding-binding-admission.ts";
 import { assertStagingRewardsPreservation } from "./staging-rewards-config.ts";
 import {
   type PrepareStagingBindingGuard,
@@ -16,6 +18,8 @@ import {
 } from "./staging-serving-bindings-preflight.ts";
 import { withTelegramActivationDeployment } from "./telegram-activation-preflight.ts";
 import type { BindingDriftReceipt } from "./worker-binding-drift.ts";
+
+import { verifyWorkerDeploymentSource } from "./worker-deployment-source.ts";
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]{0,31}$/;
@@ -28,6 +32,7 @@ export type WorkerDeploymentInput = Readonly<{
   bindingReviewPath?: string;
   repositoryRoot?: string;
   toolingSourceRef?: string;
+  postingFrozenRuntime?: true;
 }>;
 
 export type WorkerDeploymentReceipt = Readonly<{
@@ -73,6 +78,7 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   let bindingReviewPath: string | undefined;
   let repositoryRoot: string | undefined;
   let toolingSourceRef: string | undefined;
+  let postingFrozenRuntime: true | undefined;
   const acceptedMainRef = "origin/main";
 
   for (let index = 0; index < args.length; index += 1) {
@@ -101,6 +107,10 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
         if (!isAbsolute(repositoryRoot)) throw Error("--repository-root must be absolute");
         index += 1;
         break;
+      case "--posting-frozen-runtime":
+        if (postingFrozenRuntime) throw Error("duplicate posting snapshot flag");
+        postingFrozenRuntime = true;
+        break;
       case "--binding-review":
         bindingReviewPath = optionValue(args, index);
         index += 1;
@@ -115,6 +125,13 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
   if (!ENVIRONMENT_NAME.test(environment)) throw new Error("--env is invalid");
   if (bindingReviewPath !== undefined && environment !== "staging")
     throw new Error("--binding-review applies only to staging");
+  if (
+    postingFrozenRuntime &&
+    (environment !== "staging" ||
+      configPath !== "apps/http-worker/wrangler.jsonc" ||
+      repositoryRoot === undefined)
+  )
+    throw Error("posting snapshot requires staging HTTP and a separate deployment checkout");
   return {
     configPath,
     environment,
@@ -123,6 +140,7 @@ export function parseWorkerDeploymentArgs(args: readonly string[]): WorkerDeploy
     ...(bindingReviewPath === undefined ? {} : { bindingReviewPath }),
     ...(repositoryRoot === undefined ? {} : { repositoryRoot }),
     ...(toolingSourceRef === undefined ? {} : { toolingSourceRef }),
+    ...(postingFrozenRuntime ? { postingFrozenRuntime } : {}),
   };
 }
 
@@ -239,66 +257,12 @@ async function requiredOutput(
   return result.stdout.trim();
 }
 
-function repositoryPath(repositoryRoot: string, inputPath: string): string {
-  const absolutePath = resolve(repositoryRoot, inputPath);
-  const relativePath = relative(repositoryRoot, absolutePath);
-  if (relativePath.length === 0 || relativePath.startsWith("..") || isAbsolute(relativePath)) {
-    throw new Error("--config must resolve inside the repository");
-  }
-  return relativePath;
-}
-
 export async function verifyDeploymentSource(
   repositoryRoot: string,
   input: WorkerDeploymentInput,
   runner: CommandRunner = runDeploymentCommand,
 ): Promise<Readonly<{ sourceSha: string; configPath: string }>> {
-  const configPath = repositoryPath(repositoryRoot, input.configPath);
-  const sourceSha = await requiredOutput(
-    runner,
-    ["git", "rev-parse", "--verify", `${input.sourceRef}^{commit}`],
-    repositoryRoot,
-    "source-ref resolution",
-  );
-  if (!FULL_GIT_SHA.test(sourceSha))
-    throw new Error("source ref did not resolve to a full Git SHA");
-
-  const reachable = await runner(
-    ["git", "merge-base", "--is-ancestor", sourceSha, input.acceptedMainRef],
-    repositoryRoot,
-  );
-  if (reachable.exitCode !== 0) {
-    throw new Error(
-      reachable.exitCode === 1
-        ? "source commit is not reachable from accepted main"
-        : `accepted-main reachability check failed (exit ${reachable.exitCode})`,
-    );
-  }
-
-  const tracked = await runner(["git", "diff", "--quiet", sourceSha, "--"], repositoryRoot);
-  if (tracked.exitCode !== 0) {
-    throw new Error(
-      tracked.exitCode === 1
-        ? "checkout tree does not match the source commit"
-        : `checkout tree check failed (exit ${tracked.exitCode})`,
-    );
-  }
-
-  const untracked = await requiredOutput(
-    runner,
-    ["git", "ls-files", "--others", "--exclude-standard"],
-    repositoryRoot,
-    "untracked-file check",
-  );
-  if (untracked.length > 0) throw new Error("checkout contains untracked files");
-
-  await requiredOutput(
-    runner,
-    ["git", "ls-files", "--error-unmatch", "--", configPath],
-    repositoryRoot,
-    "Wrangler config tracking check",
-  );
-  return { sourceSha, configPath };
+  return verifyWorkerDeploymentSource(repositoryRoot, input, runner);
 }
 
 function versionsCommand(input: WorkerDeploymentInput, configPath: string): readonly string[] {
@@ -368,11 +332,14 @@ export async function deployWorkerWithProvenance(
   stagingBindingGuard: PrepareStagingBindingGuard = prepareStagingBindingGuard,
   telegramDeploymentGuard: typeof withTelegramActivationDeployment = withTelegramActivationDeployment,
   servingFunctionGuard: typeof withServingFunctionPrivilegesDeployment = withServingFunctionPrivilegesDeployment,
+  fundingBindingGuard: typeof prepareSongFundingBindingAdmission = prepareSongFundingBindingAdmission,
+  verifySource: typeof verifyDeploymentSource = verifyDeploymentSource,
 ): Promise<WorkerDeploymentReceipt> {
-  const { sourceSha, configPath } = await verifyDeploymentSource(repositoryRoot, input, runner);
+  const { sourceSha, configPath } = await verifySource(repositoryRoot, input, runner);
   const guardedHnsStagingHttp =
     configPath === "apps/http-worker/wrangler.jsonc" && input.environment === "staging";
   let solidRoot = resolve(repositoryRoot, "../pirate-web-solid");
+  let pendingCutoverTo: string | null = null;
   if (guardedHnsStagingHttp) {
     // Linked API checkouts have a different parent. The shared Git directory
     // identifies the canonical API repository and its standalone Solid sibling.
@@ -387,16 +354,33 @@ export async function deployWorkerWithProvenance(
     const manifestRead = await runner(HNS_STAGING_MANIFEST_COMMAND, repositoryRoot);
     if (manifestRead.exitCode !== 0)
       throw new Error("staging HNS gateway read failed before HTTP deploy");
-    verifyHnsStagingGatewayManifest(
+    ({ pendingCutoverTo } = verifyHnsStagingGatewayManifest(
       manifestRead.stdout,
       await readStagingGatewayPin(repositoryRoot),
-    );
+    ));
+    // Before a pinned cutover, Solid already sits at the rotation's identity
+    // and cannot pair with the live gateway, so its identity is compared instead.
     const solidCheck = await runner(
-      ["node", "scripts/hns-staging-gateway-preflight.mjs"],
+      [
+        "node",
+        pendingCutoverTo === null
+          ? "scripts/hns-staging-gateway-preflight.mjs"
+          : "scripts/hns-ingress-composition-identity.mjs",
+      ],
       solidRoot,
     );
-    if (solidCheck.exitCode !== 0)
+    if (
+      solidCheck.exitCode !== 0 ||
+      (pendingCutoverTo !== null && solidCheck.stdout.trim() !== pendingCutoverTo)
+    )
       throw new Error("staging Solid ingress preflight failed before HTTP deploy");
+    // The direct check must work before upload: a failure after it would leave
+    // a serving Worker reported as failed.
+    if (
+      pendingCutoverTo !== null &&
+      (await runner(HNS_STAGING_DIRECT_CHECK_COMMAND, solidRoot)).exitCode !== 0
+    )
+      throw new Error("staging direct-host check failed before HTTP deploy");
   }
   const message = `git:${sourceSha}`;
   const listCommand = versionsCommand(input, configPath);
@@ -419,6 +403,16 @@ export async function deployWorkerWithProvenance(
     writeDiagnostic,
   );
 
+  const fundingGuard = await fundingBindingGuard(
+    repositoryRoot,
+    configPath,
+    input.environment,
+    sourceSha,
+  );
+  if (fundingGuard)
+    writeDiagnostic(
+      `${JSON.stringify({ song_funding_binding_admission: fundingGuard.receipt })}\n`,
+    );
   const disabledRewards = bindingGuard?.disabledRewards;
   assertStagingRewardsPreservation(configPath, input.environment, disabledRewards);
   const deployed = await servingFunctionGuard(repositoryRoot, configPath, () =>
@@ -432,12 +426,19 @@ export async function deployWorkerWithProvenance(
           configPath,
           input.environment,
           async (signal) => {
-            if (bindingGuard !== null) {
-              await bindingGuard.recheck();
-              const current = await verifyDeploymentSource(repositoryRoot, input, runner);
+            if (bindingGuard !== null || input.postingFrozenRuntime) {
+              await bindingGuard?.recheck();
+            }
+            if (
+              bindingGuard !== null ||
+              input.postingFrozenRuntime ||
+              verifySource !== verifyDeploymentSource
+            ) {
+              const current = await verifySource(repositoryRoot, input, runner);
               if (current.sourceSha !== sourceSha)
                 throw Error("deployment source changed before upload");
             }
+            await fundingGuard?.recheck();
             if (signal?.aborted)
               throw Error("reward shutdown control connection lost before deploy");
             return runner(
@@ -486,14 +487,26 @@ export async function deployWorkerWithProvenance(
     await requiredOutput(runner, listCommand, repositoryRoot, "post-deploy version listing"),
   );
   const version = findDeployedVersion(before, after, message);
+  if (fundingGuard) {
+    const readback = await fundingGuard.readback(version.id);
+    if (!readback.evidence.some((row) => row.version_id === version.id))
+      throw Error("New funding Worker version is not serving");
+    writeDiagnostic(`${JSON.stringify({ song_funding_binding_readback: readback })}\n`);
+  }
   if (guardedHnsStagingHttp) {
-    const serving = await runner(["bun", "run", "check:staging:hns-route"], solidRoot);
+    const serving = await runner(
+      pendingCutoverTo === null
+        ? ["bun", "run", "check:staging:release"]
+        : HNS_STAGING_DIRECT_CHECK_COMMAND,
+      solidRoot,
+    );
+    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
+    if (serving.stderr.length > 0) writeDiagnostic(serving.stderr);
     if (serving.exitCode !== 0) {
       throw new Error(
-        `staging HNS serving check failed after HTTP deploy (exit ${serving.exitCode})`,
+        `staging direct-host release check failed after HTTP deploy (exit ${serving.exitCode})`,
       );
     }
-    if (serving.stdout.length > 0) writeDiagnostic(serving.stdout);
   }
   return {
     schema_version: 1,
@@ -512,12 +525,16 @@ export async function resolveDeploymentRepository(
   toolingRoot = fileURLToPath(new URL("../", import.meta.url)),
 ): Promise<string> {
   const target = input.repositoryRoot === undefined ? toolingRoot : resolve(input.repositoryRoot);
-  if (target === resolve(toolingRoot)) return target;
+  const { postingFrozenRuntime, ...normalInput } = input;
+  if (target === resolve(toolingRoot)) {
+    if (postingFrozenRuntime) throw Error("posting snapshot requires separate accepted tooling");
+    return target;
+  }
   if (input.environment !== "staging")
     throw Error("external deployment checkout applies only to staging");
   await verifyDeploymentSource(
     toolingRoot,
-    { ...input, sourceRef: input.toolingSourceRef ?? input.acceptedMainRef },
+    { ...normalInput, sourceRef: input.toolingSourceRef ?? input.acceptedMainRef },
     runner,
   );
   const command = ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"];

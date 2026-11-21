@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import type { HnsEvidenceLeasePolicy } from "../namespace-ownership/hns-control-observer.ts";
+import {
+  type HnsEvidenceLeasePolicy,
+  hnsControlIdentityDigest,
+} from "../namespace-ownership/hns-control-observer.ts";
 import {
   buildHnsOwnerRecoveryProviderStart,
   finalizeHnsOwnerRecoveryProviderStart,
@@ -106,7 +109,7 @@ const positiveResponse = {
 
 const bytes = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value));
 
-function providerStartResponse(expiresAt = "2026-02-02T05:38:20.000Z") {
+function providerStartResponse(expiresAt = "2026-02-02T05:38:20.000Z", challengeName = "jazleeuw") {
   return {
     upstream_session_ref: "nvs_recovery_01",
     expires_at: expiresAt,
@@ -117,7 +120,7 @@ function providerStartResponse(expiresAt = "2026-02-02T05:38:20.000Z") {
       version: "1",
       payload: {
         ownership_source: "hns_parent_chain_txt",
-        challenge_name: "jazleeuw",
+        challenge_name: challengeName,
         challenge_value: "pirate-verification=nvs_recovery_01",
         expires_at: expiresAt,
       },
@@ -139,20 +142,22 @@ function sessionAuthority(
   };
 }
 
-async function storedStart(): Promise<HnsOwnerRecoveryStoredStart> {
-  const requirementHash = await hnsOwnerRecoveryRequirementHash(authority);
+async function storedStart(
+  startAuthority: HnsOwnerRecoveryAuthorityV1 = authority,
+): Promise<HnsOwnerRecoveryStoredStart> {
+  const requirementHash = await hnsOwnerRecoveryRequirementHash(startAuthority);
   const publicStartHash = await hnsOwnerRecoveryPublicStartHash({
-    actor_id: authority.actor_id,
-    community_id: authority.community_id,
-    route_binding_id: authority.route_binding_id,
-    expected_binding_generation: authority.expected_binding_generation,
+    actor_id: startAuthority.actor_id,
+    community_id: startAuthority.community_id,
+    route_binding_id: startAuthority.route_binding_id,
+    expected_binding_generation: startAuthority.expected_binding_generation,
     idempotency_key: startInput.idempotency_key,
     requirement_hash: requirementHash,
   });
   const providerStart = await buildHnsOwnerRecoveryProviderStart({
     route_recovery_id: pollInput.route_recovery_id,
     session_id: pollInput.session_id,
-    authority,
+    authority: startAuthority,
     database_started_at: "2026-02-02T04:38:20.000Z",
   });
   const finalized = await finalizeHnsOwnerRecoveryProviderStart({
@@ -163,7 +168,7 @@ async function storedStart(): Promise<HnsOwnerRecoveryStoredStart> {
       idempotency_key: startInput.idempotency_key,
     },
     started_at: "2026-02-02T04:38:20.000Z",
-    provider_response: providerStartResponse(),
+    provider_response: providerStartResponse(undefined, startAuthority.route.root_label),
   });
   if (finalized.kind !== "retained") throw new Error("recovery fixture was not retained");
   return { session: finalized.session, session_authority: sessionAuthority(finalized.session) };
@@ -316,7 +321,7 @@ function pollServices(
             recovery_attempt_id: durableAttemptId,
             evidence_ref: durableEvidenceRef,
             observation_id: durableObservationId,
-            fence_token: 1,
+            fence_token: attemptIds.length,
             database_now: databaseNow,
             lease_expires_at: options.leaseExpiresAt ?? "2026-02-02T04:41:00.000Z",
           },
@@ -571,7 +576,10 @@ describe("HNS owner-recovery application orchestration", () => {
       "hns_observation_proposed_2",
     ]);
     expect(fixture.attemptObservationIds).toEqual(["hns_observation_01", "hns_observation_01"]);
-    expect(fixture.providerObservationIds).toEqual(["hns_observation_01", "hns_observation_01"]);
+    expect(fixture.providerObservationIds).toEqual([
+      "hns_observation_01:1",
+      "hns_observation_01:2",
+    ]);
     expect(fixture.sequence).toEqual([
       "load",
       "reserve",
@@ -757,6 +765,64 @@ describe("HNS owner-recovery application orchestration", () => {
     expect(response).toMatchObject({ status: "verified", replayed: true, generation: 14 });
     expect(replay.sequence).toEqual(["load"]);
     expect(replay.providerCalls()).toBe(0);
+  });
+
+  test("links a verified recovery to its bare public path without changing its stored result", async () => {
+    const root = "8s28";
+    const recoveryAuthority: HnsOwnerRecoveryAuthorityV1 = {
+      ...authority,
+      route: {
+        family: "hns",
+        root_label: root,
+        root_label_display: root,
+        path_segment: `app.${root}`,
+        href: `/c/app.${root}`,
+        app_host: null,
+      },
+    };
+    const stored = { ...(await storedStart(recoveryAuthority)), terminal: null };
+    const providerResponse = {
+      ...positiveResponse,
+      challenge_name: root,
+      control_identity_digest: await hnsControlIdentityDigest({
+        ownership_source: "hns_parent_chain_txt",
+        txt_name: root,
+        expected_txt_value: positiveResponse.challenge_value,
+        root_label: root,
+        chain_authority_digest: positiveResponse.chain_authority_digest,
+      }),
+    };
+    const first = pollServices(stored, bytes(providerResponse));
+    const verified = await Effect.runPromise(pollHnsOwnerRecovery(pollInput, first.services));
+    const terminal = first.state().terminal;
+    if (terminal === null) throw new Error("fixture did not terminalize");
+    // Pinned from this fixture before the public link existed: the stored
+    // result, its evidence and its hash are unchanged by the projection.
+    const resultHashBeforeLink = "3ad95e53af7c8c748be158f79f8560ed4ada5d36821ac53e6a0cc5bff3e04d0e";
+    expect(terminal.result_hash).toBe(resultHashBeforeLink);
+    expect(verified.result_hash).toBe(resultHashBeforeLink);
+    expect(terminal.result).not.toHaveProperty("public_route_href");
+
+    const replay = pollServices(first.state(), bytes({}));
+    const replayed = await Effect.runPromise(pollHnsOwnerRecovery(pollInput, replay.services));
+    expect(replay.providerCalls()).toBe(0);
+    expect(replayed.result_hash).toBe(resultHashBeforeLink);
+    for (const [response, replayedFlag] of [
+      [verified, false],
+      [replayed, true],
+    ] as const) {
+      expect(response).toEqual({
+        route_recovery_id: pollInput.route_recovery_id,
+        session_id: pollInput.session_id,
+        generation: 14,
+        status: "verified",
+        canonical_route: recoveryAuthority.route,
+        public_route_href: `/c/${root}`,
+        replayed: replayedFlag,
+        retry_after_seconds: null,
+        result_hash: resultHashBeforeLink,
+      });
+    }
   });
 
   test("rejects a terminal envelope whose stored result has different idempotency", async () => {

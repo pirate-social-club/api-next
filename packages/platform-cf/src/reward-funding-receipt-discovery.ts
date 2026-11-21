@@ -379,7 +379,9 @@ export function makeCurrentFundingRecoveryEvidence(rpc: MegapotV2FullRpcClient, 
     });
     const confirmed = yield* read(() => rpc.readTransactionCount(i.from, head.blockNumber));
     const pending = yield* read(() => rpc.readPendingNonce(i.from));
-    const after = yield* read(() => rpc.readHead());
+    // Normal head advancement is harmless; a replacement of the sampled block
+    // is not. Keep cancellation's pending >= confirmed rule (unlike funding).
+    const after = yield* read(() => rpc.readBlock(head.blockNumber));
     const observed = yield* Effect.try({
       try: () => Schema.decodeUnknownSync(C.InstantV2)(now()),
       catch: () => failure("cancellation_recovery_unavailable"),

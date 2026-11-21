@@ -227,3 +227,46 @@ merge. Their exact declarations remain in the historical fixture
 `scripts/fixtures/openapi-safe-base-chain-waivers-20261023.json`, with the existing
 exact-diff and obsolete-baseline checks retained. The active policy admits no
 later contract change through these declarations.
+
+## 2026-10-28 Single-funder ticket-first terms transition
+
+The workspace_owner adopted the prospective single-funder rule and authorized its implementation and paired staging release on October28. New ticket-first pots return net empty-drawing winnings to the frozen single funder. Existing pots retain their original terms and holds. This is a real response-enum expansion: an older closed decoder rejects `single_funder_ticket_first_v1`.
+
+Six exact-baseline declarations cover seven response locations at main926e2b876c56111f0975c4a62b6db7c4595a4463: the Dance capture objective terms, original contribution command receipt, current contribution's command receipt, funding context's prospective and committed terms, participant terms and Create contribution receipt. The complete detector messages are recorded in the policy. No request, status, error, other enum, field, operation or later baseline is admitted. The detector and exact-set/obsolete-baseline safeguards are unchanged.
+
+Genuine client136 has archive SHA2565b565aff657fd7655f2bacca4704549c9e31305501aa01e407b6c702843b4cf5 and is consumed by Solid133. Existing responses retain their old values until new terms are admitted. Release the backend migrations and code while paused, release the paired frontend, verify a freshly loaded client, and only then admit the new immutable template and fund a fresh pot. Open tabs with older code must reload; their decoder refusal is not evidence of a completed payment and never permits replacing a saved command or journal.
+
+This declaration carries the adopted rule through the maintained compatibility process; it does not expand production or funding authority. Remove the consumed declarations after API684 integration. Historical artifacts and previous declarations remain unchanged.
+
+API684 landed as699c359bee814657e8cb9158a85a02cce0a3b78f. Its six consumed exact-baseline declarations, covering seven enum additions, are retired from the active policy. The original declarations remain in scripts/fixtures/openapi-single-funder-waivers-20261028.json for the historical closed-decoder regression proof. Later changes require their own exact-baseline review.
+
+## 2026-10-28 Safe treasury disposition transition
+
+The workspace_owner selected retention of net zero-qualifier winnings in the pot Safe, separately recorded as treasury funds. New safe_treasury_ticket_first_v1 terms freeze empty_winnings_recipient in the prospective and committed hashes. Existing no_purchase and single_funder_ticket_first_v1 histories retain their meaning; there is no retrospective transfer or expiry of participant credits.
+
+At exact baseline1b8a9bb9b5683a995dba2bd5c18609af45755a61, six declarations admit fourteen complete diagnostics: seven added response enum values and seven named recipient fields in closed responses. No operation, request, status, error, other field, other enum or later baseline is admitted. The paired genuine137 client must serve before new terms admission, and older tabs must reload. Retire these declarations after acceptance.
+
+API686 landed asdd462a97667db7d10377cf8417e7d6662926fe47. Its six consumed declarations, covering fourteen enum and recipient diagnostics, are retired from the active policy. The exact declarations remain in scripts/fixtures/openapi-safe-treasury-waivers-20261028.json and their exact-scope regression proof remains. This cleanup changes no contract, generated client, schema, runtime or authority.
+
+
+## 2026-10-29 Prospective no-pose Dance transition
+
+The workspace_owner rejected the opening pose, as recorded verbatim in v1-dance-no-pose-policy-20261029. New sessions use strict policy/profile/terms-v2 with cue none and honest attestation-v2 not_required. Existing captured v1 terms, hashes, verdicts and qualification meaning stay unchanged. These response additions are real breaks for older closed decoders.
+
+Fourteen exact-baseline declarations cover the detector's complete20 messages against main165a59a67b4191beb22a1bd84bd7b26375363063. They admit only cue none, attestation-v2, policy-v2 and not_required at the named Dance responses. No request, status, error, other field, other enum, operation or later baseline is admitted. Exact-set matching and the obsolete-baseline guard remain unchanged. The historical fixture preserves the exact declaration; unexpected/omitted diagnostics and another baseline must refuse. Independent declaration review and final hosted checks remain required.
+
+Genuine client139/405cdf43 preserves renewal from138 and supports these response values. The reviewed HTTP/media and paired Solid source must serve fully, and old tabs must reload, before admitting a new immutable no-pose policy. Preserve old journals and captured sessions; a decoder refusal never proves a successful write or permits replacing the command. No production, funding, credential or policy activation follows from this declaration. Retire consumed entries after PR692 lands; they admit no future contract change.
+
+The declaration regression exposed a detector gap: it returned only the first changed value in one enum. The narrow detector repair now reports every added response or removed request value. Both new regressions fail the predecessor. The actual no-pose set remains20 messages; adding a second unreviewed cue value now fails the exact-set declaration. This does not broaden an allowance or change generated wire/client artifacts.
+
+PR692 landed through protected squash merge d82c51735734c436f05a6b80937f8ee47f203232 after all required hosted checks and independent source/declaration review. Its fourteen consumed exact-baseline declarations, covering twenty diagnostics, are retired from the active policy. The original declarations remain in scripts/fixtures/openapi-dance-no-pose-waivers-20261029.json. No contract, generated client, schema, runtime or admission changes in this cleanup. Future changes require their own exact-baseline review.
+
+## 2026-11-02 HNS owner-recovery poll transitions
+
+Status: candidate declaration, pending independent declaration review. The governing record is tasks/records/v1-hns-lease-renewal-replay-repair-20261031.md: finding V1, and the L1 scope addition of 2026-11-02 by the hns_recovery_coordinator. Foundation §5 requires a new path or an explicit deprecation entry for a breaking change. This is not a legacy-API clean-break vertical, so the entry is a `deprecation`.
+
+Two transitions apply to `post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryPoll` only. First, the rejected member gains reason code `source_ineligible`. The server already produces it: the application maps a stored `owner_authoritative_source_ineligible` terminal result to that code, and the closed contract refused it, so the poll committed its terminal row and then answered 500 on the first poll and every same-key replay. This is a response widening that makes an existing server answer encodable, not a new outcome. Second, the verified member gains `public_route_href`, the bare-root public path `/c/<root>` (or null when the root has no public V2 identity) beside the unchanged `canonical_route`, whose authority path `/c/app.<root>` the public dispatcher refuses by design. Stored results, evidence and `result_hash` are unchanged.
+
+One entry at baseline `03fbec4a2bf84f3dcd250f46a30529779f0756ec` admits the detector's complete eight messages: the enum addition and the closed-response property at the shared response and at statuses 202, 422 and 503, because the poll union is one schema across its success statuses. No request, status, error, other field, other enum, operation or baseline is admitted. If main moves before merge, `baselineSha` must be updated to the pull request base and the expected set re-read from the detector against that base; a waiver for another baseline is inert.
+
+Genuine client 0.140.0 carries both values. Client 0.139.0 and earlier refuse both transitions. The generated client rejects any property that a closed response schema does not declare ("unexpected property"), so once this deploys an older client refuses every verified poll, not only a `source_ineligible` rejection. Neither refusal signals a failed write: the terminal result is stored and replays to a current client on the same key. No consumer of this endpoint exists today, including the Solid application, so no paired frontend release or tab reload is required. Retire the entry after the pull request lands.

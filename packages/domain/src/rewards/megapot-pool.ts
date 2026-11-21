@@ -220,11 +220,14 @@ export function buildMegapotBeneficiarySnapshot(input: {
   readonly fallback: boolean;
   readonly beneficiaries: readonly MegapotSnapshotBeneficiary[];
   readonly sha256: Digest32;
+  readonly emptyTreasury?: true;
 }): MegapotBeneficiarySnapshot {
   if (!validId(input.poolLegId)) throw new MegapotPoolInvariantError("invalid-identifier");
   if (input.drawingId < 0n) throw new MegapotPoolInvariantError("invalid-drawing");
   const terms = bytes32(input.termsHash);
-  if (input.beneficiaries.length === 0) {
+  if (input.emptyTreasury && (input.beneficiaries.length !== 0 || input.fallback))
+    throw new MegapotPoolInvariantError("invalid-snapshot");
+  if (input.beneficiaries.length === 0 && !input.emptyTreasury) {
     throw new MegapotPoolInvariantError("empty-beneficiaries");
   }
   if (input.fallback && input.beneficiaries.length !== 1) {

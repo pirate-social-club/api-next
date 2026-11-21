@@ -570,10 +570,16 @@ export async function fixture(
 }
 
 export function harness(
-  f: Fixture,
+  f: Pick<Fixture, "runtime" | "registerDrain" | "admin" | "role">,
   bucket: CapturedStudyAudioBucket,
   options: PostgresControlPlaneOptions = {},
   admission?: StudyV2Admission,
+  target = {
+    accountId: "study-account",
+    personaId: "study-persona",
+    communityId: "study-community",
+    postId: "study-post",
+  },
 ) {
   const runtime = f.runtime(options),
     store = makeControlledAccountStudyV2Store(runtime, admission);
@@ -600,7 +606,7 @@ export function harness(
           [hash(input.audio)],
         );
         expect(evidence.rows).toEqual([
-          { account_id: "study-account", source_kind: "study", io_state: "registered" },
+          { account_id: target.accountId, source_kind: "study", io_state: "registered" },
         ]);
         expect(
           (
@@ -638,10 +644,10 @@ export function harness(
   const start = (sessionId: string) =>
     run(
       store.ordinary.startSession({
-        accountId: "study-account",
-        personaId: "study-persona",
-        communityId: "study-community",
-        postId: "study-post",
+        accountId: target.accountId,
+        personaId: target.personaId,
+        communityId: target.communityId,
+        postId: target.postId,
         sessionId,
         idempotencyKey: `start:${sessionId}`,
         requestHash: hash(`start:${sessionId}`),
@@ -658,8 +664,8 @@ export function harness(
     const current = session.lesson.current;
     if (current === null) throw new Error("Current item required");
     const base = {
-      accountId: "study-account",
-      communityId: "study-community",
+      accountId: target.accountId,
+      communityId: target.communityId,
       sessionId: session.session_id,
       sessionItemId: current.session_item_id,
       idempotencyKey: key,

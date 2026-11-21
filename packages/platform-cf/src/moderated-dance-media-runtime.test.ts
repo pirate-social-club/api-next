@@ -1,18 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { prepareModeratedDanceTerms } from "../../application/src/use-cases/dance/moderated-intake.ts";
-import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-intake-fixture.ts";
+import {
+  moderatedDanceIntakeFacts,
+  noPoseModeratedDanceIntakeFacts,
+} from "../../testing/src/moderated-dance-intake-fixture.ts";
 import { makeModeratedDanceMediaRuntime } from "./moderated-dance-media-runtime.ts";
 import { makeDirectPostgresControlPlaneLayer, type PostgresClientLike } from "./postgres.ts";
 import { makeSongVideoCloudConvertTransport } from "./song-video-cloudconvert-transport.ts";
 
-async function fixture() {
-  const facts = moderatedDanceIntakeFacts();
+async function fixture(noPose = false) {
+  const facts = noPose ? noPoseModeratedDanceIntakeFacts() : moderatedDanceIntakeFacts();
   const terms = await Effect.runPromise(
     prepareModeratedDanceTerms(
       facts,
       { sessionId: "session", reviewId: "review", attemptId: "attempt" },
-      "arms_t",
+      noPose ? "none" : "arms_t",
     ),
   );
   const work = {
@@ -300,16 +303,19 @@ describe("actual private capture orchestration with offline SQL/provider ports",
     expect(f.sealCalls).toEqual([]);
     expect(f.sealProofs).toEqual([]);
   });
-  test("unknown normalization POST retains its purpose; repeated absence never permits another POST", async () => {
-    const f = await fixture();
-    expect(await f.processor.run()).toEqual({ outcome: "unknown" });
-    expect(await f.processor.run()).toEqual({ outcome: "unknown" });
-    expect(await f.processor.run()).toEqual({ outcome: "unknown" });
-    expect(f.providerCalls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
-    expect(f.providerCalls.filter((c) => c.startsWith("GET"))).toHaveLength(2);
-    expect(f.sql.filter((s) => s.includes("issue_moderated_dance_source_v1"))).toHaveLength(1);
-    expect(f.probeCalls).toEqual([]);
-  });
+  test.each([false, true])(
+    "unknown normalization POST preserves original purpose with noPose=%s",
+    async (noPose) => {
+      const f = await fixture(noPose);
+      expect(await f.processor.run()).toEqual({ outcome: "unknown" });
+      expect(await f.processor.run()).toEqual({ outcome: "unknown" });
+      expect(await f.processor.run()).toEqual({ outcome: "unknown" });
+      expect(f.providerCalls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
+      expect(f.providerCalls.filter((c) => c.startsWith("GET"))).toHaveLength(2);
+      expect(f.sql.filter((s) => s.includes("issue_moderated_dance_source_v1"))).toHaveLength(1);
+      expect(f.probeCalls).toEqual([]);
+    },
+  );
   test("lost purpose-claim COMMIT escapes before provider I/O and recovery does not restore it", async () => {
     const f = await fixture();
     f.loseGrantCommit();

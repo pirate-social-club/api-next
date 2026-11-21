@@ -83,11 +83,7 @@ function nullableInstant(row: Row, field: string): string | null {
 
 function stringArray(row: Row, field: string): readonly string[] {
   const value = row[field];
-  if (
-    !Array.isArray(value) ||
-    value.length === 0 ||
-    value.some((item) => typeof item !== "string")
-  ) {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`invalid ${field}`);
   }
   return value as readonly string[];
@@ -102,6 +98,12 @@ function snapshotFromRow(row: Row): MegapotPublishedSnapshot {
   ) {
     throw new Error("invalid snapshot version");
   }
+  const leaves = stringArray(row, "leaf_commitments");
+  if (
+    leaves.length !== integer(row, "leaf_count") ||
+    (leaves.length === 0 && bool(row, "fallback"))
+  )
+    throw new Error("invalid snapshot leaves");
   return {
     domain,
     poolLegId: text(row, "pool_leg_id"),

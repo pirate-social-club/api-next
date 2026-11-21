@@ -1075,3 +1075,34 @@ for (const locale of ["ru", "ka"] as const) {
     expect(f.counts().answers).toBe(0);
   });
 }
+
+test("catalogue pages rotate choice authority and start a song beyond the first eight", async () => {
+  const f = fixture();
+  const requests: (string | undefined)[] = [];
+  f.study.store.cataloguePage = async (community, after) => {
+    expect(community).toBe(integration.communityId);
+    requests.push(after);
+    return after === undefined
+      ? {
+          items: Array.from({ length: 8 }, (_, index) => ({
+            postId: `post-${index + 1}`,
+            title: `Song ${index + 1}`,
+          })),
+          nextCursor: "post-8",
+        }
+      : { items: [{ postId: "post-9", title: "Song 9" }], nextCursor: null };
+  };
+  await f.send("page-1", "/study");
+  const stale = `study:${f.state().token}:0`;
+  await f.press("next", `study:${f.state().token}:next`);
+  expect(f.state().songs[0]?.postId).toBe("post-9");
+  const second = f.state().token;
+  await f.press("stale", stale);
+  expect(f.counts().starts).toBe(0);
+  await f.press("previous", `study:${second}:prev`);
+  expect(f.state().songs).toHaveLength(8);
+  await f.press("next-again", `study:${f.state().token}:next`);
+  await f.press("choose-ninth");
+  expect(f.startedPosts).toEqual(["post-9"]);
+  expect(requests).toEqual([undefined, "post-8", undefined, "post-8"]);
+});

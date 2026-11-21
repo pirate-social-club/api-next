@@ -266,6 +266,8 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...PRODUCTION_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
       ...PRODUCTION_PROVISIONABLE_HTTP_RUNTIME_SECRET_NAMES,
       ...PROVISIONABLE_VIDEO_RUNTIME_SECRET_NAMES,
+      // Optional production Telegram vault custody; activation remains separately reviewed.
+      "TELEGRAM_SECRETS_JSON",
     ],
   },
   {

@@ -36,6 +36,14 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
     "reward_context_work_counters_v2",
   ],
   "0285_shared_song_qualification_consumers.sql": ["reward_activity_objective_captures_v2"],
+  "0321_song_funding_cancellation_recovery.sql": ["reward_funding_cancellation_proofs_v2"],
+  "0324_reward_safe_receipt_refunds.sql": [
+    "reward_safe_refunds_v1",
+    "reward_safe_refund_attempts_v1",
+    "reward_safe_refund_completions_v1",
+  ],
+  "0326_reward_joint_cycle_fairness.sql": ["reward_joint_cycle_turn_v1"],
+  "0327_reward_safe_treasury_disposition.sql": ["reward_safe_treasury_allocations_v1"],
   "0312_reward_safe_execution_scans.sql": [
     "reward_safe_execution_cursors",
     "reward_safe_unbound_executions",
@@ -43,6 +51,7 @@ export const REWARDS_MONEY_TABLES_AFTER_0232: Readonly<Record<string, readonly s
 };
 
 export const REWARDS_MONEY_TABLES = [
+  "reward_joint_cycle_turn_v1",
   "custody_solvency_observations",
   "megapot_allocation_batches",
   "megapot_allocations",
@@ -81,6 +90,7 @@ export const REWARDS_MONEY_TABLES = [
   "reward_eligibility_decisions",
   "reward_erc20_transfer_receipt_evidence",
   "reward_funding_account_counters_v2",
+  "reward_funding_cancellation_proofs_v2",
   "reward_funding_leg_snapshots_v2",
   "reward_funding_profiles_v2",
   "reward_funding_scan_checkpoints_v2",
@@ -103,7 +113,11 @@ export const REWARDS_MONEY_TABLES = [
   "reward_pool_cohort_seals_v2",
   "reward_refund_effects",
   "reward_safe_execution_cursors",
+  "reward_safe_refunds_v1",
+  "reward_safe_refund_attempts_v1",
+  "reward_safe_refund_completions_v1",
   "reward_safe_unbound_executions",
+  "reward_safe_treasury_allocations_v1",
   "reward_signer_nonces",
   "reward_shared_song_template_admissions_v2",
   "reward_shared_song_templates_v2",

@@ -37,9 +37,9 @@ async function manifest(
   overrides: Readonly<Record<string, unknown>> = {},
 ): Promise<string> {
   const common = {
-    profile_version: "pirate-hns-community-app-interactive-gateway-v3",
-    profile_utf8_bytes: 622,
-    profile_sha256: "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed",
+    profile_version: "pirate-hns-community-app-interactive-gateway-v4",
+    profile_utf8_bytes: 646,
+    profile_sha256: "705350bde58be27bf06a05efcf7dcc811e74f0a99ad7580e9be2de790e9c6561",
     solid_origin: "https://hns-solid-staging.pirate.sc",
     solid_ingress_composition_reference:
       mode === "staging-private-tls" || mode === "staging-public-tls"

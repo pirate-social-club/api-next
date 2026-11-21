@@ -121,7 +121,7 @@ const HnsOwnerRecoveryRejectedResponseV1 = Schema.Struct({
   session_id: OpaqueId,
   generation: PositiveSafeInteger,
   status: Schema.Literal("rejected"),
-  reason_code: Schema.Literals(["root_unavailable", "expiry_insufficient"]),
+  reason_code: Schema.Literals(["root_unavailable", "expiry_insufficient", "source_ineligible"]),
   replayed: Schema.Boolean,
   retry_after_seconds: Schema.Null,
   result_hash: Sha256Hex,
@@ -132,10 +132,21 @@ const HnsOwnerRecoveryVerifiedResponseV1 = Schema.Struct({
   generation: PositiveSafeInteger,
   status: Schema.Literal("verified"),
   canonical_route: HnsOwnerRecoveryCanonicalRouteV1,
+  // The public community link. canonical_route keeps the authority path
+  // app.<root>, which public /c/ paths refuse; this is /c/<root>, or null when
+  // the root has no public identity.
+  public_route_href: Schema.NullOr(Schema.String),
   replayed: Schema.Boolean,
   retry_after_seconds: Schema.Null,
   result_hash: Sha256Hex,
-});
+}).check(
+  Schema.makeFilter((value) =>
+    value.public_route_href === null ||
+    value.public_route_href === `/c/${value.canonical_route.root_label}`
+      ? undefined
+      : "Public route link must be the bare root path of the canonical route",
+  ),
+);
 const HnsOwnerRecoveryExpiredResponseV1 = Schema.Struct({
   route_recovery_id: OpaqueId,
   session_id: OpaqueId,

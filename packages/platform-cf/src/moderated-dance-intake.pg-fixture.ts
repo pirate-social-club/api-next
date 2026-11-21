@@ -2,7 +2,10 @@ import { Effect } from "effect";
 import type { Client } from "pg";
 import { canonicalBodyHash } from "../../application/src/use-cases/content/common.ts";
 import { prepareModeratedDancePolicyPublication } from "../../application/src/use-cases/dance/moderated-policy.ts";
-import { moderatedDanceIntakeFacts } from "../../testing/src/moderated-dance-intake-fixture.ts";
+import {
+  moderatedDanceIntakeFacts,
+  noPoseModeratedDanceIntakeFacts,
+} from "../../testing/src/moderated-dance-intake-fixture.ts";
 import { makeControlPlaneModeratedDanceIntakeStore } from "./dance-moderated-intake-repository.ts";
 import { makeModeratedDancePublicReplay } from "./moderated-dance-public-replay.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -13,6 +16,7 @@ export async function seedModeratedDanceIntake(
   runtimeRevision?: string,
   options: Readonly<{
     publicReplay?: boolean;
+    noPose?: boolean;
     profile?: Partial<ReturnType<typeof moderatedDanceIntakeFacts>["profile"]>;
     safetyRevision?: string;
     transferWithinMs?: number;
@@ -20,7 +24,9 @@ export async function seedModeratedDanceIntake(
     historicalReferenceSchema?: "pre-0307";
   }> = {},
 ) {
-  const originalFacts = moderatedDanceIntakeFacts(),
+  const originalFacts = options.noPose
+      ? noPoseModeratedDanceIntakeFacts()
+      : moderatedDanceIntakeFacts(),
     facts =
       options.safetyRevision === undefined
         ? originalFacts
@@ -70,7 +76,9 @@ export async function seedModeratedDanceIntake(
         consent_text: "Fictional consent",
         retention_text: "Fictional finite retention",
         publication_text: "Fictional independent optional Post",
-        owner_rubric_text: "Fictional cue/routine owner attestation",
+        owner_rubric_text: options.noPose
+          ? "Fictional selected dance only; no opening pose"
+          : "Fictional cue/routine owner attestation",
       },
       valid_from: new Date(now - 10 * 86400000).toISOString(),
       valid_until: new Date(now + 3600000).toISOString(),

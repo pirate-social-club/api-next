@@ -28,5 +28,6 @@ exec hnsd \
   --rs-host "$HNSD_RS_HOST" \
   --ns-host "$HNSD_NS_HOST" \
   --prefix /var/lib/hnsd \
+  --rs-config /etc/hnsd/unbound.conf \
   --user-agent "pirate-hns-doh-resolver:1.0.0" \
   "$@"

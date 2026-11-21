@@ -601,12 +601,16 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
   }
   const attempt = reservationOutcome.reservation;
 
+  // A released same-key retry reacquires the same attempt id with a raised
+  // fence. The verifier finalizes one observation per id and replays it, so
+  // keying by fence makes each retry read the chain again instead of
+  // replaying an earlier pending or unavailable answer.
   const providerResult = yield* adapter
     .complete(
       { session: stored.session, submission: { channel: "poll_result", payload: {} } },
       {
         namespace_session_id: stored.namespace_session_id,
-        observation_id: attempt.completion_attempt_id,
+        observation_id: `${attempt.completion_attempt_id}:${attempt.fence_token}`,
       },
     )
     .pipe(

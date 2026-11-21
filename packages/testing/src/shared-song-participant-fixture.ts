@@ -11,7 +11,7 @@ import { participantProjectionFixture } from "../../contracts/src/shared-song-me
 
 /** Hash-valid fictional packet shared by decoder and isolated SQL tests.
  * It grants no policy admission and creates no provider or chain effect. */
-export async function sharedSongParticipantFixture(asOf?: Date) {
+export async function sharedSongParticipantFixture(asOf?: Date, noPoseDance = false) {
   const source = participantProjectionFixture();
   if (asOf !== undefined) {
     const offset = asOf.getTime() - Date.parse(source.as_of);
@@ -54,6 +54,7 @@ export async function sharedSongParticipantFixture(asOf?: Date) {
               score_bps: null,
               calibration: null,
               numeric_floor_bps: null,
+              ...(noPoseDance ? { opening_pose: "not_required" } : {}),
               producer_id: "test-producer",
               admission: "money_admitted",
               admission_version: binding.admission_id,

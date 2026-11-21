@@ -759,7 +759,7 @@ function parseProbeMetadata(value: unknown, evidenceRef: string): MediaTransform
   const frameRateMillihertz = rationalMillihertz(video?.avg_frame_rate);
   if (
     video?.codec_name !== "h264" ||
-    audio?.codec_name !== "aac" ||
+    (audio !== undefined && audio.codec_name !== "aac") ||
     !Number.isSafeInteger(video.width) ||
     !Number.isSafeInteger(video.height) ||
     Number(video.width) < 1 ||
@@ -778,8 +778,9 @@ function parseProbeMetadata(value: unknown, evidenceRef: string): MediaTransform
     height: video.height as number,
     frameRateMillihertz,
     videoCodec: "h264",
-    audioCodec: "aac",
-    hasAudio: true,
+    ...(audio === undefined
+      ? ({ audioCodec: null, hasAudio: false } as const)
+      : ({ audioCodec: "aac", hasAudio: true } as const)),
   };
 }
 

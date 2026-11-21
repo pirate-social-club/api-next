@@ -55,6 +55,7 @@ import type {
 import { alertTick, makeLocalAlertSink, type PipelineLogFields } from "./alerts.ts";
 import { insertActiveCommunityMembershipFixture } from "./community-follow.pg-fixture";
 import { makeControlPlaneKaraokeReadinessStore } from "./karaoke-readiness-repository";
+import { withModerationServingRole } from "./media-moderation-serving.pg-fixture.ts";
 import { reprocessMediaSubmission } from "./media-operator-reprocess-repository.ts";
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
 import { makeMediaProcessingStore } from "./media-processing-store";
@@ -2618,159 +2619,170 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     await withCurrentSchema(async (admin, connection) => {
       await createThroughDecision(connection, reviewDecision);
       await expectHostileLyricsProjectionLeakRejected(admin);
-      const unused = async (): Promise<never> => {
-        throw new Error("unused media application dependency");
-      };
-      const commands = makeMediaUploadApplicationCommands({
-        store: makeMediaUploadStore(makeDirectPostgresControlPlaneLayer(connection)),
-        personaStore: {
-          findOwned: () => Effect.die("unused media moderation persona lookup"),
-        },
-        runEffect: (effect, signal) =>
-          Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
-        presigner: {
-          presign: () => Effect.die("unused media moderation presigner"),
-        },
-        sealer: { inspect: unused, seal: unused },
-        nowIso: () => "2026-08-27T00:00:00.000Z",
-      });
-      const body = {
-        idempotency_key: "moderate-key",
-        expected_creation_revision: 2,
-        action: "approve" as const,
-        approval_kind: "standard" as const,
-      };
+      await withModerationServingRole(admin, connection, async (servingConnection) => {
+        const unused = async (): Promise<never> => {
+          throw new Error("unused media application dependency");
+        };
+        const commands = makeMediaUploadApplicationCommands({
+          store: makeMediaUploadStore(makeDirectPostgresControlPlaneLayer(servingConnection)),
+          personaStore: {
+            findOwned: () => Effect.die("unused media moderation persona lookup"),
+          },
+          runEffect: (effect, signal) =>
+            Effect.runPromise(effect, signal === undefined ? undefined : { signal }),
+          presigner: {
+            presign: () => Effect.die("unused media moderation presigner"),
+          },
+          sealer: { inspect: unused, seal: unused },
+          nowIso: () => "2026-08-27T00:00:00.000Z",
+        });
+        const body = {
+          idempotency_key: "moderate-key",
+          expected_creation_revision: 2,
+          action: "approve" as const,
+          approval_kind: "standard" as const,
+        };
 
-      await expect(
-        commands.moderate({
-          submissionId: submission,
-          actor: { userId: actor, kind: "admin", scopes: ["moderation", "moderator"] },
-          body: { ...body, idempotency_key: "scope-only-admin" },
-        }),
-      ).rejects.toBeInstanceOf(NotFound);
-      expect(
-        await admin.query("SELECT 1 FROM media_moderation_actions WHERE submission_id=$1", [
-          submission,
-        ]),
-      ).toMatchObject({ rowCount: 0 });
-
-      await expect(
-        commands.moderate({
-          submissionId: submission,
-          actor: { userId: moderator, kind: "user" },
-          body,
-        }),
-      ).resolves.toMatchObject({ status: "processing", phase: "publish" });
-      const state = await run(connection, (store) =>
-        store.getForAuthor({
-          communityId: community,
-          submissionId: submission,
-          actorUserId: actor,
-          personaId: personaFor(connection),
-        }),
-      );
-      expect(state).toMatchObject({ status: "processing", phase: "publish", decisionRevision: 2 });
-      const persisted = await admin.query(
-        "SELECT moderator_actor_id,decision_revision FROM media_moderation_projections WHERE submission_id=$1",
-        [submission],
-      );
-      expect(persisted.rows[0]).toEqual({ moderator_actor_id: moderator, decision_revision: "2" });
-    });
-    completedTestCount += 1;
-  }, 40_000);
-  test("persists policy-violation moderator blocks and scopes replay to authority", async () => {
-    await withCurrentSchema(async (admin, connection) => {
-      await createThroughDecision(connection, reviewDecision);
-      const endpointTemplate = "/media-post-submissions/:submissionId/moderate";
-      const idempotencyKey = "moderator-block-key";
-      expect(
-        await run(connection, (store) =>
-          store.moderate({
-            ...command(connection, endpointTemplate, idempotencyKey),
-            expectedCreationRevision: 2,
-            action: "block",
-            actor: { userId: moderator, kind: "user" },
+        await expect(
+          commands.moderate({
+            submissionId: submission,
+            actor: { userId: actor, kind: "admin", scopes: ["moderation", "moderator"] },
+            body: { ...body, idempotency_key: "scope-only-admin" },
           }),
-        ),
-      ).toMatchObject({ kind: "committed" });
-      expect(
-        (
-          await admin.query(
-            "SELECT status,moderator_reason_code FROM media_post_submissions WHERE submission_id=$1",
-            [submission],
-          )
-        ).rows[0],
-      ).toEqual({ status: "blocked", moderator_reason_code: "policy_violation" });
-      expect(
-        (
-          await admin.query(
-            "SELECT action_kind,reason_code,authority_actor_user_id,decision_snapshot FROM media_moderation_actions WHERE submission_id=$1",
-            [submission],
-          )
-        ).rows[0],
-      ).toEqual({
-        action_kind: "block",
-        reason_code: "policy_violation",
-        authority_actor_user_id: moderator,
-        decision_snapshot: { reasonCode: "policy_violation" },
-      });
-      expect(
-        await run(connection, (store) =>
+        ).rejects.toBeInstanceOf(NotFound);
+        expect(
+          await admin.query("SELECT 1 FROM media_moderation_actions WHERE submission_id=$1", [
+            submission,
+          ]),
+        ).toMatchObject({ rowCount: 0 });
+
+        await expect(
+          commands.moderate({
+            submissionId: submission,
+            actor: { userId: moderator, kind: "user" },
+            body,
+          }),
+        ).resolves.toMatchObject({ status: "processing", phase: "publish" });
+        const state = await run(connection, (store) =>
           store.getForAuthor({
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
             personaId: personaFor(connection),
           }),
-        ),
-      ).toMatchObject({
-        status: "blocked",
-        moderatorApproval: { reasonCode: "policy_violation", moderatorActorId: moderator },
-      });
-      expect(
-        (
-          await admin.query(
-            "SELECT event_kind,evidence->>'reason_code' AS reason_code FROM media_submission_events WHERE submission_id=$1 ORDER BY event_sequence DESC LIMIT 1",
-            [submission],
-          )
-        ).rows[0],
-      ).toEqual({ event_kind: "moderator_blocked", reason_code: "policy_violation" });
-      expect(
-        await run(connection, (store) =>
-          store.replay({
-            communityId: community,
-            actorUserId: moderator,
-            personaId: null,
-            endpointTemplate,
-            idempotencyKey,
-            requestHash,
-          }),
-        ),
-      ).toMatchObject({ kind: "replay", submissionId: submission });
-      expect(
-        await run(connection, (store) =>
-          store.replay({
-            communityId: community,
-            actorUserId: "media_pg_other_moderator",
-            personaId: null,
-            endpointTemplate,
-            idempotencyKey,
-            requestHash,
-          }),
-        ),
-      ).toEqual({ kind: "none" });
-      await admin.query("BEGIN");
-      await admin.query(
-        "INSERT INTO media_song_lyrics_revisions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,lyrics_revision,creation_revision,audio_revision,canonical_audio_sha256,lyrics_text,lyrics_sha256,base_transcript_revision,provenance) VALUES ($1,$2,$3,$4,$5,1,3,1,$6,'hostile blocked edit',encode(sha256(convert_to('hostile blocked edit','UTF8')),'hex'),NULL,'pasted')",
-        [submission, community, actor, personaFor(connection), operation, audioSha256],
-      );
-      await expect(
-        admin.query(
-          "UPDATE media_post_submissions SET creation_revision=3,current_terms_revision=3,lyrics_revision=1,current_lyrics_revision=1,current_analysis_revision=NULL,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+        );
+        expect(state).toMatchObject({
+          status: "processing",
+          phase: "publish",
+          decisionRevision: 2,
+        });
+        const persisted = await admin.query(
+          "SELECT moderator_actor_id,decision_revision FROM media_moderation_projections WHERE submission_id=$1",
           [submission],
-        ),
-      ).rejects.toThrow("lyrics projection transition is not exact");
-      await admin.query("ROLLBACK");
+        );
+        expect(persisted.rows[0]).toEqual({
+          moderator_actor_id: moderator,
+          decision_revision: "2",
+        });
+      });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("persists policy-violation moderator blocks and scopes replay to authority", async () => {
+    await withCurrentSchema(async (admin, connection) => {
+      await createThroughDecision(connection, reviewDecision);
+      await withModerationServingRole(admin, connection, async (servingConnection) => {
+        const endpointTemplate = "/media-post-submissions/:submissionId/moderate";
+        const idempotencyKey = "moderator-block-key";
+        expect(
+          await run(servingConnection, (store) =>
+            store.moderate({
+              ...command(connection, endpointTemplate, idempotencyKey),
+              expectedCreationRevision: 2,
+              action: "block",
+              actor: { userId: moderator, kind: "user" },
+            }),
+          ),
+        ).toMatchObject({ kind: "committed" });
+        expect(
+          (
+            await admin.query(
+              "SELECT status,moderator_reason_code FROM media_post_submissions WHERE submission_id=$1",
+              [submission],
+            )
+          ).rows[0],
+        ).toEqual({ status: "blocked", moderator_reason_code: "policy_violation" });
+        expect(
+          (
+            await admin.query(
+              "SELECT action_kind,reason_code,authority_actor_user_id,decision_snapshot FROM media_moderation_actions WHERE submission_id=$1",
+              [submission],
+            )
+          ).rows[0],
+        ).toEqual({
+          action_kind: "block",
+          reason_code: "policy_violation",
+          authority_actor_user_id: moderator,
+          decision_snapshot: { reasonCode: "policy_violation" },
+        });
+        expect(
+          await run(connection, (store) =>
+            store.getForAuthor({
+              communityId: community,
+              submissionId: submission,
+              actorUserId: actor,
+              personaId: personaFor(connection),
+            }),
+          ),
+        ).toMatchObject({
+          status: "blocked",
+          moderatorApproval: { reasonCode: "policy_violation", moderatorActorId: moderator },
+        });
+        expect(
+          (
+            await admin.query(
+              "SELECT event_kind,evidence->>'reason_code' AS reason_code FROM media_submission_events WHERE submission_id=$1 ORDER BY event_sequence DESC LIMIT 1",
+              [submission],
+            )
+          ).rows[0],
+        ).toEqual({ event_kind: "moderator_blocked", reason_code: "policy_violation" });
+        expect(
+          await run(connection, (store) =>
+            store.replay({
+              communityId: community,
+              actorUserId: moderator,
+              personaId: null,
+              endpointTemplate,
+              idempotencyKey,
+              requestHash,
+            }),
+          ),
+        ).toMatchObject({ kind: "replay", submissionId: submission });
+        expect(
+          await run(connection, (store) =>
+            store.replay({
+              communityId: community,
+              actorUserId: "media_pg_other_moderator",
+              personaId: null,
+              endpointTemplate,
+              idempotencyKey,
+              requestHash,
+            }),
+          ),
+        ).toEqual({ kind: "none" });
+        await admin.query("BEGIN");
+        await admin.query(
+          "INSERT INTO media_song_lyrics_revisions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,lyrics_revision,creation_revision,audio_revision,canonical_audio_sha256,lyrics_text,lyrics_sha256,base_transcript_revision,provenance) VALUES ($1,$2,$3,$4,$5,1,3,1,$6,'hostile blocked edit',encode(sha256(convert_to('hostile blocked edit','UTF8')),'hex'),NULL,'pasted')",
+          [submission, community, actor, personaFor(connection), operation, audioSha256],
+        );
+        await expect(
+          admin.query(
+            "UPDATE media_post_submissions SET creation_revision=3,current_terms_revision=3,lyrics_revision=1,current_lyrics_revision=1,current_analysis_revision=NULL,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+            [submission],
+          ),
+        ).rejects.toThrow("lyrics projection transition is not exact");
+        await admin.query("ROLLBACK");
+      });
     });
     completedTestCount += 1;
   }, 40_000);
@@ -5470,106 +5482,108 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         },
         true,
       );
-      expect(
-        await run(connection, (store) =>
-          store.recordProcessingAttempt({
-            attemptId: "media_pg_acr_attempt_3",
-            communityId: community,
-            submissionId: submission,
-            actorUserId: actor,
-            personaId: personaFor(connection),
-            operationId: operation,
-            audioRevision: 1,
-            analysisRevision: 1,
-            stage: "acr_primary",
-            inputKind: "audio",
-            inputRevision: 1,
-            policyRevision: "acr-policy-1",
-            adapterRevision: "acr-adapter-1",
-            inputHash: audioSha256,
-            attemptNumber: 3,
-          }),
-        ),
-      ).toBeUndefined();
-      expect(
-        await run(connection, (store) =>
-          store.claimProcessingAttempt({
-            attemptId: "media_pg_acr_attempt_3",
-            workerId: "acr-worker",
-            leaseSeconds: 30,
-          }),
-        ),
-      ).toBe(true);
-      expect(
-        await run(connection, (store) =>
-          store.failProcessingAttempt({
-            attemptId: "media_pg_acr_attempt_3",
-            workerId: "acr-worker",
-            claimFence: 1,
-            failureCode: "provider_invalid",
-            retryable: false,
-            evidenceRef: "review-acr-exhausted-evidence",
-          }),
-        ),
-      ).toBe(true);
-      expect(
-        await run(connection, (store) =>
-          store.requireReview({
-            ...command(
-              connection,
-              "/media-post-submissions/:submissionId/review",
-              "acr-exhaustion-key",
-            ),
-            expectedCreationRevision: 2,
-            review: {
-              reviewRef: "review-acr-exhausted-case",
-              heldRevision: 2,
-              reasonCode: "review_required",
-              exhaustionCode: "acr_exhausted",
-              exhaustionAttemptId: "media_pg_acr_attempt_3",
-            },
-          }),
-        ),
-      ).toMatchObject({ kind: "committed" });
-      await expect(
-        admin.query(
-          "UPDATE media_post_submissions SET status='processing',phase='publish',moderator_action_id='forged',moderator_actor_id=$2,moderator_evidence_ref='forged',decision_revision=1,current_decision_revision=1,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
-          [submission, moderator],
-        ),
-      ).rejects.toThrow();
-      expect(
-        await run(connection, (store) =>
-          store.moderate({
-            ...command(
-              connection,
-              "/media-post-submissions/:submissionId/moderate",
-              "acr-moderate-key",
-            ),
-            expectedCreationRevision: 2,
-            action: "approve",
-            actor: { userId: moderator, kind: "user" },
-            approval: {
-              actionId: "acr-override-action",
-              moderatorActorId: actor,
-              evidenceRef: "acr-override-evidence",
-              approvalKind: "acr_override",
-              reasonCode: "acr_exhausted",
-              heldRevision: 2,
-            },
-            decision: { ...decision, decisionRevision: 1 },
-            outbox: publicationWakeup("acr"),
-          }),
-        ),
-      ).toMatchObject({ kind: "committed" });
-      const persisted = await admin.query(
-        "SELECT action_kind,authority_actor_user_id,reason_code,held_revision FROM media_moderation_actions WHERE action_id=$1",
-        ["acr-override-action"],
-      );
-      expect(persisted.rows[0]).toEqual({
-        action_kind: "approve",
-        authority_actor_user_id: moderator,
-        reason_code: "acr_exhausted",
-        held_revision: "2",
+      await withModerationServingRole(admin, connection, async (servingConnection) => {
+        expect(
+          await run(connection, (store) =>
+            store.recordProcessingAttempt({
+              attemptId: "media_pg_acr_attempt_3",
+              communityId: community,
+              submissionId: submission,
+              actorUserId: actor,
+              personaId: personaFor(connection),
+              operationId: operation,
+              audioRevision: 1,
+              analysisRevision: 1,
+              stage: "acr_primary",
+              inputKind: "audio",
+              inputRevision: 1,
+              policyRevision: "acr-policy-1",
+              adapterRevision: "acr-adapter-1",
+              inputHash: audioSha256,
+              attemptNumber: 3,
+            }),
+          ),
+        ).toBeUndefined();
+        expect(
+          await run(connection, (store) =>
+            store.claimProcessingAttempt({
+              attemptId: "media_pg_acr_attempt_3",
+              workerId: "acr-worker",
+              leaseSeconds: 30,
+            }),
+          ),
+        ).toBe(true);
+        expect(
+          await run(connection, (store) =>
+            store.failProcessingAttempt({
+              attemptId: "media_pg_acr_attempt_3",
+              workerId: "acr-worker",
+              claimFence: 1,
+              failureCode: "provider_invalid",
+              retryable: false,
+              evidenceRef: "review-acr-exhausted-evidence",
+            }),
+          ),
+        ).toBe(true);
+        expect(
+          await run(connection, (store) =>
+            store.requireReview({
+              ...command(
+                connection,
+                "/media-post-submissions/:submissionId/review",
+                "acr-exhaustion-key",
+              ),
+              expectedCreationRevision: 2,
+              review: {
+                reviewRef: "review-acr-exhausted-case",
+                heldRevision: 2,
+                reasonCode: "review_required",
+                exhaustionCode: "acr_exhausted",
+                exhaustionAttemptId: "media_pg_acr_attempt_3",
+              },
+            }),
+          ),
+        ).toMatchObject({ kind: "committed" });
+        await expect(
+          admin.query(
+            "UPDATE media_post_submissions SET status='processing',phase='publish',moderator_action_id='forged',moderator_actor_id=$2,moderator_evidence_ref='forged',decision_revision=1,current_decision_revision=1,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+            [submission, moderator],
+          ),
+        ).rejects.toThrow();
+        expect(
+          await run(servingConnection, (store) =>
+            store.moderate({
+              ...command(
+                connection,
+                "/media-post-submissions/:submissionId/moderate",
+                "acr-moderate-key",
+              ),
+              expectedCreationRevision: 2,
+              action: "approve",
+              actor: { userId: moderator, kind: "user" },
+              approval: {
+                actionId: "acr-override-action",
+                moderatorActorId: actor,
+                evidenceRef: "acr-override-evidence",
+                approvalKind: "acr_override",
+                reasonCode: "acr_exhausted",
+                heldRevision: 2,
+              },
+              decision: { ...decision, decisionRevision: 1 },
+              outbox: publicationWakeup("acr"),
+            }),
+          ),
+        ).toMatchObject({ kind: "committed" });
+        const persisted = await admin.query(
+          "SELECT action_kind,authority_actor_user_id,reason_code,held_revision FROM media_moderation_actions WHERE action_id=$1",
+          ["acr-override-action"],
+        );
+        expect(persisted.rows[0]).toEqual({
+          action_kind: "approve",
+          authority_actor_user_id: moderator,
+          reason_code: "acr_exhausted",
+          held_revision: "2",
+        });
       });
     });
     completedTestCount += 1;

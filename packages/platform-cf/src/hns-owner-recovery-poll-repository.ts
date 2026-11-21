@@ -12,6 +12,7 @@ import {
 } from "@pirate/application";
 import { canonicalJson } from "@pirate/domain";
 import { Effect, type Layer, Predicate } from "effect";
+import { deferExpiredHnsRecoveryHosts } from "./hns-owner-recovery-expired-dns.ts";
 import {
   type HnsOwnerRecoveryRow,
   hnsOwnerRecoveryInteger,
@@ -567,16 +568,26 @@ function makePollStore(db: ControlPlaneDb["Service"]): HnsOwnerRecoveryPollStore
               retainedBytes,
               input.attempt.fence_token,
             );
-            yield* refreshVerifiedHnsHosts(transaction, {
-              community_id: session.community_id,
-              route_binding_id: session.route_binding_id,
-              root_label: session.route.root_label,
-              actor_id: session.actor_id,
-              expected_binding_generation: session.expected_binding_generation,
-              evidence_ref: evidence.evidence_ref,
-              operation_id: session.route_recovery_id,
-              result_hash: resultHash,
-            }).pipe(Effect.mapError(() => storageFailure()));
+            const deferHosts =
+              session.environment === "staging" &&
+              (yield* deferExpiredHnsRecoveryHosts(transaction, {
+                community_id: session.community_id,
+                route_binding_id: session.route_binding_id,
+                expected_binding_generation: session.expected_binding_generation,
+                evidence_ref: evidence.evidence_ref,
+                recovery_id: session.route_recovery_id,
+              }));
+            if (!deferHosts)
+              yield* refreshVerifiedHnsHosts(transaction, {
+                community_id: session.community_id,
+                route_binding_id: session.route_binding_id,
+                root_label: session.route.root_label,
+                actor_id: session.actor_id,
+                expected_binding_generation: session.expected_binding_generation,
+                evidence_ref: evidence.evidence_ref,
+                operation_id: session.route_recovery_id,
+                result_hash: resultHash,
+              }).pipe(Effect.mapError(() => storageFailure()));
           } else if (input.evidence !== null && keepsProviderResult) {
             return yield* Effect.fail(storageFailure());
           }

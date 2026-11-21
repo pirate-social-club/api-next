@@ -2,16 +2,19 @@ import { Effect } from "effect";
 import { canonicalBodyHash } from "../../application/src/use-cases/content/common.ts";
 import { prepareModeratedDanceTerms } from "../../application/src/use-cases/dance/moderated-intake.ts";
 import { prepareModeratedDancePolicyPublication } from "../../application/src/use-cases/dance/moderated-policy.ts";
-import { moderatedDanceIntakeFacts } from "./moderated-dance-intake-fixture.ts";
+import {
+  moderatedDanceIntakeFacts,
+  noPoseModeratedDanceIntakeFacts,
+} from "./moderated-dance-intake-fixture.ts";
 import { sharedSongParticipantFixture } from "./shared-song-participant-fixture.ts";
 
 /** Hash-valid, fictional documents only. No operational admissions or media. */
-export async function moderatedDanceContextFixture(funded = false) {
-  const shared = await sharedSongParticipantFixture();
+export async function moderatedDanceContextFixture(funded = false, noPose = false) {
+  const shared = await sharedSongParticipantFixture(undefined, noPose);
   const b = shared.projection.terms.qualification_bindings.find((x) => x.activity === "dance");
   const q = shared.qualification_documents.find((x) => x.activity === "dance");
   if (b === undefined || q === undefined) throw new Error("Missing fictional Dance objective");
-  const base = moderatedDanceIntakeFacts();
+  const base = noPose ? noPoseModeratedDanceIntakeFacts() : moderatedDanceIntakeFacts();
   const facts = {
     ...base,
     communityId: shared.projection.target.community_id,
@@ -40,7 +43,9 @@ export async function moderatedDanceContextFixture(funded = false) {
         consent_text: "Fictional private consent",
         retention_text: "Fictional bounded retention",
         publication_text: "Fictional independent optional Post",
-        owner_rubric_text: "Fictional assigned cue and selected dance rubric",
+        owner_rubric_text: noPose
+          ? "Fictional selected dance rubric; no opening pose required"
+          : "Fictional assigned cue and selected dance rubric",
       },
       valid_from: "1970-01-01T00:00:01.000Z",
       valid_until: "1970-01-01T01:00:00.000Z",
@@ -74,7 +79,7 @@ export async function moderatedDanceContextFixture(funded = false) {
         reviewId: "test-capture-review",
         attemptId: "test-capture-attempt",
       },
-      "arms_t",
+      noPose ? "none" : "arms_t",
     ),
   );
   const c = terms.capture,

@@ -235,6 +235,7 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
         }) as RegistrationResponse,
     sessionToken,
     sessionTtlSeconds: ttlSeconds,
+    providerSubject: verified.sourceUserId,
   };
 });
 

@@ -29,6 +29,10 @@ export const postgresHnsSuiteCostEstimates = {
     sourceCallCount: 1,
     milliseconds: 2717,
   },
+  "apps/http-worker/src/hns-owner-recovery-observer-retry.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 11000,
+  },
   "apps/http-worker/src/hns-owner-recovery-production.pg.test.ts": {
     sourceCallCount: 1,
     milliseconds: 9790,
@@ -38,6 +42,10 @@ export const postgresHnsSuiteCostEstimates = {
     milliseconds: 12904,
   },
   "apps/http-worker/src/hns-txt-attachment.pg.test.ts": { sourceCallCount: 4, milliseconds: 28348 },
+  "apps/jobs-worker/src/hns-active-lease-renewal-observer-retry.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 8000,
+  },
   "apps/jobs-worker/src/hns-active-lease-renewal-production.pg.test.ts": {
     sourceCallCount: 1,
     milliseconds: 25519,
@@ -81,6 +89,11 @@ export const postgresHnsSuiteCostEstimates = {
   "packages/platform-cf/src/hns-observation-fence.pg.test.ts": {
     sourceCallCount: 9,
     milliseconds: 32447,
+  },
+  // Baseline constrained-role red took18.49s; a planning estimate, not green acceptance.
+  "packages/platform-cf/src/hns-owner-recovery-runtime-privileges.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 20000,
   },
   "packages/platform-cf/src/hns-production-import-privileges.pg.test.ts": {
     sourceCallCount: 2,
@@ -132,7 +145,8 @@ export const postgresHnsSuiteCostEstimates = {
   },
   "packages/platform-cf/src/hns-root-import-repository.pg.test.ts": {
     sourceCallCount: 12,
-    milliseconds: 57553,
+    // Retain the 130s baseline plus 100s for the four bounded expiry-clock cases.
+    milliseconds: 230000,
   },
   "packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts": {
     sourceCallCount: 4,
@@ -144,6 +158,12 @@ export const postgresHnsSuiteCostEstimates = {
   },
   "scripts/hns-continuity/promotion.pg.test.ts": { sourceCallCount: 1, milliseconds: 6730 },
   "scripts/hns-monitor/snapshot.pg.test.ts": { sourceCallCount: 1, milliseconds: 2187 },
+  // PostgreSQL 17.11 at 84799d1d (2026-10-30T00:04Z): two passes in 21.59s.
+  // Scheduling measurement only; qualification receipts remain separate.
+  "scripts/hns-staging-cookie-profile-successor.pg.test.ts": {
+    sourceCallCount: 2,
+    milliseconds: 21590,
+  },
   "scripts/staging-hns-cutover-probe-reseed.pg.test.ts": { sourceCallCount: 1, milliseconds: 3407 },
   "scripts/staging-hns-gateway-role.pg.test.ts": { sourceCallCount: 1, milliseconds: 452 },
   "scripts/staging-hns-post-migration-entry.pg.test.ts": { sourceCallCount: 8, milliseconds: 6067 },

@@ -62,6 +62,8 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
     allowed: false,
   },
   { object: "guard_reward_http_admission()", privilege: "EXECUTE", allowed: false },
+  { object: "load_shared_song_frozen_plan_v2(text)", privilege: "EXECUTE", allowed: true },
+  { object: "guard_shared_song_frozen_purchase_v2()", privilege: "EXECUTE", allowed: false },
   // Acquiring, renewing and releasing a run lease are operator acts. Automation
   // may only pause on expiry and ask whether it still has authority.
   ...[
@@ -178,6 +180,31 @@ export const RUNTIME_RELEASE_PRIVILEGES: readonly Requirement[] = [
   { object: "reward_ledger_credits", privilege: "UPDATE", allowed: true },
   { object: "reward_native_transfer_receipt_evidence", privilege: "INSERT", allowed: true },
   { object: "reward_payout_effects", privilege: "INSERT", allowed: true },
+  ...[
+    "reward_safe_treasury_allocations_v1",
+    "reward_safe_refunds_v1",
+    "reward_safe_refund_attempts_v1",
+    "reward_safe_refund_completions_v1",
+  ].flatMap((object) => [
+    { object, privilege: "SELECT" as const, allowed: true },
+    { object, privilege: "INSERT" as const, allowed: false },
+    { object, privilege: "UPDATE" as const, allowed: false },
+  ]),
+  ...[
+    "reward_unpaid_late_principal_atomic_v2(bigint,text)",
+    "reward_offer_has_unfinalized_contribution_v2(text)",
+    "seal_reward_safe_refunds_v1(text,integer)",
+    "prepare_reward_safe_refund_v1(text,text,bigint)",
+    "settle_reward_safe_refund_v1(jsonb)",
+    "take_reward_joint_cycle_turn_v1()",
+    "credit_empty_safe_treasury_v1(text,numeric)",
+  ].map((object) => ({ object, privilege: "EXECUTE" as const, allowed: true })),
+  ...(["SELECT", "INSERT", "UPDATE"] as const).map((privilege) => ({
+    object: "reward_joint_cycle_turn_v1",
+    privilege,
+    allowed: false,
+  })),
+  { object: "reward_safe_refund_calldata_v1(text,numeric)", privilege: "EXECUTE", allowed: false },
   { object: "reward_refund_effects", privilege: "INSERT", allowed: true },
   { object: "reward_refund_effects", privilege: "SELECT", allowed: true },
   { object: "reward_safe_execution_cursors", privilege: "SELECT", allowed: true },

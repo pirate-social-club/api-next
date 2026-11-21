@@ -124,7 +124,13 @@ async function fixture() {
     list: () =>
       Effect.sync(() => {
         calls.push("list");
-        return ["work"];
+        return [
+          {
+            ...work,
+            nextBlock:
+              (results.at(-1) as { nextBlock?: string | null } | undefined)?.nextBlock ?? null,
+          },
+        ];
       }),
     claim: () =>
       Effect.sync(() => {
@@ -219,6 +225,70 @@ async function fixture() {
   };
 }
 describe("actual V2 Jobs recovery consumer with offline ports", () => {
+  test("22 minutes without a new finalized block spends no additional recovery attempts", async () => {
+    const f = await fixture();
+    Object.assign(f.work.workPolicy, { maxAttempts: 5 });
+    Object.assign(f.rpc, {
+      readFinalizedHead: async () => ({ blockNumber: 1n, blockHash: `0x${"a".repeat(64)}` }),
+    });
+    await f.run();
+    for (let minute = 1; minute <= 22; minute++) {
+      f.restartAfterUnknown();
+      await f.run();
+    }
+    expect(f.workCharges()).toBe(1);
+    expect(f.calls.filter((call) => call === "record")).toHaveLength(1);
+    expect(f.accepted).toEqual([]);
+  });
+  test("a restart resumes at the first unscanned block only after it finalizes", async () => {
+    const f = await fixture();
+    const ranges: bigint[][] = [];
+    Object.assign(f.rpc, {
+      readFundingTransferLogs: async ({
+        fromBlock,
+        toBlock,
+      }: {
+        fromBlock: bigint;
+        toBlock: bigint;
+      }) => {
+        ranges.push([fromBlock, toBlock]);
+        return [];
+      },
+    });
+    await f.run();
+    Object.assign(f.work, { nextBlock: "11" });
+    f.restartAfterUnknown();
+    await f.run();
+    expect(f.workCharges()).toBe(1);
+    Object.assign(f.rpc, {
+      readFinalizedHead: async () => ({ blockNumber: 11n, blockHash: `0x${"a".repeat(64)}` }),
+    });
+    await f.run();
+    expect(f.workCharges()).toBe(2);
+    expect(ranges).toEqual([
+      [2n, 10n],
+      [11n, 11n],
+    ]);
+    expect(f.results.at(-1)).toEqual({
+      complete: false,
+      nextBlock: "12",
+      error: null,
+    });
+  });
+  test("an uncertain finality readiness read does not claim work or accept a receipt", async () => {
+    const f = await fixture();
+    await f.run();
+    f.restartAfterUnknown();
+    Object.assign(f.rpc, {
+      readFinalizedHead: async () => {
+        throw Error("provider unavailable");
+      },
+    });
+    await expect(f.run()).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect(f.workCharges()).toBe(1);
+    expect(f.results).toHaveLength(1);
+    expect(f.accepted).toEqual([]);
+  });
   test("disabled declaration has no provider, work or database interaction", async () => {
     const f = await fixture();
     await Effect.runPromise(
@@ -245,7 +315,7 @@ describe("actual V2 Jobs recovery consumer with offline ports", () => {
     const f = await fixture();
     await f.run();
     expect(f.calls).toEqual(["list", "claim", "attest", "record", "logs", "finish"]);
-    expect(f.results).toEqual([{ complete: false, nextBlock: "2", error: null }]);
+    expect(f.results).toEqual([{ complete: false, nextBlock: "11", error: null }]);
     expect(f.work.state.nonceFinalized).toBe(false);
   });
   test("concurrent workers respect the durable claim and issue no second charge/observation", async () => {
@@ -440,7 +510,7 @@ describe("actual V2 Jobs recovery consumer with offline ports", () => {
     await f.run();
     expect(f.results).toEqual([
       { complete: false, nextBlock: null, error: "outcome_unknown" },
-      { complete: false, nextBlock: "2", error: null },
+      { complete: false, nextBlock: "11", error: null },
     ]);
     expect(f.workCharges()).toBe(2);
     f.restartAfterUnknown();
@@ -449,5 +519,63 @@ describe("actual V2 Jobs recovery consumer with offline ports", () => {
     expect(f.results).toHaveLength(2);
     expect(f.work.state).toEqual(original);
     expect(f.accepted).toEqual([]);
+  });
+});
+
+describe("terminal funding work", () => {
+  test("a finalized closed cancellation performs no RPC or processing claim", async () => {
+    const f = await fixture();
+    Object.assign(f.work.state, {
+      fundingState: "nonce_closed_no_principal",
+      nonceFinalized: true,
+    });
+    Object.assign(f.work, { nextBlock: "10" });
+    Object.assign(f.rpc, {
+      readFinalizedHead: async () => {
+        throw Error("closed work must not read the chain");
+      },
+    });
+    await f.run();
+    expect(f.calls).toEqual(["list"]);
+    expect(f.workCharges()).toBe(0);
+    expect(f.accepted).toEqual([]);
+  });
+
+  test.each([
+    { fundingState: "nonce_closed_no_principal", nonceFinalized: false },
+    { fundingState: "confirming", nonceFinalized: true },
+  ])("does not discard work without the complete terminal state: %j", async (state) => {
+    const f = await fixture();
+    Object.assign(f.work.state, state);
+    await f.run();
+    expect(f.workCharges()).toBe(1);
+  });
+
+  test("a closed cancellation cannot block a later active candidate", async () => {
+    const f = await fixture(),
+      listed = f.store.list,
+      claim = f.store.claim;
+    const closed = {
+      ...f.work,
+      workId: "closed",
+      nextBlock: "10",
+      state: {
+        ...f.work.state,
+        fundingState: "nonce_closed_no_principal" as const,
+        nonceFinalized: true,
+      },
+    };
+    const ids: string[] = [];
+    Object.assign(f.store, {
+      list: (limit: number, cursor: number) =>
+        listed(limit, cursor).pipe(Effect.map((items) => [closed, ...items])),
+      claim: (id: string, token: string) => {
+        ids.push(id);
+        return claim(id, token);
+      },
+    });
+    await f.run();
+    expect(ids).toEqual([f.work.workId]);
+    expect(f.workCharges()).toBe(1);
   });
 });

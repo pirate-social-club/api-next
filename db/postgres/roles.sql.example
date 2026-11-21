@@ -32,6 +32,9 @@ TO api_next_app;
 REVOKE DELETE, TRUNCATE ON telegram_bot_grants FROM api_next_app;
 -- Chat progress is revised rather than deleted. Apply this after migration 0238.
 GRANT SELECT, INSERT, UPDATE ON telegram_study_conversations TO api_next_app;
+-- Reviewed learner catalogue decisions are read-only to the serving application.
+GRANT SELECT ON study_learner_catalogue_decisions TO api_next_app;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON study_learner_catalogue_decisions FROM api_next_app;
 REVOKE DELETE, TRUNCATE ON telegram_study_conversations FROM api_next_app;
 -- Migration 0240 adds private bot interface choices; bot callbacks require these
 -- privileges even when linking and practice are disabled.
@@ -222,6 +225,13 @@ GRANT EXECUTE ON FUNCTION authorize_hns_root_import_activation_v1(
 -- and `bun run db:preflight:serving-functions` reads it back through the
 -- serving connection.
 -- Ordinary account function grants begin
+-- Requires migration0330. Session rows and internal helpers remain private.
+REVOKE ALL ON browser_sessions FROM api_next_app;
+GRANT EXECUTE ON FUNCTION create_browser_session_v1(JSONB) TO api_next_app;
+GRANT EXECUTE ON FUNCTION read_browser_session_access_v1(TEXT,TEXT,TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION read_browser_session_renewal_v1(TEXT,TEXT,TEXT,TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION renew_browser_session_v1(TEXT,TEXT,TEXT,TEXT) TO api_next_app;
+GRANT EXECUTE ON FUNCTION revoke_browser_session_v1(TEXT,TEXT,TEXT,TEXT,TEXT) TO api_next_app;
 GRANT EXECUTE ON FUNCTION provision_account_participation_owner_v1(TEXT) TO api_next_app;
 GRANT EXECUTE ON FUNCTION lock_original_account_audio_source_private_v1(TEXT) TO api_next_app;
 GRANT EXECUTE ON FUNCTION capture_account_study_audio_private_v1(
@@ -269,6 +279,20 @@ GRANT EXECUTE ON FUNCTION cancel_unclaimed_account_karaoke_audio_private_v1(
   TEXT, TEXT, TEXT, TEXT, JSONB
 ) TO api_next_app;
 -- Ordinary account function grants end
+
+-- Incremental Safe lifecycle grants after migrations 0324-0326. The receipt,
+-- obligation, attempt and completion history stays function-only for writes.
+REVOKE ALL ON reward_safe_refunds_v1, reward_safe_refund_attempts_v1,
+  reward_safe_refund_completions_v1, reward_joint_cycle_turn_v1 FROM api_next_app;
+GRANT SELECT ON reward_safe_refunds_v1, reward_safe_refund_attempts_v1,
+  reward_safe_refund_completions_v1 TO api_next_app;
+GRANT EXECUTE ON FUNCTION reward_unpaid_late_principal_atomic_v2(BIGINT,TEXT),
+  reward_offer_has_unfinalized_contribution_v2(TEXT),
+  seal_reward_safe_refunds_v1(TEXT,INTEGER),
+  prepare_reward_safe_refund_v1(TEXT,TEXT,BIGINT),
+  settle_reward_safe_refund_v1(JSONB),
+  take_reward_joint_cycle_turn_v1() TO api_next_app;
+REVOKE ALL ON FUNCTION reward_safe_refund_calldata_v1(TEXT,NUMERIC) FROM api_next_app;
 
 -- The operator role is the only writer that can produce an authorization to
 -- delete retained authority or to apply a recovery decision. Its functions

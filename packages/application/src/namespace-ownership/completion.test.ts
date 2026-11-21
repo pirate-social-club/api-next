@@ -576,6 +576,86 @@ describe("namespace ownership poll completion", () => {
     expect(context.calls).toMatchObject({ release: 1, verify: 0 });
   });
 
+  test("a same-key retry reads the chain again after a finalized pending observation", async () => {
+    const initial = await stored();
+    const bytes = verifiedBytes();
+    const verified: NamespaceOwnershipProviderCompleteResult = {
+      status: "verified",
+      evidence_kind: "raw_provider_response_v1",
+      provider_evidence_ref: "legacy-obs-01",
+      raw_response_bytes: bytes,
+      observation: JSON.parse(new TextDecoder().decode(bytes)),
+      observed_at: "2026-02-02T00:00:00.000Z",
+      expires_at: "2026-03-04T00:00:00.000Z",
+    };
+    // The verifier finalizes one observation per observation id and replays
+    // it for any later call with the same id, as its snapshot store does.
+    // The first chain read finds no TXT record; the second finds it.
+    const verifierObservations = new Map<string, NamespaceOwnershipProviderCompleteResult>();
+    const chainAnswers: NamespaceOwnershipProviderCompleteResult[] = [
+      { status: "pending" },
+      verified,
+    ];
+    let chainCalls = 0;
+    const providerObservationIds: string[] = [];
+    const base = adapter({ status: "pending" }, { complete: 0 });
+    const memoizing: NamespaceOwnershipProviderAdapter = {
+      ...base,
+      complete: (_input, context) =>
+        Effect.suspend(() => {
+          providerObservationIds.push(context.observation_id);
+          let observed = verifierObservations.get(context.observation_id);
+          if (observed === undefined) {
+            observed = chainAnswers[chainCalls] ?? verified;
+            chainCalls += 1;
+            verifierObservations.set(context.observation_id, observed);
+          }
+          return Effect.succeed(observed);
+        }),
+    };
+    // A released same-key retry reacquires the same durable attempt with a
+    // raised fence, as the repository does.
+    let fence = 0;
+    let verifies = 0;
+    const store: NamespaceOwnershipCompletionStore = {
+      load: () => Effect.succeed(initial),
+      reserve: () => {
+        fence += 1;
+        return Effect.succeed({
+          kind: "acquired",
+          reservation: { ...reservation, fence_token: fence },
+        });
+      },
+      release: () => Effect.succeed({ kind: "released" as const }),
+      reject: () => Effect.die("not used"),
+      consume: () => Effect.die("not used"),
+      verify: (input) => {
+        verifies += 1;
+        return Effect.succeed({ kind: "committed", result_hash: input.result_hash });
+      },
+    };
+    const registry = await Effect.runPromise(
+      makeNamespaceOwnershipProviderRegistry([memoizing], { now: () => NOW }),
+    );
+    const poll = () =>
+      Effect.runPromise(
+        completeNamespaceOwnership(request, {
+          store,
+          registry,
+          ids: {
+            attempt: () => "completion-attempt-proposed",
+            evidence: () => reservation.evidence_ref,
+          },
+        }),
+      );
+
+    expect(await poll()).toMatchObject({ status: "pending", result_hash: null });
+    expect(await poll()).toMatchObject({ status: "verified", replayed: false });
+    expect(chainCalls).toBe(2);
+    expect(verifies).toBe(1);
+    expect(providerObservationIds).toEqual(["completion-attempt-1:1", "completion-attempt-1:2"]);
+  });
+
   test("maps reservation admission and stale identities before provider work", async () => {
     const initial = await stored();
     const inFlight = await services({

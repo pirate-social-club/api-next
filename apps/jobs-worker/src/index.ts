@@ -37,6 +37,7 @@ import {
   Schedule,
   Schema,
 } from "effect";
+import { songFundingLane } from "../../../packages/platform-cf/src/song-funding-connection.ts";
 import { type AvatarCleanupBuckets, makeAvatarCleanupJob } from "./avatar-cleanup.ts";
 
 import { makeCommunityPurchaseFundingReconciliationJob } from "./community-purchase-funding";
@@ -67,7 +68,10 @@ import {
   MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
   MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
 } from "./megapot-rewards-cycle";
-import { makeSongFundingRecoveryRuntime } from "./megapot-rewards-runtime.ts";
+import {
+  makeBoundedSongFundingConnection,
+  makeSongFundingRecoveryRuntime,
+} from "./megapot-rewards-runtime.ts";
 import { makeNotificationDeliveryJob } from "./notification-delivery.ts";
 import { makeDataRegistrationBalanceConfig, runPipelineBalanceSnapshots } from "./pipeline-balance";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
@@ -154,6 +158,7 @@ export interface JobsWorkerEnv
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly KARAOKE_ATTEMPT?: import("@pirate/platform-cf").KaraokeFinalizationRecoveryNamespace;
   readonly CONTROL_PLANE?: HyperdriveConnection;
+  readonly SONG_FUNDING_JOBS?: HyperdriveConnection;
   readonly LEARNER_AUDIO?: R2Bucket;
   readonly AVATAR_INGRESS?: R2Bucket;
   readonly AVATAR_SEALED?: R2Bucket;
@@ -815,6 +820,7 @@ export function makeJobsWorkerDeclarations(
   guestStudyRecovery?: GuestStudyRecoveryComposition,
   songFundingRecovery?: ReturnType<typeof makeSongFundingRecoveryRuntime>,
   safePoolJob?: JobDeclaration<unknown, ControlPlaneDb | AlertCollector>,
+  jointRuntime?: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
     makeNotificationDeliveryJob(sink),
@@ -855,9 +861,16 @@ export function makeJobsWorkerDeclarations(
   const studyJob =
     learnerAudio === undefined
       ? undefined
-      : makeStudySpokenAnswerRecoveryJob(sink, learnerAudio, guestStudyRecovery);
+      : makeStudySpokenAnswerRecoveryJob(
+          sink,
+          learnerAudio,
+          guestStudyRecovery,
+          megapotJob?.name === "safe-pool-pilot.cycle" ? 1 : 25,
+        );
   if (megapotJob !== undefined && (studyJob !== undefined || fundingJob !== undefined)) {
-    declarations.push(makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob, fundingJob));
+    declarations.push(
+      makeSerialStudyMegapotRecoveryJob(sink, studyJob, megapotJob, fundingJob, jointRuntime),
+    );
   } else if (megapotJob !== undefined) declarations.push(megapotJob);
   else if (studyJob !== undefined) declarations.push(studyJob);
   if (megapotJob === undefined && fundingJob !== undefined) declarations.push(fundingJob);
@@ -880,6 +893,99 @@ export function makeJobsWorkerDeclarations(
     );
   }
   return declarations;
+}
+
+/**
+ * Decides, from one environment's bindings, every declaration the scheduled
+ * handler registers. The handler and the configuration test both call this, so
+ * the registry is checked against the same composition that runs. The order
+ * matches the handler before extraction: configuration, alert sink, data
+ * balance, then declarations, so invalid configuration still reports first.
+ */
+export function makeScheduledJobDeclarations(
+  env: JobsWorkerEnv,
+  makeSink: (env: JobsWorkerEnv) => AlertSink,
+) {
+  if (env.CONTROL_PLANE === undefined) {
+    throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
+  }
+  const config = loadJobsWorkerConfig(env);
+  const sink = makeSink(env);
+  const dataBalance = makeDataRegistrationBalanceConfig(env);
+  const hns = makeHnsRouteRevalidationComposition(env);
+  const megapot = makeMegapotOptions(env, config);
+  const rpcUrl = fundingRpcUrl(
+    Redacted.value(config.COMMUNITY_PURCHASE_FUNDING_RPC_URL),
+    config.API_NEXT_ENV,
+  );
+  const karaokeFinalization =
+    env.KARAOKE_FINALIZATION_RECOVERY_ENABLED === "true"
+      ? (() => {
+          if (env.KARAOKE_ATTEMPT === undefined) {
+            throw new Error("KARAOKE_ATTEMPT binding is required for Karaoke recovery");
+          }
+          return { namespace: env.KARAOKE_ATTEMPT };
+        })()
+      : undefined;
+  const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
+  const spacesReconciliation = makeSpacesReconciliationComposition(
+    env,
+    runtime,
+    config.API_NEXT_ENV,
+  );
+  const safePool = makeSafePoolPilotOptions(env, config);
+  const lane = songFundingLane(config);
+  const songFundingRecovery =
+    lane === null
+      ? undefined
+      : makeSongFundingRecoveryRuntime({
+          controlPlane: makeBoundedSongFundingConnection(
+            env.SONG_FUNDING_JOBS,
+            env.CONTROL_PLANE,
+            lane,
+          ),
+          rpcUrl:
+            lane === "eoa"
+              ? fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV)
+              : (safePool?.rpcUrl ??
+                (() => {
+                  throw Error("Safe funding runtime required");
+                })()),
+          environment: config.API_NEXT_ENV,
+          now: () => new Date().toISOString(),
+        });
+  const declarations = makeJobsWorkerDeclarations(
+    sink,
+    rpcUrl,
+    hns,
+    config.API_NEXT_ENV,
+    megapot,
+    config.COMMUNITY_MAINTENANCE_ENABLED,
+    env.LEARNER_AUDIO,
+    karaokeFinalization,
+    env.HNS_ROOT_HEALTH_RENEWAL_ENABLED === "true",
+    env.AVATAR_CLEANUP_ENABLED === "true"
+      ? (() => {
+          if (!env.AVATAR_INGRESS || !env.AVATAR_SEALED)
+            throw new Error("Avatar cleanup requires both storage buckets");
+          return { ingress: env.AVATAR_INGRESS, sealed: env.AVATAR_SEALED };
+        })()
+      : undefined,
+    spacesReconciliation,
+    undefined,
+    songFundingRecovery,
+    safePool === null ? undefined : makeSafePoolPilotJob(sink, safePool),
+    safePool === null
+      ? undefined
+      : makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
+          statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
+          connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
+          closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
+        }),
+  );
+  const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
+  if (renewal !== null) declarations.push(renewal);
+  return { config, sink, dataBalance, megapot, runtime, declarations };
 }
 
 export default {
@@ -919,75 +1025,8 @@ export default {
     if (env.CONTROL_PLANE === undefined) {
       throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
     }
-    const config = loadJobsWorkerConfig(env);
-    const sink = makeJobsAlertSink(env);
-    const dataBalance = makeDataRegistrationBalanceConfig(env);
-    const hns = makeHnsRouteRevalidationComposition(env);
-    const megapot = makeMegapotOptions(env, config);
-    const rpcUrl = fundingRpcUrl(
-      Redacted.value(config.COMMUNITY_PURCHASE_FUNDING_RPC_URL),
-      config.API_NEXT_ENV,
-    );
-    const karaokeFinalization =
-      env.KARAOKE_FINALIZATION_RECOVERY_ENABLED === "true"
-        ? (() => {
-            if (env.KARAOKE_ATTEMPT === undefined) {
-              throw new Error("KARAOKE_ATTEMPT binding is required for Karaoke recovery");
-            }
-            return { namespace: env.KARAOKE_ATTEMPT };
-          })()
-        : undefined;
-    const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
-    const spacesReconciliation = makeSpacesReconciliationComposition(
-      env,
-      runtime,
-      config.API_NEXT_ENV,
-    );
-    const safePool = makeSafePoolPilotOptions(env, config);
-    // Contributions fund pools in either lane, so their recovery runs with either.
-    const songFundingRecovery = config.MEGAPOT_REWARDS_ENABLED
-      ? makeSongFundingRecoveryRuntime({
-          controlPlane: megapot?.boundedControlPlane,
-          rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
-          environment: config.API_NEXT_ENV,
-          now: () => new Date().toISOString(),
-        })
-      : safePool === null
-        ? undefined
-        : makeSongFundingRecoveryRuntime({
-            controlPlane: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE, {
-              statementTimeoutMs: MEGAPOT_REWARDS_BOUNDED_STATEMENT_TIMEOUT_MS,
-              connectTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CONNECT_TIMEOUT_MS,
-              closeTimeoutMs: MEGAPOT_REWARDS_BOUNDED_CLOSE_TIMEOUT_MS,
-            }),
-            rpcUrl: safePool.rpcUrl,
-            environment: config.API_NEXT_ENV,
-            now: () => new Date().toISOString(),
-          });
-    const declarations = makeJobsWorkerDeclarations(
-      sink,
-      rpcUrl,
-      hns,
-      config.API_NEXT_ENV,
-      megapot,
-      config.COMMUNITY_MAINTENANCE_ENABLED,
-      env.LEARNER_AUDIO,
-      karaokeFinalization,
-      env.HNS_ROOT_HEALTH_RENEWAL_ENABLED === "true",
-      env.AVATAR_CLEANUP_ENABLED === "true"
-        ? (() => {
-            if (!env.AVATAR_INGRESS || !env.AVATAR_SEALED)
-              throw new Error("Avatar cleanup requires both storage buckets");
-            return { ingress: env.AVATAR_INGRESS, sealed: env.AVATAR_SEALED };
-          })()
-        : undefined,
-      spacesReconciliation,
-      undefined,
-      songFundingRecovery,
-      safePool === null ? undefined : makeSafePoolPilotJob(sink, safePool),
-    );
-    const renewal = makeHnsActiveLeaseRenewalJob(env, config.API_NEXT_ENV, sink);
-    if (renewal !== null) declarations.push(renewal);
+    const { config, sink, dataBalance, megapot, runtime, declarations } =
+      makeScheduledJobDeclarations(env, makeJobsAlertSink);
 
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);

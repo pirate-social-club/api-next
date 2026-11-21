@@ -15,6 +15,8 @@ export function classifyMegapotStorageFailure(
         ? "outcome-unknown"
         : "unavailable";
     case "ControlPlaneStatementFailed":
+      if ("outcomeCertainty" in error && error.outcomeCertainty === "unknown")
+        return "outcome-unknown";
       if ("sqlState" in error && error.sqlState === "23505") return "conflict";
       return !("sqlState" in error) || error.sqlState !== null ? "constraint" : "unavailable";
     case "ControlPlaneAcquireFailed":

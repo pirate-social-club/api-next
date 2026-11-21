@@ -28,6 +28,9 @@ const buckets = {
 const deniedHyperdrives = new Set([
   // Shared staging.
   "8cb7658a0f7143359c1becfec6a15c23",
+  // Shared staging Safe pilot funding logins.
+  "f1511560f8ce496d9a3d35353ecd5739",
+  "0a6177f0b1304899a4c6295e84693772",
   // Production, current: the database production serves since 2026-10-04.
   "0c215865d7994c92b940d905f54ece37",
   // Production, former: belonged to the deleted production database.
@@ -49,7 +52,15 @@ export function planIsolatedWorker(source, kind, { hyperdriveId, databaseHost, a
   }
   const { env: _environments, ...base } = source;
   const config = { ...base, ...structuredClone(source.env.staging) };
-  if (config.hyperdrive?.length !== 1 || config.hyperdrive[0].binding !== "CONTROL_PLANE") {
+  // Staging's Safe pilot funding binding is not carried over: every lane is off in the
+  // isolated stack, and that binding names a shared staging login.
+  const funding = kind === "http" ? "SONG_FUNDING_COMMANDS" : "SONG_FUNDING_JOBS";
+  const general = config.hyperdrive?.filter((binding) => binding.binding !== funding) ?? [];
+  if (
+    general.length !== 1 ||
+    general[0].binding !== "CONTROL_PLANE" ||
+    config.hyperdrive.length - general.length > 1
+  ) {
     throw new Error("Worker database binding inventory changed");
   }
   for (const key of [

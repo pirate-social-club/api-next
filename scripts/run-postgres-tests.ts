@@ -116,7 +116,7 @@ export const postgresTestTimeoutMilliseconds = {
   general: 900_000,
 } as const;
 
-export const postgresGeneralShardCount = 6;
+export const postgresGeneralShardCount = 7;
 
 // Weight units approximate tenths of a second from the first baseline-reuse benchmark:
 // reusable suites pay once for installation, then once per reset and test; other suites

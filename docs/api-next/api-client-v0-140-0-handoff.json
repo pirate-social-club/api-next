@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.140.0",
+  "sourceBranch": "fix/hns-lease-renewal-replay-20261031",
+  "sourceBase": "03fbec4a",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Preserves client139 and changes only the HNS owner-recovery poll response. The rejected member admits reason_code source_ineligible, which the server already stores and returns for an owner_authoritative_source_ineligible terminal result. The verified member adds public_route_href, the bare-root public path /c/<root> or null, beside the unchanged canonical_route; stored results and result_hash are unchanged. The Solid application has no consumer of either field today.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.140.0.tgz",
+    "sha256": "73d527efa695d8936b7d60fd41eebbae399ba14f2a8b5c99a459ae2380503494"
+  },
+  "validation": {
+    "status": "Candidate; independent declaration and source review and hosted checks remain pending.",
+    "operationalBoundary": "Source only. No migration, runtime, credential or production operation. No paired Solid release is required because no Solid consumer exists. The exact-baseline waiver at 03fbec4a2bf84f3dcd250f46a30529779f0756ec must move to the pull request base if main moves."
+  }
+}

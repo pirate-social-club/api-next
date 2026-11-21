@@ -38,6 +38,10 @@ function reviewedMoneyTableRevocations(
     "0284_shared_song_megapot_production.sql": "acl",
     "0285_shared_song_qualification_consumers.sql": "acl",
     "0312_reward_safe_execution_scans.sql": "acl",
+    "0321_song_funding_cancellation_recovery.sql": "cancellation_table_acl",
+    "0324_reward_safe_receipt_refunds.sql": "acl",
+    "0326_reward_joint_cycle_fairness.sql": "acl",
+    "0327_reward_safe_treasury_disposition.sql": "acl",
   };
   const tag = tags[migration];
   if (!tag) throw new Error("unreviewed money ACL form");
@@ -67,7 +71,8 @@ function reviewedMoneyTableRevocations(
   let tables: string[];
   if (
     migration === "0284_shared_song_megapot_production.sql" ||
-    migration === "0312_reward_safe_execution_scans.sql"
+    migration === "0312_reward_safe_execution_scans.sql" ||
+    migration === "0324_reward_safe_receipt_refunds.sql"
   ) {
     const tableAcl = body.split(/FOR\s+fn\s+IN\s+SELECT/u)[0] ?? "";
     tables = names(/relname\s*=\s*ANY\s*\(\s*ARRAY\s*\[([^\]]*)\]\)/u.exec(tableAcl)?.[1]);
@@ -95,7 +100,12 @@ function reviewedMoneyTableRevocations(
       "item.oid::regclass,pg_get_userbyid(recipient.grantee)",
       "inherited revocation missing",
     );
-  } else if (migration === "0285_shared_song_qualification_consumers.sql") {
+  } else if (
+    migration === "0285_shared_song_qualification_consumers.sql" ||
+    migration === "0321_song_funding_cancellation_recovery.sql" ||
+    migration === "0326_reward_joint_cycle_fairness.sql" ||
+    migration === "0327_reward_safe_treasury_disposition.sql"
+  ) {
     const tableAcl = body.slice(body.indexOf("owned_table:="));
     const table = /owned_table:='([a-z][a-z0-9_]*)'::REGCLASS;/u.exec(tableAcl)?.[1];
     tables = table ? [table] : [];
@@ -423,8 +433,15 @@ describe("destructive money-table inventory", () => {
         ),
       ).toThrow("money table coverage mismatch");
       const literalNonce = migration.startsWith("0277_");
-      const literalObjective = migration.startsWith("0285_");
-      const contextArray = migration.startsWith("0284_") || migration.startsWith("0312_");
+      const literalObjective =
+        migration.startsWith("0285_") ||
+        migration.startsWith("0321_") ||
+        migration.startsWith("0326_") ||
+        migration.startsWith("0327_");
+      const contextArray =
+        migration.startsWith("0284_") ||
+        migration.startsWith("0312_") ||
+        migration.startsWith("0324_");
       const missingTable = literalNonce
         ? sql.replace(`c.oid='${first}'::regclass`, "c.oid=NULL")
         : literalObjective
