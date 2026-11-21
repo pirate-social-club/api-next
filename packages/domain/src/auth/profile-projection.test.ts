@@ -19,6 +19,11 @@ import {
   type WalletAttachmentRowInput,
 } from "./profile-projection.ts";
 
+// Lazy capability expiry compares fixture timestamps against a nowMs clock
+// that defaults to Date.now(). Frozen just after the August 2026 fixtures,
+// it keeps the verified-path assertions deterministic forever.
+const FROZEN_NOW_MS = Date.parse("2026-08-25T00:00:01.999Z");
+
 const globalHandle: GlobalHandleRowInput = {
   global_handle_id: "gh_123",
   label_display: "captain.pirate",
@@ -178,7 +183,7 @@ describe("profile and identity projections", () => {
   });
 
   test("maps database rows through old verification defaults and provider aliases", () => {
-    const result = serializeUserRow(row());
+    const result = serializeUserRow(row(), FROZEN_NOW_MS);
     expect(result).toMatchObject({
       id: "usr_row",
       primary_wallet_attachment: "wallet_1",
@@ -221,7 +226,7 @@ describe("profile and identity projections", () => {
   });
 
   test("assembles the profile with old ordering, badge policy, handle ids, and defaults", () => {
-    const user = serializeUserRow(row());
+    const user = serializeUserRow(row(), FROZEN_NOW_MS);
     const result = assembleProfile(profileRow, globalHandle, linkedHandles, "0xprimary", user);
     expect(result).toMatchObject({
       id: "usr_profile",

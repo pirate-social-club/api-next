@@ -461,9 +461,10 @@ function deriveProfileVerificationState(
   }
 }
 
-export function serializeUserRow(row: UserRowInput): UserResponse {
+export function serializeUserRow(row: UserRowInput, nowMs: number = Date.now()): UserResponse {
   const verificationCapabilities = parseProfileVerificationCapabilities(
     row.verification_capabilities_json,
+    nowMs,
   );
   return {
     id: publicId(row.user_id, "usr"),
