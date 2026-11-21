@@ -252,16 +252,19 @@ export type MediaTransformVideoFramesInput = Readonly<{
   readonly signal?: AbortSignal;
 }>;
 
-export type MediaTransformVideoProbe = Readonly<{
-  readonly evidenceRef: string;
-  readonly durationMs: number;
-  readonly width: number;
-  readonly height: number;
-  readonly frameRateMillihertz: number;
-  readonly videoCodec: "h264" | "hevc";
-  readonly audioCodec: "aac";
-  readonly hasAudio: true;
-}>;
+export type MediaTransformVideoProbe = Readonly<
+  {
+    readonly evidenceRef: string;
+    readonly durationMs: number;
+    readonly width: number;
+    readonly height: number;
+    readonly frameRateMillihertz: number;
+    readonly videoCodec: "h264" | "hevc";
+  } & (
+    | { readonly audioCodec: "aac"; readonly hasAudio: true }
+    | { readonly audioCodec: null; readonly hasAudio: false }
+  )
+>;
 
 type MediaTransformVideoAudioClip = Readonly<{
   readonly variant: "primary" | "alternate";

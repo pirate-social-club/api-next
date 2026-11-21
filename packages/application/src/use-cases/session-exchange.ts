@@ -145,6 +145,8 @@ export type SessionExchangeHandlerResult<Response = SessionExchangeResponse> = {
   readonly response: Response;
   readonly sessionToken: string;
   readonly sessionTtlSeconds: number;
+  /** Internal verified credential binding; never part of the response JSON. */
+  readonly providerSubject: string;
 };
 
 type SessionExchangeFailure = AuthError | BadRequest | RateLimited | InternalError;
@@ -269,6 +271,7 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
     },
     sessionToken: accessToken,
     sessionTtlSeconds,
+    providerSubject: verified.sourceUserId,
   };
 });
 

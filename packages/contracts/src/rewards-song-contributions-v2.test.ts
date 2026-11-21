@@ -546,3 +546,33 @@ describe("scalar exact JSON funding wire", () => {
     expect(sent).toHaveLength(1);
   });
 });
+
+test("treasury recipient is required, frozen in both hashes, and absent from historical terms", () => {
+  const treasury = Schema.decodeUnknownSync(TermsV2)({
+    ...fixture.terms,
+    empty_behavior: "safe_treasury_ticket_first_v1",
+    empty_winnings_recipient: `0x${"12".repeat(20)}`,
+  });
+  const changed = { ...treasury, empty_winnings_recipient: `0x${"34".repeat(20)}` };
+  expect(committedTermsPreimageV2(treasury)).not.toEqual(committedTermsPreimageV2(changed));
+  expect(() =>
+    Schema.decodeUnknownSync(TermsV2)({ ...treasury, empty_winnings_recipient: undefined }),
+  ).toThrow();
+  expect(() =>
+    Schema.decodeUnknownSync(TermsV2)({
+      ...fixture.terms,
+      empty_winnings_recipient: treasury.empty_winnings_recipient,
+    }),
+  ).toThrow();
+  const prospective = Schema.decodeUnknownSync(ProspectiveTermsV2)({
+    ...fixture.prospectus,
+    empty_behavior: "safe_treasury_ticket_first_v1",
+    empty_winnings_recipient: treasury.empty_winnings_recipient,
+  });
+  expect(prospectiveTermsPreimageV2(prospective)).not.toEqual(
+    prospectiveTermsPreimageV2({
+      ...prospective,
+      empty_winnings_recipient: changed.empty_winnings_recipient,
+    }),
+  );
+});

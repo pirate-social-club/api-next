@@ -44,15 +44,12 @@ describe("rewards binding deployment", () => {
         join(root, "apps/jobs-worker/wrangler.jsonc"),
         '{"env":{"prod":{"vars":{"MEGAPOT_REWARDS_ENABLED":"true"}}}}',
       );
-      await withRewardsBindingDeployment(
-        root,
-        "apps/http-worker/wrangler.jsonc",
-        "prod",
-        async () => {
+      await expect(
+        withRewardsBindingDeployment(root, "apps/http-worker/wrangler.jsonc", "prod", async () => {
           called = true;
-        },
-      );
-      expect(called).toBe(true);
+        }),
+      ).rejects.toThrow("requires direct operator database URL");
+      expect(called).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -89,7 +86,7 @@ describe("rewards binding deployment", () => {
       expect(() => rewardsBinding(source, "staging")).toThrow();
   });
 
-  test("an enabled release preserves obligation visibility without an operator credential", async () => {
+  test("leaving Safe off still checks its obligations when legacy stays enabled", async () => {
     const root = await mkdtemp(join(tmpdir(), "reward-deploy-"));
     try {
       await mkdir(join(root, "apps/jobs-worker"), { recursive: true });
@@ -102,22 +99,35 @@ describe("rewards binding deployment", () => {
         join(root, "apps/jobs-worker/wrangler.jsonc"),
         '{"env":{"prod":{"vars":{"MEGAPOT_REWARDS_ENABLED":"true"}}}}',
       );
-      let deployed = false;
-      expect(
-        await withRewardsBindingDeployment(
-          root,
-          "apps/jobs-worker/wrangler.jsonc",
-          "prod",
-          async () => {
-            deployed = true;
-            return "visible";
-          },
-        ),
-      ).toBe("visible");
-      expect(deployed).toBe(true);
+      let called = false;
+      await expect(
+        withRewardsBindingDeployment(root, "apps/jobs-worker/wrangler.jsonc", "prod", async () => {
+          called = true;
+        }),
+      ).rejects.toThrow("requires direct operator database URL");
+      expect(called).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+  test("Safe binding is explicit when present and absent means off", () => {
+    expect(
+      rewardsBinding('{"env":{"staging":{"vars":{}}}}', "staging", "SAFE_POOL_PILOT_ENABLED"),
+    ).toBe(false);
+    expect(
+      rewardsBinding(
+        '{"env":{"staging":{"vars":{"SAFE_POOL_PILOT_ENABLED":"true"}}}}',
+        "staging",
+        "SAFE_POOL_PILOT_ENABLED",
+      ),
+    ).toBe(true);
+    expect(() =>
+      rewardsBinding(
+        '{"env":{"staging":{"vars":{"SAFE_POOL_PILOT_ENABLED":true}}}}',
+        "staging",
+        "SAFE_POOL_PILOT_ENABLED",
+      ),
+    ).toThrow("invalid");
   });
 });
 
@@ -255,6 +265,6 @@ test("the existing paused-control lock and every liability predicate remain mand
       expect(called).toBe(false);
     }
     expect(queries.at(-1)).toBe("ROLLBACK");
-    expect(inventories).toBe(refusal === "not-paused" ? 0 : REWARD_SHUTDOWN_PREDICATES.length);
+    expect(inventories).toBe(refusal === "not-paused" ? 0 : REWARD_SHUTDOWN_PREDICATES.length + 3);
   }
 });

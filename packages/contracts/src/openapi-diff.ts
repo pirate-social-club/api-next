@@ -351,12 +351,14 @@ function compareSchema(
   if (oldEnum !== undefined && newEnum !== undefined) {
     const source = direction === "request" ? oldEnum : newEnum;
     const target = direction === "request" ? newEnum : oldEnum;
-    for (const value of source) {
-      if (!target.some((candidate) => valueEquals(value, candidate))) {
-        const change = direction === "request" ? "removed" : "added";
-        return [`${where}: enum value ${change}: ${JSON.stringify(value)}${location}`];
-      }
-    }
+    const change = direction === "request" ? "removed" : "added";
+    const changedValues = source.filter(
+      (value) => !target.some((candidate) => valueEquals(value, candidate)),
+    );
+    if (changedValues.length > 0)
+      return changedValues.map(
+        (value) => `${where}: enum value ${change}: ${JSON.stringify(value)}${location}`,
+      );
   } else if (direction === "request" && oldEnum === undefined && newEnum !== undefined) {
     return [`${where}: enum constraint added${location}`];
   } else if (direction === "response" && oldEnum !== undefined && newEnum === undefined) {

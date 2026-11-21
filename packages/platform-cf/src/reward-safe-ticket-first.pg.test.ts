@@ -846,7 +846,7 @@ suite("ticket-first owner-executed Safe pools", () => {
     ]);
   });
 
-  test("a shared-song leg buys only a drawing its terms planned", async () => {
+  test("a shared-song leg refuses unplanned drawings and missing original frozen lineage", async () => {
     const termsHash = hash("4");
     await admin.query("SET session_replication_role = replica");
     // Shared-song legs name Dance, which the baseline leaves reserved.
@@ -876,6 +876,7 @@ suite("ticket-first owner-executed Safe pools", () => {
          'equal_v1','keccak_packed_v1',$4,1,ARRAY['study','karaoke','dance'],'no_purchase',
          'leg_budget',10000000,'ticket_first_v1','production_approved',clock_timestamp(),
          'shared_song',jsonb_build_object('version','shared-song-megapot-v2',
+           'empty_behavior','no_purchase',
            'terms_hash',substring($1 from 3),'planned_drawing_ids',jsonb_build_array('213')))`,
       [termsHash, USDC, PRICE.toString(), ATTESTATION],
     );
@@ -891,9 +892,8 @@ suite("ticket-first owner-executed Safe pools", () => {
          0,0,995,$3,clock_timestamp(),3,clock_timestamp(),clock_timestamp()+interval '1 hour',$4)`,
       [ATTESTATION, PRICE.toString(), hash("c"), "d".repeat(64)],
     );
-    expect(await run(purchases.prepare("tf-planned"))).toMatchObject({
-      kind: "prepared",
-      drawingId: 213n,
+    await expect(run(purchases.prepare("tf-planned"))).rejects.toMatchObject({
+      _tag: "RewardSafePurchaseStoreFailed",
     });
   });
 

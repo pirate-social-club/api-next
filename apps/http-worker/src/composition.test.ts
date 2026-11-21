@@ -334,6 +334,28 @@ describe("HTTP production composition", () => {
     );
   });
 
+  test.each(["disabled", "megapot", "safe-pilot"])(
+    "mounts authenticated reward availability with %s configuration",
+    async (mode) => {
+      const configured = await bindings();
+      const worker = await createProductionHttpWorker({
+        ...configured,
+        SONG_FUNDING_COMMANDS: { connectionString: "postgres://funding@127.0.0.1:1/fixture" },
+        ...(mode === "megapot" ? { MEGAPOT_REWARDS_ENABLED: "true" } : {}),
+        ...(mode === "safe-pilot"
+          ? {
+              API_NEXT_ENV: "staging",
+              SAFE_POOL_PILOT_ENABLED: "true",
+              SAFE_POOL_ATTESTATION_ID: "megapot-base-sepolia-safe-pilot",
+              SAFE_POOL_RPC_URL: "https://base-sepolia-rpc.test",
+            }
+          : {}),
+      });
+      expect((await worker.request("https://worker.test/rewards/availability")).status).toBe(401);
+      expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    },
+  );
+
   test("requires the Megapot RPC only while rewards are enabled", async () => {
     const complete = await bindings();
     const { MEGAPOT_V2_RPC_URL: _omitted, ...withoutMegapotRpc } = complete;
@@ -361,6 +383,7 @@ describe("HTTP production composition", () => {
     const pilot = {
       ...configured,
       API_NEXT_ENV: "staging",
+      SONG_FUNDING_COMMANDS: { connectionString: "postgres://funding@127.0.0.1:1/fixture" },
       SAFE_POOL_PILOT_ENABLED: "true",
       SAFE_POOL_ATTESTATION_ID: "megapot-base-sepolia-safe-pilot",
       SAFE_POOL_RPC_URL: "https://base-sepolia-rpc.test",
@@ -383,6 +406,7 @@ describe("HTTP production composition", () => {
   test("refuses the Safe pool production switch outside production", async () => {
     const configured = await bindings();
     const pilot = {
+      SONG_FUNDING_COMMANDS: { connectionString: "postgres://funding@127.0.0.1:1/fixture" },
       SAFE_POOL_PILOT_ENABLED: "true",
       SAFE_POOL_ATTESTATION_ID: "megapot-base-sepolia-safe-pilot",
       SAFE_POOL_RPC_URL: "https://base-sepolia-rpc.test",
@@ -417,6 +441,7 @@ describe("HTTP production composition", () => {
       ...configured,
       API_NEXT_ENV: "staging",
       CONTROL_PLANE: { connectionString: "postgres://127.0.0.1:1/reward-test" },
+      SONG_FUNDING_COMMANDS: { connectionString: "postgres://funding@127.0.0.1:1/fixture" },
       MEGAPOT_REWARDS_ENABLED: "true",
       MEGAPOT_V2_RPC_URL: "https://base-sepolia-rpc.test",
     });

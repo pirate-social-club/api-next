@@ -9,6 +9,10 @@ const Configuration = Schema.Struct({
   enabled: Schema.Boolean,
   linking_enabled: Schema.Boolean,
   practice_enabled: Schema.Boolean,
+  community_practice_enabled: Schema.optional(Schema.Boolean),
+  community_practice_policy_revision: Schema.optional(
+    Schema.NonEmptyString.check(Schema.isMaxLength(128)),
+  ),
   public_origin: Schema.optional(Schema.NonEmptyString),
   webhook_origin: Schema.optional(Schema.NonEmptyString),
   credential_active_version: Schema.optional(Schema.NonEmptyString),
@@ -50,6 +54,11 @@ export function decodeTelegramConfiguration(bindings: TelegramConfigurationBindi
       JSON.parse(bindings.TELEGRAM_CONFIG_JSON),
     );
     if ((config.linking_enabled || config.practice_enabled) && !config.enabled) throw Error();
+    if (
+      config.community_practice_enabled &&
+      (!config.enabled || config.practice_enabled || !config.community_practice_policy_revision)
+    )
+      throw Error();
     if (
       config.enabled &&
       (!https(config.public_origin) ||

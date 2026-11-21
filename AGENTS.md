@@ -103,6 +103,18 @@ nothing imports apps; domain uses only Schema/Data effect modules.
 
 ## Runtime
 
+The owner-confirmed posting snapshot has one fixed source-selection mode in the
+same maintained deployer: `--posting-frozen-runtime`, with a separate
+`--repository-root` at exact published EBE/tree52e and accepted main tooling
+selected by `--tooling-source-ref`. It applies only to staging HTTP. The guard
+checks fresh main publication, the fixed release ref, accepted fa101/236
+ancestry and the exact seven-file projection, plus clean same-repository
+source and tooling, again immediately before upload. It does not select other
+snapshots, bypass runtime guards, make the frozen snapshot's disclosed static
+freshness check green, or permit a protected-main merge with red checks.
+Normal modes keep their accepted-main ancestry rule. Actual deployment still
+requires independently reviewed whole-package/current-fact operation acceptance.
+
 All normal staging Worker deploys use `scripts/deploy-worker-with-provenance.ts`.
 Its serving-binding preflight compares the effective candidate with every
 version receiving traffic and refuses unexplained flag or binding differences
@@ -113,9 +125,22 @@ direct Wrangler staging deploy. Read-only CI packaging dry runs remain allowed.
 Staging HTTP Worker deploys use `scripts/deploy-worker-with-provenance.ts`.
 The tool checks the active staging HNS gateway against
 `scripts/hns-staging-gateway-pin.json` and the sibling Solid staging ingress
-candidate before mutation. It runs Solid's full read-only 8s28 serving gate
-afterward. Do not bypass this with a direct Wrangler staging HTTP deploy. A
+candidate before mutation. Afterward, Solid's `check:staging:release` requires
+direct staging app, bundle and API checks and separately reports 8s28
+availability. HNS availability does not block staging Rewards releases;
+explicit `check:staging:hns-route` acceptance still requires the full HNS gate.
+Production release checks are unchanged. Do not bypass this with a direct
+Wrangler staging HTTP deploy. A
 gateway rotation updates the pin and Solid deployment as one reviewed release.
+While a pinned rotation waits on a recovered namespace, `pending_cutover_from`
+names the exact live pair that may stand in. The tool then requires the sibling
+Solid to compute the pin's target identity instead of pairing with the gateway,
+and runs only the direct-host checks, before and after upload, because
+`check:staging:release` pairs with the live gateway first. A failed check after
+upload leaves the Worker serving with no receipt: read the serving version and
+rerun the check rather than redeploying. Remove that field and
+its committed-pin test after the rotation is verified; until then a rollback to
+the old gateway stays admitted.
 
 Effect is pinned to an exact version (`4.0.0-rc.109` at bootstrap), and
 `bun run check` fails if `effect` or any `@effect/*` package declares or

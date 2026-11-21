@@ -192,6 +192,40 @@ describe("original-audio video policy", () => {
     ).toBe("safety_binding");
   });
 
+  test("silent source is admitted only for the immutable song-reference intent", () => {
+    const state = sealedState();
+    const silent: VideoTrustedAnalysis = {
+      ...analysis(),
+      probe: { ...analysis().probe, audioCodec: null, hasAudio: false },
+    };
+    expect(validateVideoTrustedAnalysis(state, silent, null)).toBe("probe");
+    const song: VideoSubmissionState = {
+      ...state,
+      intent: "song_reference",
+      songPlan: {
+        planId: "plan-1",
+        songPostId: "song-1",
+        songAssetId: "song-asset-1",
+        audioRevision: 1,
+        canonicalAudioSha256: HASH_B,
+        songDurationSamples: 480_000,
+        clipStartSamples: 0,
+        clipDurationSamples: 144_000,
+        intervalPolicyRevision: 2,
+      },
+    };
+    const referenced: VideoTrustedAnalysis = { ...silent, audio: { intent: "song_reference" } };
+    expect(validateVideoTrustedAnalysis(song, referenced, null)).toBeNull();
+    expect(validateVideoTrustedAnalysis(state, referenced, null)).toBe("probe");
+    expect(validateVideoTrustedAnalysis(song, silent, null)).toBe("soundtrack");
+    expect(
+      validateVideoTrustedAnalysis(song, { ...referenced, canonicalVideoSha256: HASH_B }, null),
+    ).toBe("lineage");
+    expect(validateVideoTrustedAnalysis({ ...song, songPlan: null }, referenced, null)).toBe(
+      "soundtrack",
+    );
+  });
+
   test("allow needs minor-safety evidence or the v1 sampled-frame gate's own evidence, never both", () => {
     const state = sealedState();
     const allowWith = (safetyRequest: Partial<ReturnType<typeof analysis>["safetyRequest"]>) =>

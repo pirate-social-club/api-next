@@ -100,3 +100,24 @@ export function moderatedDanceIntakeFacts(): ModeratedDanceCreationFacts {
     },
   };
 }
+
+/** Prospective fictional policy only; all retained v1 fixtures stay unchanged. */
+export function noPoseModeratedDanceIntakeFacts(): ModeratedDanceCreationFacts {
+  const f = moderatedDanceIntakeFacts();
+  return {
+    ...f,
+    policy: {
+      ...f.policy,
+      version: "moderator-review-policy-v2",
+      rubricVersion: "test-no-pose-rubric-v2",
+    },
+    profile: {
+      ...f.profile,
+      version: "dance-moderated-intake-profile-v2",
+      cueStartMs: 0,
+      cueEndMs: 0,
+      cueHoldMs: 0,
+      bodyStartMs: 0,
+    },
+  };
+}

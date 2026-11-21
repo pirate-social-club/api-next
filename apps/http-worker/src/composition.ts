@@ -14,6 +14,7 @@ import {
   REWARD_WINNER_SEND_CHAIN_ID,
   RewardGasTopupBalanceUnavailable,
 } from "@pirate/application/rewards/song-reward-offers";
+import { makeBrowserSessionService } from "@pirate/application/use-cases/browser-sessions";
 import { TextModerationProviderError } from "@pirate/application/use-cases/content/text-post";
 import type {
   DanceAttemptSessionAuthorityResolver,
@@ -177,6 +178,7 @@ import { makeControlPlanePlatformPirateHandleStore } from "@pirate/platform-cf/p
 import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
+  type PostgresClientFactory,
 } from "@pirate/platform-cf/postgres";
 import { makeControlPlaneProfileActivityStore } from "@pirate/platform-cf/profile-activity-repository";
 import { makeControlPlanePublicCommunityThreadsStore } from "@pirate/platform-cf/public-community-threads-repository";
@@ -265,6 +267,8 @@ import { makeWalletSponsoredSendService } from "@pirate/platform-cf/wallet-spons
 import { workerBackground } from "@pirate/platform-cf/worker-background";
 import { Effect, Redacted, Schema } from "effect";
 import { GetSharedSongMegapotSummaryV2 } from "../../../packages/contracts/src/shared-song-megapot.ts";
+import { makeBrowserSessionCrypto } from "../../../packages/platform-cf/src/browser-session-crypto.ts";
+import { makeControlPlaneBrowserSessionStore } from "../../../packages/platform-cf/src/browser-session-repository.ts";
 import {
   makeControlPlaneModeratedDanceIntakeStore,
   makeModeratedDanceUploadSigner,
@@ -276,6 +280,10 @@ import {
 import { makeModeratedDanceMediaAccessStore } from "../../../packages/platform-cf/src/moderated-dance-media-access.ts";
 import { makeSharedSongMegapotParticipationReader } from "../../../packages/platform-cf/src/shared-song-megapot-participation.ts";
 import { makeSharedSongMegapotSummaryReader } from "../../../packages/platform-cf/src/shared-song-megapot-summary.ts";
+import {
+  makeSongFundingConnection,
+  songFundingLane,
+} from "../../../packages/platform-cf/src/song-funding-connection.ts";
 import {
   makeTelegramServices,
   type TelegramBindings,
@@ -340,6 +348,7 @@ import { makePublicPostRouteHandlers } from "./public-post-route-handlers.ts";
 import { makeRewardOperationsGuard } from "./reward-operations-guard.ts";
 import {
   makeLazySongRewardOfferHandlers,
+  makeRewardServiceAvailabilityHandler,
   makeSongRewardOfferHandlers,
   makeUnavailableSongRewardOfferHandlers,
 } from "./rewards-song-offer-handlers.ts";
@@ -385,6 +394,7 @@ export interface HttpWorkerBindings
   readonly DANCE_NETWORK_RATE_LIMITER?: DanceNetworkNamespace;
   readonly CF_VERSION_METADATA?: { readonly id: string };
   readonly CONTROL_PLANE?: unknown;
+  readonly SONG_FUNDING_COMMANDS?: unknown;
   /** Reviewed nonproduction release only; absent keeps all Guest serving disabled. */
   readonly GUEST_STUDY_SERVING_ENABLED?: string;
   readonly GUEST_STUDY_RUNTIME_CONFIGURATION?: string;
@@ -549,6 +559,8 @@ export interface HttpWorkerBindings
 }
 
 export interface HttpWorkerCompositionDependencies {
+  /** Offline composition transport; production uses the maintained pg client. */
+  readonly database_client_factory?: PostgresClientFactory;
   /** Separate development test build only; never selected by a runtime binding. */
   readonly verification_registry?: VerificationProviderRegistryService;
   readonly hns_ownership?: Readonly<{
@@ -988,7 +1000,19 @@ export async function createProductionHttpWorker(
   ) {
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
-  const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const generalConnection = loadHyperdrive(bindings);
+  const databaseOptions =
+    dependencies.database_client_factory === undefined
+      ? {}
+      : { clientFactory: dependencies.database_client_factory };
+  const controlPlane = makeHyperdriveControlPlaneLayer(generalConnection, databaseOptions);
+  const fundingLane = songFundingLane(config);
+  const fundingConnection = makeSongFundingConnection(
+    bindings.SONG_FUNDING_COMMANDS,
+    generalConnection,
+    fundingLane,
+    databaseOptions,
+  );
   const spacesRuntime = makeSpacesProductionComposition(
     bindings,
     controlPlane,
@@ -1344,6 +1368,7 @@ export async function createProductionHttpWorker(
     canonicalCommunityRouteStore: makeControlPlaneCanonicalCommunityRouteStore(controlPlane),
   });
   const publicPostRouteHandlers = makePublicPostRouteHandlers({
+    communityStore,
     videoDetailStore: makeControlPlaneVideoDetailStore(controlPlane),
     publicPostRouteStore: makeControlPlanePublicPostSlugStore(controlPlane),
     contentStore,
@@ -1737,12 +1762,12 @@ export async function createProductionHttpWorker(
   });
   const songContributionHandlers = makeSongMegapotContributionHandlers({
     commands: (authorization) =>
-      makeControlPlaneSongContributionPorts(controlPlane, authorization, {
-        rewardsEnabled: config.MEGAPOT_REWARDS_ENABLED,
+      makeControlPlaneSongContributionPorts(fundingConnection, authorization, {
+        rewardsEnabled: fundingLane !== null,
       }),
     reads: (authorization) =>
-      makeControlPlaneSongContributionReadPorts(controlPlane, authorization, {
-        rewardsEnabled: config.MEGAPOT_REWARDS_ENABLED,
+      makeControlPlaneSongContributionReadPorts(fundingConnection, authorization, {
+        rewardsEnabled: fundingLane !== null,
       }),
   });
   // The EOA reward lane and the owner-executed Safe pool pilot serve the same offer,
@@ -1862,6 +1887,13 @@ export async function createProductionHttpWorker(
         })
       : makeUnavailableSongRewardOfferHandlers();
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
+  const browserSessions = makeBrowserSessionService({
+    store: makeControlPlaneBrowserSessionStore(controlPlane),
+    crypto: makeBrowserSessionCrypto(sessionCrypto),
+    identities: identityStore,
+    providerAppId: config.PRIVY_APP_ID,
+    userScope: tokenMinter.scope,
+  });
   const sessionExchange = {
     proofVerifier,
     identityStore: makePrivySessionIdentityStore({
@@ -1885,6 +1917,7 @@ export async function createProductionHttpWorker(
   };
   const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore, {
     additionalUserScopes: [PERSONA_WALLET_SETUP_SESSION_SCOPE],
+    browserSessions,
   });
   const authenticate = async ({
     endpoint,
@@ -2008,7 +2041,7 @@ export async function createProductionHttpWorker(
     handlers: {
       GetSharedSongMegapotParticipationV2: makeSharedSongMegapotParticipationHandler(
         readSharedPotParticipation,
-        config.MEGAPOT_REWARDS_ENABLED,
+        fundingLane !== null,
       ),
       GetSharedSongMegapotSummaryV2: async (ctx) => {
         if (ctx.principal?.kind !== "user")
@@ -2064,6 +2097,7 @@ export async function createProductionHttpWorker(
       ...handleNationalityAuthoringHandlers,
       ...platformPirateHandleHandlers,
       ...songRewardOfferHandlers,
+      GetRewardServiceAvailability: makeRewardServiceAvailabilityHandler(rewardRoutes !== null),
       ...songContributionHandlers,
       ...walletSponsoredSendHandlers,
       ...songOwnerVideoPolicyHandlers,
@@ -2091,7 +2125,7 @@ export async function createProductionHttpWorker(
             namespace: bindings.DANCE_NETWORK_RATE_LIMITER,
             hmacKeyBase64: bindings.VIDEO_PLAYBACK_SOURCE_HMAC_BASE64,
           }),
-          rewardsEnabled: config.MEGAPOT_REWARDS_ENABLED,
+          rewardsEnabled: fundingLane !== null,
           signer:
             bindings.MEDIA_INGRESS !== undefined &&
             privateMediaBucket !== null &&
@@ -2122,6 +2156,7 @@ export async function createProductionHttpWorker(
     },
     beforeDecode: makeLegacyModerationActionCompatibility(moderationStore),
     sessionExchange,
+    browserSessions,
     identityRegistration,
     profile,
     authenticate,

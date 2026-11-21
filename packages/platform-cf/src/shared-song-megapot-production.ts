@@ -1,8 +1,9 @@
 import { Cause, Effect, Exit, type Layer, Schema } from "effect";
 import {
-  type ControlPlaneDb,
+  ControlPlaneDb,
   type ControlPlaneError,
   ControlPlaneOperationTimedOut,
+  ControlPlaneStatementFailed,
   type ControlPlaneTransaction,
   ControlPlaneTransactionOutcomeUnknown,
 } from "../../application/src/ports.ts";
@@ -15,14 +16,24 @@ import {
   digestFundingPreimageV2,
   SongContributionFailure,
 } from "../../application/src/rewards/song-megapot-contributions.ts";
+import type { FrozenSongMegapotDrawing } from "../../application/src/rewards/song-megapot-frozen-plan.ts";
 import { canonicalBodyHash } from "../../application/src/use-cases/content/common.ts";
 import * as C from "../../contracts/src/rewards-song-contributions-v2.ts";
+import type { DrawingCapacityRow } from "../../domain/src/song-megapot-capacity.ts";
 import { withRetainedControlPlaneCommandTransaction } from "./control-plane-command-transaction.ts";
 import {
   type MegapotV2DeploymentAttestation,
   validateMegapotV2DeploymentAttestation,
 } from "./megapot-v2.ts";
 import type { MegapotV2FullRpcClient } from "./megapot-v2-rpc.ts";
+import { loadFrozenSharedSongDrawing } from "./shared-song-frozen-plan.ts";
+import {
+  hasSharedSongSuccessorFundingWindow,
+  projectSharedSongSuccessor,
+  SHARED_SONG_SUCCESSOR_PRICE_RULE,
+  SHARED_SONG_SUCCESSOR_RULE,
+  SHARED_SONG_SUCCESSOR_RULE_ID,
+} from "./shared-song-successor-schedule.ts";
 
 const unavailable = (code: SongContributionFailure["code"]) =>
   new SongContributionFailure({ code });
@@ -31,6 +42,17 @@ const decode = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: u
     try: () => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(value),
     catch: () => unavailable("policy_unavailable"),
   });
+/** Only a certain counter refusal from the claim itself ends a batch quietly.
+ * Migration 0328 reserves PCV13 for that refusal; PCV04 configuration errors stay loud. */
+const isCertainContextBudgetRefusal = (cause: Cause.Cause<unknown>) =>
+  cause.reasons.length > 0 &&
+  cause.reasons.every(
+    (reason) =>
+      Cause.isFailReason(reason) &&
+      reason.error instanceof ControlPlaneStatementFailed &&
+      reason.error.sqlState === "PCV13" &&
+      reason.error.outcomeCertainty !== "unknown",
+  );
 const stringify = (value: unknown) =>
   JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v));
 const call = Effect.fn("SharedSongProduction.call")(function* (
@@ -98,6 +120,13 @@ const Natural = Schema.Int.check(
 );
 const Positive = Natural.check(Schema.isGreaterThan(0));
 const Operations = Schema.Struct({
+  emptyBehavior: Schema.optionalKey(
+    Schema.Literals([
+      "no_purchase",
+      "single_funder_ticket_first_v1",
+      "safe_treasury_ticket_first_v1",
+    ]),
+  ),
   disclosureVersion: C.IdV2,
   feePolicyId: C.IdV2,
   scheduleRuleId: C.IdV2,
@@ -156,6 +185,7 @@ type ContextRpc = Pick<
   | "readBlock"
   | "readCurrentDrawingId"
   | "readDrawing"
+  | "readDrawingRecurrence"
   | "readTransactionCount"
   | "readPendingNonce"
   | "readNativeBalance"
@@ -229,6 +259,36 @@ export function makeControlPlaneSharedSongContextProducer(input: {
         return yield* unavailable("mixed_objective_unavailable");
     }
     const actor = yield* decode(C.OwnedActorV2, work.facts.actor);
+    const canonicalTarget = yield* decode(C.TargetV2, work.facts.slot);
+    const existingTerms =
+      work.facts.committedTerms === null
+        ? null
+        : yield* decode(C.TermsV2, work.facts.committedTerms);
+    if ((canonicalTarget.kind === "committed") !== (existingTerms !== null))
+      return yield* unavailable("terms_mismatch");
+    const successor = work.operations.scheduleRuleId === SHARED_SONG_SUCCESSOR_RULE_ID;
+    if (successor) {
+      const rule = SHARED_SONG_SUCCESSOR_RULE;
+      const ruleHash = yield* canonicalBodyHash(["pirate.shared-song-schedule-rule.v2", rule]);
+      const priceHash = yield* canonicalBodyHash([
+        "pirate.shared-song-price-rule.v2",
+        SHARED_SONG_SUCCESSOR_PRICE_RULE,
+      ]);
+      if (
+        work.operations.scheduleRuleHash !== ruleHash ||
+        work.operations.priceRuleHash !== priceHash ||
+        work.operations.cadenceSeconds !== String(rule.durationSeconds) ||
+        work.operations.entryCutoffSeconds !== rule.entryCutoffSeconds ||
+        work.operations.purchaseLeadSeconds !== rule.purchaseLeadSeconds ||
+        deployment.environment === "production" ||
+        deployment.chainId !== rule.chainId ||
+        deployment.jackpotAddress !== rule.jackpotAddress ||
+        deployment.jackpotCodeHash !== rule.jackpotCodeHash ||
+        work.operations.legalActivationGate !== "test_only" ||
+        work.operations.initializedDrawingIds.length !== 0
+      )
+        return yield* unavailable("schedule_unproven");
+    }
     const head = yield* read(() => rpc.readHead());
     const originalAnchor = yield* read(() => rpc.readBlock(BigInt(work.attestationBlock)));
     if (
@@ -245,34 +305,113 @@ export function makeControlPlaneSharedSongContextProducer(input: {
     if (confirmed !== pending || confirmed < 0n || confirmed > 9223372036854775807n)
       return yield* unavailable("wallet_nonce_busy");
     const currentId = yield* read(() => rpc.readCurrentDrawingId(head.blockNumber));
-    const ids = [...new Set([currentId.toString(), ...work.operations.initializedDrawingIds])];
+    const ids =
+      existingTerms !== null
+        ? existingTerms.planned_drawing_ids
+        : successor
+          ? [(currentId + 1n).toString()]
+          : [...new Set([currentId.toString(), ...work.operations.initializedDrawingIds])];
     if (ids.length > 30) return yield* unavailable("schedule_unproven");
-    const observations = [];
+    const observations: DrawingCapacityRow[] = [];
+    const plans: FrozenSongMegapotDrawing[] = [];
+    let projected: FrozenSongMegapotDrawing | null = null;
+    if (successor && (existingTerms === null || ids.some((id) => BigInt(id) === currentId + 1n))) {
+      const recurrence = rpc.readDrawingRecurrence;
+      if (recurrence === undefined) return yield* unavailable("schedule_unproven");
+      const current = yield* read(() => rpc.readDrawing(currentId, head.blockNumber));
+      const settings = yield* read(() => recurrence(head.blockNumber));
+      projected = projectSharedSongSuccessor({
+        deployment,
+        currentId,
+        current,
+        recurrence: settings,
+      });
+      if (projected === null) return yield* unavailable("schedule_unproven");
+    }
     for (const id of ids) {
-      const row = yield* read(() => rpc.readDrawing(BigInt(id), head.blockNumber));
       const existing = work.drawingStates.find((prior) => prior.drawingId === id);
+      let plan: FrozenSongMegapotDrawing;
+      if (existingTerms !== null && canonicalTarget.kind === "committed") {
+        const frozen = yield* provided(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            return yield* loadFrozenSharedSongDrawing(db, canonicalTarget.pool_leg_id, BigInt(id));
+          }),
+        );
+        if (frozen === null) return yield* unavailable("schedule_unproven");
+        plan = frozen;
+        if (plan.proofKind === "attested_recurrence" && !successor)
+          return yield* unavailable("schedule_unproven");
+      } else if (projected !== null && projected.drawingId === id) plan = projected;
+      else {
+        const row = yield* read(() => rpc.readDrawing(BigInt(id), head.blockNumber));
+        const time = Number(row.drawingTime * 1000n);
+        if (
+          row.ticketPrice <= 0n ||
+          !Number.isSafeInteger(time) ||
+          time > 8640000000000000 ||
+          (row.jackpotLock && (existing === undefined || existing.state === "uncommitted"))
+        )
+          return yield* unavailable("schedule_unproven");
+        plan = {
+          drawingId: id,
+          drawingTimeMs: time,
+          entryCutoffAtMs: time - work.operations.entryCutoffSeconds * 1000,
+          purchaseDeadlineAtMs: time - work.operations.purchaseLeadSeconds * 1000,
+          priceAtomic: row.ticketPrice,
+          proofKind: "initialized_state",
+        };
+      }
+      if (existingTerms !== null) {
+        if (
+          BigInt(id) === currentId ||
+          (!successor && work.operations.initializedDrawingIds.includes(id))
+        ) {
+          const row = yield* read(() => rpc.readDrawing(BigInt(id), head.blockNumber));
+          if (
+            row.drawingTime * 1000n !== BigInt(plan.drawingTimeMs) ||
+            row.ticketPrice !== plan.priceAtomic ||
+            (row.jackpotLock && (existing === undefined || existing.state === "uncommitted"))
+          )
+            return yield* unavailable("schedule_unproven");
+        } else if (
+          projected === null ||
+          plan.proofKind !== "attested_recurrence" ||
+          projected.drawingId !== plan.drawingId ||
+          projected.drawingTimeMs !== plan.drawingTimeMs ||
+          projected.priceAtomic !== plan.priceAtomic
+        )
+          return yield* unavailable("schedule_unproven");
+      }
       if (
-        row.ticketPrice <= 0n ||
-        (row.jackpotLock && (existing === undefined || existing.state === "uncommitted"))
+        plan.entryCutoffAtMs !== plan.drawingTimeMs - work.operations.entryCutoffSeconds * 1000 ||
+        plan.purchaseDeadlineAtMs !==
+          plan.drawingTimeMs - work.operations.purchaseLeadSeconds * 1000 ||
+        (existing !== undefined && existing.entryCutoffAtMs !== plan.entryCutoffAtMs)
       )
         return yield* unavailable("schedule_unproven");
-      const time = Number(row.drawingTime * 1000n);
-      if (!Number.isSafeInteger(time) || time > 8640000000000000)
-        return yield* unavailable("schedule_unproven");
+      plans.push(plan);
       observations.push({
         id,
-        drawingTime: time,
-        entryCutoff: existing?.entryCutoffAtMs ?? time - work.operations.entryCutoffSeconds * 1000,
-        purchaseDeadline: time - work.operations.purchaseLeadSeconds * 1000,
-        priceAtomic: row.ticketPrice,
-        proof: "initialized_state" as const,
+        drawingTime: plan.drawingTimeMs,
+        entryCutoff: plan.entryCutoffAtMs,
+        purchaseDeadline: plan.purchaseDeadlineAtMs,
+        priceAtomic: plan.priceAtomic,
+        proof: plan.proofKind,
         state: existing?.state ?? "uncommitted",
         reservedCostAtomic: BigInt(existing?.reservedCostAtomic ?? "0"),
       });
     }
-    const nativeGas = yield* read(() => rpc.readNativeBalance(actor.sender_address));
-    const refundNativeGas = yield* read(() => rpc.readNativeBalance(deployment.custodyAddress));
-    const after = yield* read(() => rpc.readHead());
+    const nativeGas = yield* read(() =>
+      rpc.readNativeBalance(actor.sender_address, head.blockNumber),
+    );
+    const refundNativeGas = yield* read(() =>
+      rpc.readNativeBalance(deployment.custodyAddress, head.blockNumber),
+    );
+    const pendingAfter = yield* read(() => rpc.readPendingNonce(actor.sender_address));
+    // A new head is normal while these bounded reads run. Re-read the pinned
+    // height to reject a replaced snapshot block without requiring a quiet chain.
+    const after = yield* read(() => rpc.readBlock(head.blockNumber));
     const now = yield* decode(C.InstantV2, input.now()),
       observed = Date.parse(now),
       headMs = Number(head.blockTimestamp * 1000n);
@@ -285,11 +424,32 @@ export function makeControlPlaneSharedSongContextProducer(input: {
       observed - headMs > work.noncePolicy.maxAgeMs
     )
       return yield* unavailable("observation_stale");
+    if (pendingAfter !== confirmed) return yield* unavailable("wallet_nonce_busy");
     if (
       nativeGas < BigInt(work.operations.inboundRequiredGasWei) ||
       refundNativeGas < BigInt(work.operations.refundEnvelopeMinimumWei)
     )
       return yield* unavailable("gas_budget_unavailable");
+    const capacity = yield* decode(
+      Schema.Record(Schema.String, Schema.Unknown),
+      work.facts.capacityProfile,
+    );
+    if (
+      successor &&
+      (capacity.maxDrawings !== 1 ||
+        capacity.priceCeilingAtomic !== SHARED_SONG_SUCCESSOR_PRICE_RULE.ticketAtomic ||
+        plans.some(
+          (plan) =>
+            !hasSharedSongSuccessorFundingWindow({
+              plan,
+              observedAtMs: observed,
+              quoteMaxAgeMs: work.noncePolicy.maxAgeMs,
+              reservationMs: Number(capacity.reservationMs),
+              safetyMarginMs: Number(capacity.safetyMarginMs),
+            }),
+        ))
+    )
+      return yield* unavailable("quote_expired");
     const validUntil = Math.min(
       Date.parse(work.validUntil),
       observed + work.noncePolicy.maxAgeMs,
@@ -325,7 +485,7 @@ export function makeControlPlaneSharedSongContextProducer(input: {
       validUntil,
       ruleHash: work.operations.scheduleRuleHash,
       priceRuleHash: work.operations.priceRuleHash,
-      recurrenceProven: false,
+      recurrenceProven: observations.some((row) => row.proof === "attested_recurrence"),
       rows: observations,
     };
     const nonce = {
@@ -346,10 +506,6 @@ export function makeControlPlaneSharedSongContextProducer(input: {
     };
     const attestationHash = yield* canonicalBodyHash(deployment).pipe(
       Effect.mapError(() => unavailable("outcome_unknown")),
-    );
-    const capacity = yield* decode(
-      Schema.Record(Schema.String, Schema.Unknown),
-      work.facts.capacityProfile,
     );
     const wireSchedule = {
       version: "song-megapot-schedule-v1",
@@ -377,22 +533,19 @@ export function makeControlPlaneSharedSongContextProducer(input: {
         purchase_deadline_at: new Date(row.purchaseDeadline).toISOString(),
         price_atomic: row.priceAtomic.toString(),
         price_ceiling_atomic: capacity.priceCeilingAtomic,
-        initialized: true,
+        initialized: row.proof === "initialized_state",
         proof_kind: row.proof,
       })),
     };
-    const canonicalTarget = yield* decode(C.TargetV2, work.facts.slot);
-    const existingTerms =
-      work.facts.committedTerms === null
-        ? null
-        : yield* decode(C.TermsV2, work.facts.committedTerms);
     const fundingPolicyHash =
-      existingTerms?.funding_policy_hash ?? (yield* openSongFundingPolicyHashV2(canonicalTarget));
+      existingTerms?.funding_policy_hash ??
+      (yield* openSongFundingPolicyHashV2(canonicalTarget, work.operations.emptyBehavior));
     const facts = yield* decode(
       SongFundingContextFactsSchema,
       JSON.parse(
         stringify({
           ...work.facts,
+          emptyBehavior: work.operations.emptyBehavior ?? "no_purchase",
           now: observed,
           schedule,
           wireSchedule,
@@ -419,39 +572,70 @@ export function makeControlPlaneSharedSongContextProducer(input: {
     run: Effect.fn("SharedSongContext.run")(function* (options: {
       enabled: boolean;
       ensure: () => Effect.Effect<void, unknown>;
+      limit?: number;
     }) {
       if (!options.enabled) return;
-      yield* options.ensure();
-      const raw = yield* txCall(
-        "shared-song.context.claim",
-        "SELECT claim_next_shared_song_context_v2($1) AS packet",
-        [crypto.randomUUID()],
-      );
-      if (raw === null) return;
-      const work = yield* decode(Candidate, raw);
-      yield* produce(work).pipe(
-        Effect.catch(
-          Effect.fn("SharedSongContext.retainFailure")(function* (error: unknown) {
-            // A failed COMMIT has unknown outcome. Do not repeat provider reads,
-            // allocation, the transaction callback or its already-consumed attempt.
-            if (
-              error instanceof ControlPlaneTransactionOutcomeUnknown ||
-              (error instanceof ControlPlaneOperationTimedOut &&
-                error.outcomeCertainty === "unknown")
-            )
-              return yield* Effect.fail(error);
-            const code = error instanceof SongContributionFailure ? error.code : "outcome_unknown";
-            const recorded = yield* Effect.exit(
-              txCall(
-                "shared-song.context.finish-unavailable",
-                "SELECT finish_shared_song_context_failure_v2($1,$2,$3) AS packet",
-                [work.workId, work.token, code],
-              ),
-            );
-            if (Exit.isFailure(recorded))
-              return yield* Effect.failCause(Cause.combine(Cause.fail(error), recorded.cause));
-          }),
-        ),
+      const limit = options.limit ?? 1;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 6)
+        throw Error("Context batch limit must be an integer from 1 to 6");
+      const candidates: Candidate[] = [];
+      // Claims remain serialized and individually charged/fenced. Only provider
+      // reads and their independent snapshot transactions may overlap.
+      for (let index = 0; index < limit; index++) {
+        yield* options.ensure();
+        const claimed = yield* Effect.exit(
+          txCall(
+            "shared-song.context.claim",
+            "SELECT claim_next_shared_song_context_v2($1) AS packet",
+            [crypto.randomUUID()],
+          ),
+        );
+        if (Exit.isFailure(claimed)) {
+          // Selection already skips exhausted counters. A concurrent charge can
+          // still refuse after selection; that certain, rolled-back refusal must
+          // not abandon candidates this batch has already claimed and charged.
+          if (!isCertainContextBudgetRefusal(claimed.cause))
+            return yield* Effect.failCause(claimed.cause);
+          console.warn(
+            JSON.stringify({
+              event: "shared-song.context.claim_budget_refused",
+              claimed: candidates.length,
+            }),
+          );
+          break;
+        }
+        if (claimed.value === null) break;
+        candidates.push(yield* decode(Candidate, claimed.value));
+      }
+      yield* Effect.forEach(
+        candidates,
+        (work) =>
+          produce(work).pipe(
+            Effect.catch(
+              Effect.fn("SharedSongContext.retainFailure")(function* (error: unknown) {
+                // A failed COMMIT has unknown outcome. Do not repeat provider reads,
+                // allocation, the transaction callback or its already-consumed attempt.
+                if (
+                  error instanceof ControlPlaneTransactionOutcomeUnknown ||
+                  (error instanceof ControlPlaneOperationTimedOut &&
+                    error.outcomeCertainty === "unknown")
+                )
+                  return yield* Effect.fail(error);
+                const code =
+                  error instanceof SongContributionFailure ? error.code : "outcome_unknown";
+                const recorded = yield* Effect.exit(
+                  txCall(
+                    "shared-song.context.finish-unavailable",
+                    "SELECT finish_shared_song_context_failure_v2($1,$2,$3) AS packet",
+                    [work.workId, work.token, code],
+                  ),
+                );
+                if (Exit.isFailure(recorded))
+                  return yield* Effect.failCause(Cause.combine(Cause.fail(error), recorded.cause));
+              }),
+            ),
+          ),
+        { concurrency: 3, discard: true },
       );
     }),
   };

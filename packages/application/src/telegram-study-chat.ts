@@ -100,6 +100,35 @@ export async function handleTelegramStudyChat(
     await persist();
     await send(message, feedback);
   };
+  const showCatalogue = async (after: string | null, history: readonly (string | null)[]) => {
+    const page = study.store.cataloguePage
+      ? await study.store.cataloguePage(sender.communityId, after ?? undefined)
+      : { items: await study.store.catalogue(sender.communityId), nextCursor: null };
+    state = {
+      ...state,
+      songs: [...page.items],
+      token: services.vault.token(),
+      selectedPostId: null,
+      selectionInboxId: null,
+      navigationUrl: null,
+      selectedUntil: services.now() + 15 * 60 * 1000,
+      catalogueAfter: after,
+      catalogueNext: page.nextCursor,
+      catalogueHistory: [...history],
+    };
+    const rows = page.items.map((song, index) => [
+      { text: song.title.slice(0, 60), callback_data: `study:${state.token}:${index}` },
+    ]);
+    const navigation = [
+      ...(history.length ? [{ text: "‹", callback_data: `study:${state.token}:prev` }] : []),
+      ...(page.nextCursor ? [{ text: "›", callback_data: `study:${state.token}:next` }] : []),
+    ];
+    if (navigation.length) rows.push(navigation);
+    await respond({
+      ...text(page.items.length ? t("chooseSong") : t("noReadySongs")),
+      keyboard: { inline_keyboard: rows },
+    });
+  };
   const showSession = async (
     session: StudySessionV2,
     feedback: TelegramStudyReply | null = null,
@@ -114,6 +143,9 @@ export async function handleTelegramStudyChat(
       selectionInboxId: null,
       navigationUrl: null,
       selectedUntil: 0,
+      catalogueAfter: null,
+      catalogueNext: null,
+      catalogueHistory: [],
     };
     if (session.status === "completed" || current === null) {
       // "Practice again" is a song choice from a one-song list: the lesson just finished.
@@ -212,27 +244,26 @@ export async function handleTelegramStudyChat(
     }
     if (command === "/study" || command === "/songs") {
       observe("selection");
-      const songs = await study.store.catalogue(sender.communityId);
-      state = {
-        ...state,
-        songs: [...songs],
-        token: services.vault.token(),
-        selectedPostId: null,
-        selectedUntil: services.now() + 15 * 60 * 1000,
-      };
-      await respond({
-        ...text(songs.length ? t("chooseSong") : t("noReadySongs")),
-        keyboard: {
-          inline_keyboard: songs.map((song, index) => [
-            { text: song.title.slice(0, 60), callback_data: `study:${state.token}:${index}` },
-          ]),
-        },
-      });
+      await showCatalogue(null, []);
       return;
     }
     if (callbackData !== undefined && state.selectionInboxId !== inbox.id) {
       // Buttons from the removed age question fail this check like any other stale choice.
       const suffix = callbackData.slice(`study:${state.token}:`.length);
+      if ((suffix === "next" || suffix === "prev") && services.now() < state.selectedUntil) {
+        const history = state.catalogueHistory ?? [];
+        if (suffix === "next" && state.catalogueNext) {
+          await showCatalogue(
+            state.catalogueNext,
+            [...history, state.catalogueAfter ?? null].slice(-100),
+          );
+          return;
+        }
+        if (suffix === "prev" && history.length) {
+          await showCatalogue(history.at(-1) ?? null, history.slice(0, -1));
+          return;
+        }
+      }
       if (!/^[0-7]$/u.test(suffix) || services.now() >= state.selectedUntil) {
         await respond(text(t("selectionExpired")));
         return;

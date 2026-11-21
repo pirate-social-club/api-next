@@ -406,7 +406,7 @@ describe("HNS owner-initiated recovery protocol kernel", () => {
         result: verifiedResult,
       },
     });
-    expect(JSON.stringify(response).length).toBe(401);
+    expect(JSON.stringify(response).length).toBe(435);
     expect(response).toMatchObject({ status: "verified", generation: 14, replayed: false });
     expect(
       await hnsOwnerRecoveryPollResponse({
@@ -512,7 +512,7 @@ describe("HNS owner-initiated recovery protocol kernel", () => {
         }),
       ),
     ).toBe(
-      '{"route_recovery_id":"hns_recovery_01","session_id":"hns_recovery_session_01","generation":14,"status":"verified","canonical_route":{"family":"hns","root_label":"jazleeuw","root_label_display":"jazleeuw","path_segment":"app.jazleeuw","href":"/c/app.jazleeuw","app_host":null},"replayed":true,"retry_after_seconds":null,"result_hash":"13a3f05daa1301f69a83ffafdec54d65606d92b14f5f12c4852c3347c33cbaae"}',
+      '{"route_recovery_id":"hns_recovery_01","session_id":"hns_recovery_session_01","generation":14,"status":"verified","canonical_route":{"family":"hns","root_label":"jazleeuw","root_label_display":"jazleeuw","path_segment":"app.jazleeuw","href":"/c/app.jazleeuw","app_host":null},"public_route_href":"/c/jazleeuw","replayed":true,"retry_after_seconds":null,"result_hash":"13a3f05daa1301f69a83ffafdec54d65606d92b14f5f12c4852c3347c33cbaae"}',
     );
   });
 

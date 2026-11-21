@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import * as BunRuntime from "bun";
 import pg from "pg";
 import { normalizePostgresConnectionString } from "./postgres-connection-string.ts";
+import { rewardObligationOwner, rewardOwnerCtes } from "./rewards-deploy-obligation-owners.ts";
 import { assertStagingRewardsPreservation } from "./staging-rewards-config.ts";
 
 const REWARD_CONFIGS = new Set([
@@ -9,7 +10,11 @@ const REWARD_CONFIGS = new Set([
   "apps/jobs-worker/wrangler.jsonc",
 ]);
 
-export function rewardsBinding(source: string, environment: string): boolean {
+export function rewardsBinding(
+  source: string,
+  environment: string,
+  binding = "MEGAPOT_REWARDS_ENABLED",
+): boolean {
   const config: unknown = BunRuntime.JSONC.parse(source);
   if (typeof config !== "object" || config === null) throw Error("invalid Worker config");
   const environments = Reflect.get(config, "env");
@@ -21,9 +26,8 @@ export function rewardsBinding(source: string, environment: string): boolean {
     throw Error("reward deploy environment missing");
   const vars: unknown = Reflect.get(selected, "vars");
   const value: unknown =
-    typeof vars === "object" && vars !== null
-      ? Reflect.get(vars, "MEGAPOT_REWARDS_ENABLED")
-      : undefined;
+    typeof vars === "object" && vars !== null ? Reflect.get(vars, binding) : undefined;
+  if (binding === "SAFE_POOL_PILOT_ENABLED" && value === undefined) return false;
   if (value !== "true" && value !== "false")
     throw Error("reward deploy binding missing or invalid");
   return value === "true";
@@ -83,12 +87,38 @@ export const REWARD_SHUTDOWN_PREDICATES = [
   ["unresolved_gas_topups", "reward_gas_topups", "status NOT IN ('confirmed','released')"],
 ] as const;
 
-export async function assertRewardsShutdownInventory(db: pg.Client, schema = "api_next") {
+export type RewardEngines = Readonly<{ legacy: boolean; safe: boolean }>;
+const allDisabled: RewardEngines = { legacy: false, safe: false };
+
+export async function assertRewardsShutdownInventory(
+  db: pg.Client,
+  schema = "api_next",
+  engines: RewardEngines = allDisabled,
+) {
   if (!/^[a-z][a-z0-9_]*$/.test(schema)) throw Error("invalid reward inventory schema");
   const liabilities: string[] = [];
-  for (const [category, table, predicate] of REWARD_SHUTDOWN_PREDICATES) {
+  const enabled = [engines.legacy ? "legacy" : "", engines.safe ? "safe" : ""].filter(Boolean);
+  for (const [category, table, predicate] of [
+    ...REWARD_SHUTDOWN_PREDICATES,
+    [
+      "unpaid_late_principal",
+      "reward_late_principal_liabilities_v2",
+      `NOT EXISTS (SELECT 1 FROM "${schema}".reward_safe_refunds_v1 r JOIN "${schema}".reward_safe_refund_completions_v1 done USING(refund_id) WHERE r.receipt_id=obligation.receipt_id)`,
+    ],
+    [
+      "unpaid_safe_refunds",
+      "reward_safe_refunds_v1",
+      `NOT EXISTS (SELECT 1 FROM "${schema}".reward_safe_refund_completions_v1 done WHERE done.refund_id=obligation.refund_id)`,
+    ],
+    [
+      "unfinalized_contributions",
+      "song_megapot_contributions_v2",
+      `(state->>'nonceFinalized')::BOOLEAN IS DISTINCT FROM TRUE`,
+    ],
+  ]) {
     const result = await db.query<{ present: boolean }>(
-      `SELECT EXISTS(SELECT 1 FROM "${schema}"."${table}" WHERE ${predicate}) AS present`,
+      `${rewardOwnerCtes(schema)} SELECT EXISTS(SELECT 1 FROM "${schema}"."${table}" AS obligation WHERE (${predicate}) AND coalesce((${rewardObligationOwner(table ?? "", schema)}),'unknown') <> ALL($1::text[])) AS present`,
+      [enabled],
     );
     if (result.rows.length !== 1 || typeof result.rows[0]?.present !== "boolean")
       throw Error("reward shutdown inventory malformed");
@@ -102,6 +132,7 @@ export async function withRewardsShutdownLock<T>(
   db: pg.Client,
   operation: (signal: AbortSignal) => Promise<T>,
   schema = "api_next",
+  engines: RewardEngines = allDisabled,
 ): Promise<T> {
   if (!/^[a-z][a-z0-9_]*$/.test(schema)) throw Error("invalid reward inventory schema");
   const cancellation = new AbortController();
@@ -118,7 +149,7 @@ export async function withRewardsShutdownLock<T>(
     );
     if (control.rows.length !== 1 || control.rows[0]?.paused !== true)
       throw Error("reward binding shutdown requires persisted pause");
-    await assertRewardsShutdownInventory(db, schema);
+    await assertRewardsShutdownInventory(db, schema, engines);
     if (cancellation.signal.aborted) throw Error("reward shutdown control connection lost");
     const result = await operation(cancellation.signal);
     if (cancellation.signal.aborted)
@@ -156,7 +187,23 @@ export async function withRewardsBindingDeployment<T>(
     environment,
   );
   const enabled = disabledRewards === "false" ? false : trackedEnabled;
-  if (enabled) return operation();
+  const safeEnabled = rewardsBinding(
+    await BunRuntime.file(resolve(root, configPath)).text(),
+    environment,
+    "SAFE_POOL_PILOT_ENABLED",
+  );
+  if (safeEnabled && enabled) throw Error("reward engines cannot both be enabled");
+  if (safeEnabled) {
+    for (const pairedConfig of REWARD_CONFIGS)
+      if (
+        !rewardsBinding(
+          await BunRuntime.file(resolve(root, pairedConfig)).text(),
+          environment,
+          "SAFE_POOL_PILOT_ENABLED",
+        )
+      )
+        throw Error("Safe rewards require both tracked Worker bindings on");
+  }
   const connectionString = process.env.CONTROL_PLANE_POSTGRES_ADMIN_URL;
   if (!connectionString)
     throw Error("reward binding shutdown requires direct operator database URL");
@@ -168,10 +215,15 @@ export async function withRewardsBindingDeployment<T>(
   let uploadStarted = false;
   try {
     await db.connect();
-    return await withRewardsShutdownLock(db, (signal) => {
-      uploadStarted = true;
-      return operation(signal);
-    });
+    return await withRewardsShutdownLock(
+      db,
+      (signal) => {
+        uploadStarted = true;
+        return operation(signal);
+      },
+      "api_next",
+      { legacy: enabled, safe: safeEnabled },
+    );
   } catch (error) {
     if (uploadStarted) throw error;
     const reason = error instanceof Error ? error.message : "";

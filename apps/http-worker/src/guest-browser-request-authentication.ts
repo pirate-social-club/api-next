@@ -18,6 +18,7 @@ import {
 } from "@pirate/contracts";
 import type { SessionTokenVerifier } from "@pirate/platform-cf/session-tokens";
 import { Effect, Schema } from "effect";
+import { BROWSER_RENEWAL_COOKIE_NAME } from "./browser-session-cookies.ts";
 import {
   assertGuestBrowserRequestBoundary,
   type GuestBrowserAuthenticationServices,
@@ -63,14 +64,13 @@ function containsAsciiControl(value: string): boolean {
 function ordinaryCookie(headers: Headers, target: string): string | null {
   const raw = headers.get("cookie") ?? "";
   if (new TextEncoder().encode(raw).byteLength > MAX_BYTES) return null;
-  let found: string | null = null;
-  let count = 0;
+  const sensitive = new Set([SESSION_COOKIE, CSRF_COOKIE, BROWSER_RENEWAL_COOKIE_NAME]);
+  const values = new Map<string, string>();
   for (const entry of raw.split(";")) {
     const separator = entry.indexOf("=");
     const name = (separator < 0 ? entry : entry.slice(0, separator)).trim();
-    if (name !== target) continue;
-    count += 1;
-    if (count !== 1 || separator < 0) return null;
+    if (!sensitive.has(name)) continue;
+    if (values.has(name) || separator < 0) return null;
     try {
       const value = decodeURIComponent(entry.slice(separator + 1).trim());
       if (
@@ -79,12 +79,12 @@ function ordinaryCookie(headers: Headers, target: string): string | null {
         containsAsciiControl(value)
       )
         return null;
-      found = value;
+      values.set(name, value);
     } catch {
       return null;
     }
   }
-  return found;
+  return values.get(target) ?? null;
 }
 
 function assertOrdinaryCookieCsrf(headers: Headers, trustedOrigin: string): void {
@@ -140,7 +140,7 @@ export function makeGuestBrowserRequestAuthenticator(
     if (token === null) return null;
     const verified = await Effect.runPromise(
       services.accountVerifier
-        .verify({ token, requiredClassification: "user" })
+        .verify({ token, requiredClassification: "user", browser: true })
         .pipe(
           Effect.catch((error) =>
             error.code === "control_plane_unavailable"

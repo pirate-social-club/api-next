@@ -29,6 +29,7 @@ TRUNCATE TABLE
   "assertion_revalidation_events",
   "assertions",
   "avatar_assets",
+  "browser_sessions",
   "comment_moderation_actions",
   "comment_moderation_cases",
   "comment_publication_projection",
@@ -462,6 +463,7 @@ TRUNCATE TABLE
   "reward_eligibility_decisions",
   "reward_erc20_transfer_receipt_evidence",
   "reward_funding_account_counters_v2",
+  "reward_funding_cancellation_proofs_v2",
   "reward_funding_leg_snapshots_v2",
   "reward_funding_profiles_v2",
   "reward_funding_scan_checkpoints_v2",
@@ -472,6 +474,7 @@ TRUNCATE TABLE
   "reward_gas_topup_wallets",
   "reward_gas_topups",
   "reward_incoming_receipts_v2",
+  "reward_joint_cycle_turn_v1",
   "reward_late_principal_liabilities_v2",
   "reward_ledger_credits",
   "reward_native_transfer_receipt_evidence",
@@ -484,6 +487,10 @@ TRUNCATE TABLE
   "reward_pool_cohort_seals_v2",
   "reward_refund_effects",
   "reward_safe_execution_cursors",
+  "reward_safe_refund_attempts_v1",
+  "reward_safe_refund_completions_v1",
+  "reward_safe_refunds_v1",
+  "reward_safe_treasury_allocations_v1",
   "reward_safe_unbound_executions",
   "reward_shared_song_template_admissions_v2",
   "reward_shared_song_templates_v2",
@@ -553,6 +560,7 @@ TRUNCATE TABLE
   "study_exercise_versions",
   "study_language_profile_units",
   "study_language_profiles",
+  "study_learner_catalogue_decisions",
   "study_lesson_item_state_v2",
   "study_presentations_v2",
   "study_review_items",
@@ -650,6 +658,8 @@ INSERT INTO qualification_policy_versions VALUES ('karaoke_qualification_v2@2', 
 
 INSERT INTO recovery_inspection_cursors VALUES ('media', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
 INSERT INTO recovery_inspection_cursors VALUES ('data', '2000-01-01 00:00:00+00', '', '2000-01-01 00:00:00+00');
+
+INSERT INTO reward_joint_cycle_turn_v1 VALUES (true, 'financial', 1);
 
 INSERT INTO reward_operations_control VALUES (true, true, 0, 'environment_initially_paused', '2000-01-01 00:00:00+00');
 

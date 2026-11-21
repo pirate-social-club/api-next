@@ -39,6 +39,10 @@ import {
 import { readNativeBalance as readNativeBalanceRpc } from "./native-balance.ts";
 
 const safeNonceAbi = parseAbi(["function nonce() view returns (uint256)"]);
+const drawingRecurrenceAbi = parseAbi([
+  "function drawingDurationInSeconds() view returns (uint256)",
+  "function ticketPrice() view returns (uint256)",
+]);
 const safeExecutionSuccessTopic = toEventSelector("ExecutionSuccess(bytes32,uint256)");
 const safeExecutionFailureTopic = toEventSelector("ExecutionFailure(bytes32,uint256)");
 
@@ -132,6 +136,16 @@ export type MegapotV2RpcClientOptions = Readonly<{
   rpcUrl: string;
   /** Synchronous best-effort observer; its failure cannot change RPC semantics. */
   onReceiptRead?: (observation: MegapotReceiptReadObservation) => void;
+  /** Closed failure codes only, without URLs, parameters or response text. */
+  onRpcFailure?: (
+    observation: Readonly<{
+      method: string;
+      reason: MegapotV2RpcFailed["reason"];
+      httpStatus: number | null;
+      providerCode: number | null;
+      transportFailure: "subrequest_limit" | "timeout" | "other" | null;
+    }>,
+  ) => void;
   attestation: MegapotV2DeploymentAttestation;
   fetcher?: Fetcher;
   timeoutMs?: number;
@@ -214,6 +228,12 @@ export interface MegapotV2RpcClient {
   }>;
   readonly readTicketPurchasesAllowed: () => Promise<boolean>;
   readonly readCurrentDrawingId: (blockNumber?: bigint) => Promise<bigint>;
+  /** Mutable settings at one explicit block, not a promise of a future drawing.
+   * Present on the production adapter; initialized-only test doubles may omit it. */
+  readonly readDrawingRecurrence?: (blockNumber: bigint) => Promise<{
+    readonly durationSeconds: bigint;
+    readonly ticketPrice: bigint;
+  }>;
   readonly readDrawing: (drawingId: bigint, blockNumber?: bigint) => Promise<MegapotV2DrawingState>;
   readonly readDrawingTierPayouts: (
     drawingId: bigint,
@@ -230,7 +250,7 @@ export interface MegapotV2RpcClient {
     account: string,
     blockNumber?: bigint,
   ) => Promise<bigint>;
-  readonly readNativeBalance: (account: string) => Promise<bigint>;
+  readonly readNativeBalance: (account: string, blockNumber?: bigint) => Promise<bigint>;
   readonly readUsdcAllowance: (owner: string, spender: string) => Promise<bigint>;
   readonly readTicketOwner: (ticketId: bigint, blockNumber?: bigint) => Promise<string>;
   readonly readPendingNonce: (account: string) => Promise<bigint>;
@@ -468,6 +488,9 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
     const id = `megapot:${requestSequence}:${method}`;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let httpStatus: number | null = null;
+    let providerCode: number | null = null;
+    let transportFailure: "subrequest_limit" | "timeout" | "other" | null = null;
     try {
       let response: Response;
       try {
@@ -480,9 +503,22 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
             signal: controller.signal,
           });
         });
-      } catch {
+      } catch (error) {
+        transportFailure = controller.signal.aborted ? "timeout" : "other";
+        try {
+          if (
+            !controller.signal.aborted &&
+            error instanceof Error &&
+            /too many subrequests|subrequest.*limit|limit.*subrequest/i.test(error.message)
+          ) {
+            transportFailure = "subrequest_limit";
+          }
+        } catch {
+          // Exception details are neither trusted nor retained.
+        }
         throw new MegapotV2RpcFailed(controller.signal.aborted ? "timeout" : "unavailable");
       }
+      httpStatus = response.status;
       if (!response.ok) {
         throw new MegapotV2RpcFailed(response.status === 404 ? "not-found" : "unavailable");
       }
@@ -498,10 +534,31 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
         throw new MegapotV2RpcFailed("invalid-response");
       }
       if (envelope.error !== undefined) {
+        if (
+          typeof envelope.error === "object" &&
+          envelope.error !== null &&
+          "code" in envelope.error
+        ) {
+          const code = envelope.error.code;
+          if (typeof code === "number" && Number.isSafeInteger(code)) providerCode = code;
+        }
         throw new MegapotV2RpcFailed("provider-error", findMegapotV2ClaimRevert(envelope.error));
       }
       if (!("result" in envelope)) throw new MegapotV2RpcFailed("invalid-response");
       return envelope.result;
+    } catch (error) {
+      try {
+        options.onRpcFailure?.({
+          method,
+          reason: error instanceof MegapotV2RpcFailed ? error.reason : "unavailable",
+          httpStatus,
+          providerCode,
+          transportFailure,
+        });
+      } catch {
+        // An observer cannot change the original RPC result.
+      }
+      throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -712,6 +769,27 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       decodeMegapotCurrentDrawingId(
         await ethCall(attestation.jackpotAddress, encodeMegapotCurrentDrawingId(), blockNumber),
       ),
+    readDrawingRecurrence: async (blockNumber) => {
+      if (typeof blockNumber !== "bigint" || blockNumber < 0n)
+        throw new MegapotV2RpcFailed("invalid-config");
+      const readSetting = async (functionName: "drawingDurationInSeconds" | "ticketPrice") =>
+        decodeFunctionResult({
+          abi: drawingRecurrenceAbi,
+          functionName,
+          data: await ethCall(
+            attestation.jackpotAddress,
+            encodeFunctionData({ abi: drawingRecurrenceAbi, functionName }),
+            blockNumber,
+          ),
+        });
+      const [durationSeconds, ticketPrice] = await Promise.all([
+        readSetting("drawingDurationInSeconds"),
+        readSetting("ticketPrice"),
+      ]);
+      if (durationSeconds <= 0n || ticketPrice <= 0n)
+        throw new MegapotV2RpcFailed("invalid-response");
+      return { durationSeconds, ticketPrice };
+    },
     readDrawing: async (drawingId, blockNumber) =>
       decodeMegapotDrawingState(
         await ethCall(
@@ -753,7 +831,8 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
           blockNumber,
         ),
       ),
-    readNativeBalance: (account) => readNativeBalanceRpc(rpc, canonicalAddress(account)),
+    readNativeBalance: (account, blockNumber) =>
+      readNativeBalanceRpc(rpc, canonicalAddress(account), blockNumber),
     readUsdcAllowance: async (owner, spender) =>
       decodeMegapotUsdcAllowance(
         await ethCall(attestation.usdcAddress, encodeMegapotUsdcAllowance(owner, spender)),

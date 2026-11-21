@@ -763,3 +763,91 @@ describe("pure offline moderated Dance review", () => {
     ).toBe(false);
   });
 });
+
+describe("prospective no-pose moderator review", () => {
+  function noPose() {
+    const old = fixture();
+    const capture: SealedReviewCapture = {
+      ...old.capture,
+      policy: { ...old.capture.policy, version: "moderator-review-policy-v2" },
+      cueId: "none",
+      cueStartMs: 0,
+      cueEndMs: 0,
+      cueHoldMs: 0,
+      bodyStartMs: 0,
+      bodyEndMs: 10000,
+    };
+    const state = initializeModeratorReview(capture, old.facts, 1000);
+    if (!state) throw new Error("Invalid fictional no-pose capture");
+    return { ...old, capture, state };
+  }
+  test.each(["passed", "not_passed"] as const)(
+    "records truthful %s with no pose attestation",
+    (result) => {
+      const f = noPose(),
+        pending = ready(f.state, f.facts, false);
+      const changed = transitionModeratorReview(
+        pending,
+        { ...verdict, version: "dance-owner-verdict-attestation-v2", verdict: result },
+        owner,
+        pending.revision,
+        4000,
+        f.facts,
+      );
+      expect(changed.refusal).toBeNull();
+      expect(changed.state.verdict).toBe(result);
+      expect(changed.state.attestation?.cue).toBe("not_required");
+      expect(changed.state.attestation?.version).toBe("dance-owner-verdict-attestation-v2");
+      expect(changed.state.qualificationRef).toBe(result === "passed" ? f.capture.reviewId : null);
+      expect(changed.intents.some((i) => i.kind === "qualification")).toBe(result === "passed");
+      expect(changed.state.capture).toEqual(f.capture);
+    },
+  );
+  test("keeps the distinct owner, real verdict, evidence and deadline gates", () => {
+    const f = noPose(),
+      pending = ready(f.state, f.facts);
+    const command = { ...verdict, version: "dance-owner-verdict-attestation-v2" } as const;
+    expect(
+      transitionModeratorReview(pending, verdict, owner, pending.revision, 4000, f.facts).refusal,
+    ).toBe("evidence_unavailable");
+    expect(
+      transitionModeratorReview(pending, command, dancer, pending.revision, 4000, {
+        ...f.facts,
+        owner: { ...f.facts.owner, accountId: dancer.accountId },
+      }).refusal,
+    ).toBe("self_review");
+    expect(
+      transitionModeratorReview(pending, command, owner, pending.revision, 4000, {
+        ...f.facts,
+        safety: null,
+      }).state.qualificationRef,
+    ).toBeNull();
+    expect(
+      transitionModeratorReview(
+        pending,
+        command,
+        owner,
+        pending.revision,
+        pending.reviewDeadlineMs,
+        f.facts,
+      ).state.qualificationRef,
+    ).toBeNull();
+    for (const capture of [
+      { ...f.capture, cueId: "arms_t" },
+      { ...f.capture, cueHoldMs: 1 },
+      { ...f.capture, bodyStartMs: 2000 },
+      { ...f.capture, policy: fixture().capture.policy },
+    ])
+      expect(initializeModeratorReview(capture, f.facts, 1000)).toBeNull();
+    const old = fixture(),
+      oldPending = ready(old.state, old.facts);
+    expect(
+      transitionModeratorReview(oldPending, command, owner, oldPending.revision, 4000, old.facts)
+        .refusal,
+    ).toBe("evidence_unavailable");
+    expect(
+      transitionModeratorReview(oldPending, verdict, owner, oldPending.revision, 4000, old.facts)
+        .state.attestation?.cue,
+    ).toBe("affirmed");
+  });
+});

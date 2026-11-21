@@ -394,10 +394,14 @@ export const runHnsActiveLeaseRenewal = Effect.fn("runHnsActiveLeaseRenewal")(fu
     return yield* new HnsActiveLeaseRenewalRejected({ reason: "conflict" });
   }
 
+  // A released attempt is reacquired on the same key with the same durable
+  // observation id and a raised fence. The verifier finalizes one observation
+  // per id and replays it, so keying by fence makes each reacquire read the
+  // chain again instead of replaying an earlier unavailable answer.
   const provider = yield* services.provider
     .renew(reservation.request, reservation.stored.authority, {
       deadline_ms: HNS_ACTIVE_LEASE_RENEWAL_PROVIDER_DEADLINE_MS,
-      observation_id: reservation.attempt.observation_id,
+      observation_id: `${reservation.attempt.observation_id}:${reservation.attempt.fence_token}`,
     })
     .pipe(
       Effect.matchEffect({

@@ -40,6 +40,8 @@ const code = {
 const readAbi = parseAbi([
   "function allowTicketPurchases() view returns (bool)",
   "function currentDrawingId() view returns (uint256)",
+  "function drawingDurationInSeconds() view returns (uint256)",
+  "function ticketPrice() view returns (uint256)",
   "function jackpotNFT() view returns (address)",
   "function usdc() view returns (address)",
   "function getDrawingState(uint256 _drawingId) view returns ((uint256 prizePool, uint256 ticketPrice, uint256 edgePerTicket, uint256 referralWinShare, uint256 referralFee, uint256 globalTicketsBought, uint256 lpEarnings, uint256 drawingTime, uint256 winningTicket, uint8 ballMax, uint8 bonusballMax, address payoutCalculator, bool jackpotLock))",
@@ -123,6 +125,94 @@ function attestationFetcher(options?: {
 }
 
 describe("Megapot v2 Worker runtime adapters", () => {
+  test("recurrence reads refuse missing or invalid pinned heights before any request", async () => {
+    let requests = 0;
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: async () => {
+        requests++;
+        throw Error("Unexpected unpinned request");
+      },
+    });
+    const read = client.readDrawingRecurrence;
+    if (read === undefined) throw Error("Missing production read");
+    for (const height of [undefined, null, -1n, 100, "100"])
+      await expect(Reflect.apply(read, client, [height])).rejects.toMatchObject({
+        reason: "invalid-config",
+      });
+    expect(requests).toBe(0);
+  });
+
+  test("reads both mutable drawing settings at the same explicit block", async () => {
+    const requests: Array<{ method: string; params: unknown[] }> = [];
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: async (_url, init) => {
+        const request = JSON.parse(String(init?.body));
+        requests.push(request);
+        const data = request.params[0].data;
+        const duration =
+          data ===
+          encodeFunctionData({
+            abi: readAbi,
+            functionName: "drawingDurationInSeconds",
+          });
+        if (!duration && data !== encodeFunctionData({ abi: readAbi, functionName: "ticketPrice" }))
+          throw Error("Unexpected setting read");
+        return Response.json({
+          jsonrpc: "2.0",
+          id: request.id,
+          result: encodeFunctionResult({
+            abi: readAbi,
+            functionName: duration ? "drawingDurationInSeconds" : "ticketPrice",
+            result: duration ? 1800n : 10_000n,
+          }),
+        });
+      },
+    });
+    if (client.readDrawingRecurrence === undefined) throw Error("Missing production read");
+    await expect(client.readDrawingRecurrence(100n)).resolves.toEqual({
+      durationSeconds: 1800n,
+      ticketPrice: 10_000n,
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests.every((r) => r.method === "eth_call" && r.params[1] === "0x64")).toBe(true);
+  });
+
+  test("zero duration or price cannot become recurrence evidence", async () => {
+    for (const zeroField of ["drawingDurationInSeconds", "ticketPrice"] as const) {
+      const client = makeMegapotV2RpcClient({
+        rpcUrl: "https://base-sepolia.example.invalid",
+        attestation: attestation(),
+        fetcher: async (_url, init) => {
+          const request = JSON.parse(String(init?.body));
+          const duration =
+            request.params[0].data ===
+            encodeFunctionData({
+              abi: readAbi,
+              functionName: "drawingDurationInSeconds",
+            });
+          const functionName = duration ? "drawingDurationInSeconds" : "ticketPrice";
+          return Response.json({
+            jsonrpc: "2.0",
+            id: request.id,
+            result: encodeFunctionResult({
+              abi: readAbi,
+              functionName,
+              result: functionName === zeroField ? 0n : 1800n,
+            }),
+          });
+        },
+      });
+      if (client.readDrawingRecurrence === undefined) throw Error("Missing production read");
+      await expect(client.readDrawingRecurrence(100n)).rejects.toMatchObject({
+        reason: "invalid-response",
+      });
+    }
+  });
+
   test("derives and decodes typed v2 claim reverts through nested provider errors", async () => {
     const noTickets = encodeMegapotV2ClaimRevert("no_tickets_to_claim");
     const notOwner = encodeMegapotV2ClaimRevert("not_ticket_owner");
@@ -796,5 +886,103 @@ describe("Megapot v2 Worker runtime adapters", () => {
       observedBlockNumber: 100n,
       observedBlockHash: hash("a"),
     });
+  });
+});
+
+describe("RPC failure diagnostics", () => {
+  const secret = "credential-must-not-be-logged";
+  test.each([
+    {
+      kind: "http",
+      reason: "unavailable",
+      httpStatus: 429,
+      providerCode: null,
+      transportFailure: null,
+    },
+    {
+      kind: "provider",
+      reason: "provider-error",
+      httpStatus: 200,
+      providerCode: -32005,
+      transportFailure: null,
+    },
+    {
+      kind: "invalid-code",
+      reason: "provider-error",
+      httpStatus: 200,
+      providerCode: null,
+      transportFailure: null,
+    },
+    {
+      kind: "limit",
+      reason: "unavailable",
+      httpStatus: null,
+      providerCode: null,
+      transportFailure: "subrequest_limit",
+    },
+    {
+      kind: "unsafe-error",
+      reason: "unavailable",
+      httpStatus: null,
+      providerCode: null,
+      transportFailure: "other",
+    },
+  ])("retains closed failure metadata without provider secrets: $kind", async (scenario) => {
+    const observations: unknown[] = [];
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: `https://rpc.example.invalid/${secret}`,
+      attestation: attestation(),
+      onRpcFailure: (observation) => {
+        observations.push(observation);
+      },
+      fetcher: async (_url, init) => {
+        if (scenario.kind === "unsafe-error") {
+          const error = new Error();
+          Object.defineProperty(error, "message", {
+            get: () => {
+              throw Error(secret);
+            },
+          });
+          throw error;
+        }
+        if (scenario.kind === "limit") throw new Error(`Too many subrequests. ${secret}`);
+        if (scenario.kind === "http") return new Response(secret, { status: 429 });
+        const request = JSON.parse(String(init?.body));
+        return Response.json({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: {
+            code: scenario.kind === "invalid-code" ? secret : -32005,
+            message: secret,
+          },
+        });
+      },
+    });
+    await expect(client.readHead()).rejects.toMatchObject({ reason: scenario.reason });
+    expect(observations).toEqual([
+      {
+        method: "eth_getBlockByNumber",
+        reason: scenario.reason,
+        httpStatus: scenario.httpStatus,
+        providerCode: scenario.providerCode,
+        transportFailure: scenario.transportFailure,
+      },
+    ]);
+    expect(JSON.stringify(observations)).not.toContain(secret);
+  });
+
+  test("observer failure cannot replace the original RPC failure", async () => {
+    let called = 0;
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://rpc.example.invalid",
+      attestation: attestation(),
+      onRpcFailure: () => {
+        called++;
+        throw Error("observer failed");
+      },
+      fetcher: async () => new Response("unavailable", { status: 503 }),
+    });
+    await expect(client.readHead()).rejects.toMatchObject({ reason: "unavailable" });
+    expect(called).toBe(1);
   });
 });

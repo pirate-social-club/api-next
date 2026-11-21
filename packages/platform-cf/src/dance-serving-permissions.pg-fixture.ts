@@ -26,11 +26,13 @@ type Fixture = Readonly<{
     consumers: readonly DanceServingConsumer[],
   ) => ReturnType<typeof danceServingGrantPlan>;
   gatewayBase: (role: string) => Promise<void>;
+  upgrade: () => Promise<void>;
 }>;
 const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;
 export async function withDanceServingPermissionFixture(
   base: string,
   use: (f: Fixture) => Promise<void>,
+  through?: number,
 ) {
   const url = new URL(base);
   if (
@@ -118,7 +120,8 @@ export async function withDanceServingPermissionFixture(
       u.searchParams.set("options", `-c search_path=${schema},pg_catalog`);
       return u.toString();
     };
-    const migrations = await loadPostgresMigrations();
+    const complete = await loadPostgresMigrations();
+    let migrations = through === undefined ? complete : complete.slice(0, through);
     for (let end = 25; end < migrations.length; end += 25)
       await runPostgresMigrations({
         connectionString: scoped(ownerRole),
@@ -167,6 +170,10 @@ export async function withDanceServingPermissionFixture(
       apply,
       plan,
       gatewayBase,
+      upgrade: async () => {
+        await runPostgresMigrations({ connectionString: scoped(ownerRole), migrations: complete });
+        migrations = complete;
+      },
     };
   }
 }

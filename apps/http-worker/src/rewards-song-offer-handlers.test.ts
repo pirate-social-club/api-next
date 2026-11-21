@@ -20,10 +20,11 @@ import {
   SongRewardOfferRejected,
   SongRewardOfferStorageFailed,
 } from "@pirate/application/rewards/song-reward-offers";
-import { RewardsPaused } from "@pirate/contracts";
+import { ProviderUnavailable, RewardsPaused } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   makeLazySongRewardOfferHandlers,
+  makeRewardServiceAvailabilityHandler,
   makeSongRewardOfferHandlers,
   makeUnavailableSongRewardOfferHandlers,
 } from "./rewards-song-offer-handlers.ts";
@@ -356,6 +357,44 @@ function fixture(
 }
 
 describe("song reward offer HTTP handlers", () => {
+  test.each([false, true])(
+    "returns enabled=%s normally without initializing reward services",
+    async (enabled) => {
+      let providerLoads = 0;
+      const worker = createHttpWorker({
+        config: { corsOrigin: "https://app.pirate.test" },
+        handlers: {
+          ...(enabled
+            ? makeLazySongRewardOfferHandlers(async () => {
+                providerLoads++;
+                throw new ProviderUnavailable({ message: "Fixture provider outage" });
+              })
+            : makeUnavailableSongRewardOfferHandlers()),
+          GetRewardServiceAvailability: makeRewardServiceAvailabilityHandler(enabled),
+        },
+        authenticate: () => ({ kind: "user", subject: "account_1" }),
+        authorize: () => undefined,
+      });
+      const read = () =>
+        worker.request("/rewards/availability", { headers: { authorization: "Bearer test" } });
+      const first = await read();
+      expect(first.status).toBe(200);
+      expect(first.headers.get("cache-control")).toBe("no-store");
+      expect(await first.json()).toEqual({ enabled });
+      expect(providerLoads).toBe(0);
+      expect((await worker.request("/rewards/availability")).status).toBe(401);
+      const failedProvider = await worker.request("/rewards/qualification-policies", {
+        headers: { authorization: "Bearer test" },
+      });
+      expect(failedProvider.status).toBe(502);
+      expect(await failedProvider.json()).toMatchObject({
+        error: { code: "provider_unavailable" },
+      });
+      expect(await (await read()).json()).toEqual({ enabled });
+      expect(providerLoads).toBe(enabled ? 1 : 0);
+    },
+  );
+
   test("returns typed unavailability while retaining authentication boundaries", async () => {
     const worker = createHttpWorker({
       config: { corsOrigin: "https://app.pirate.test" },

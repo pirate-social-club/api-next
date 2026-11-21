@@ -1,5 +1,5 @@
 import { CommunityCanonicalRouteV1 } from "@pirate/contracts";
-import { validCommunityRouteRoot } from "@pirate/domain";
+import { projectCommunityPublicRouteV2, validCommunityRouteRoot } from "@pirate/domain";
 import { Sha256Hex, type Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
 import { Option, Schema } from "effect";
 import type {
@@ -417,6 +417,7 @@ const PublicPollVerifiedSchema = Schema.Struct({
   generation: PositiveSafeInteger,
   status: Schema.Literal("verified"),
   canonical_route: RouteSchema,
+  public_route_href: Schema.NullOr(boundedString(512, "public_route_href")),
   replayed: Schema.Boolean,
   retry_after_seconds: Schema.Null,
   result_hash: Sha256Hex,
@@ -1993,6 +1994,14 @@ export type HnsOwnerRecoveryPollResponseV1 =
       readonly generation: number;
       readonly status: "verified";
       readonly canonical_route: HnsOwnerRecoveryRoute;
+      /**
+       * Public community link for the recovered route. `canonical_route` keeps
+       * the stored authority path `app.<root>`, which the public dispatcher
+       * refuses; this is the bare-root public V2 path `/c/<root>`, or null when
+       * the root has no public V2 identity. It is derived at response time and
+       * is not part of the stored result or `result_hash`.
+       */
+      readonly public_route_href: string | null;
       readonly replayed: boolean;
       readonly retry_after_seconds: null;
       readonly result_hash: Sha256HexValue;
@@ -2006,6 +2015,11 @@ export type HnsOwnerRecoveryPollResponseV1 =
       readonly retry_after_seconds: null;
       readonly result_hash: Sha256HexValue;
     }>;
+
+function hnsOwnerRecoveryPublicRouteHref(route: HnsOwnerRecoveryRoute): string | null {
+  const projected = projectCommunityPublicRouteV2(route);
+  return projected.kind === "accepted" ? projected.value.href : null;
+}
 
 function validatePublicPollResponse(
   value: HnsOwnerRecoveryPollResponseV1,
@@ -2029,6 +2043,7 @@ function validatePublicPollResponse(
             "generation",
             "status",
             "canonical_route",
+            "public_route_href",
             "replayed",
             "retry_after_seconds",
             "result_hash",
@@ -2050,6 +2065,11 @@ function validatePublicPollResponse(
       ["family", "root_label", "root_label_display", "path_segment", "href", "app_host"],
       "HNS owner-recovery public canonical route is reordered",
     );
+    if (value.public_route_href !== hnsOwnerRecoveryPublicRouteHref(value.canonical_route)) {
+      throw new HnsOwnerRecoveryDecodeError(
+        "HNS owner-recovery public route link does not match its canonical route",
+      );
+    }
     return decodeSchema(
       PublicPollVerifiedSchema,
       value,
@@ -2126,6 +2146,7 @@ export async function hnsOwnerRecoveryPollResponse(
       generation,
       status: "verified",
       canonical_route: session.route,
+      public_route_href: hnsOwnerRecoveryPublicRouteHref(session.route),
       replayed,
       retry_after_seconds: null,
       result_hash: resultHash,

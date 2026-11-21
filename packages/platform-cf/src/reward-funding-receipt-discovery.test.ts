@@ -274,7 +274,11 @@ async function currentFixture() {
       blockHash: hash("66"),
       blockTimestamp: BigInt(Date.parse(now) / 1000),
     }),
-    readBlock: async () => ({ blockNumber: 10n, blockHash: hash("66") }),
+    readBlock: async (blockNumber: bigint) => ({
+      blockNumber,
+      blockHash: hash("66"),
+      blockTimestamp: BigInt(Date.parse(now) / 1000),
+    }),
     readTransactionCount: async () => 4n,
     readPendingNonce: async () => 5n,
   } as unknown as MegapotV2FullRpcClient;
@@ -302,6 +306,33 @@ describe("current recovery producer with offline RPC capabilities", () => {
     expect(e.validUntil).toBe("2026-10-18T12:31:00.000Z");
     await f.run();
     expect(f.calls).toEqual([20n, 20n]);
+  });
+  test("normal latest-head advance preserves the pinned canonical cancellation observation", async () => {
+    const f = await currentFixture();
+    let heads = 0;
+    const blocks: bigint[] = [];
+    Object.assign(f.rpc, {
+      readHead: async () => ({
+        blockNumber: 20n + BigInt(heads++),
+        blockHash: hash("66"),
+        blockTimestamp: BigInt(Date.parse(f.now) / 1000),
+      }),
+      readBlock: async (blockNumber: bigint) => {
+        blocks.push(blockNumber);
+        return {
+          blockNumber,
+          blockHash: hash("66"),
+          blockTimestamp: BigInt(Date.parse(f.now) / 1000),
+        };
+      },
+    });
+    expect(await f.run()).toMatchObject({
+      blockNumber: "20",
+      confirmedNonce: "4",
+      pendingNonce: "5",
+    });
+    expect(heads).toBe(1);
+    expect(blocks).toEqual([10n, 20n]);
   });
   test("missing/unaccepted policy and missing historical capability stay unavailable", async () => {
     const f = await currentFixture();
@@ -333,8 +364,8 @@ describe("current recovery producer with offline RPC capabilities", () => {
     await expect(f.run()).rejects.toMatchObject({ code: "cancellation_recovery_unavailable" });
     expect(f.calls).toHaveLength(0);
   });
-  test("stale clock, consumed nonce, mismatched client deployment and rollover cannot mint authority", async () => {
-    for (const change of ["stale", "nonce", "client", "rollover"]) {
+  test("stale clock, consumed nonce, mismatched deployment and canonical replacement refuse authority", async () => {
+    for (const change of ["stale", "nonce", "client", "replacement", "pending"]) {
       const f = await currentFixture();
       if (change === "stale")
         Object.assign(f.rpc, {
@@ -347,16 +378,15 @@ describe("current recovery producer with offline RPC capabilities", () => {
       if (change === "nonce") Object.assign(f.rpc, { readTransactionCount: async () => 5n });
       if (change === "client")
         Object.assign(f.rpc, { deployment: { ...f.source.deployment, custodyAddress: sender } });
-      if (change === "rollover") {
-        let n = 0;
+      if (change === "replacement")
         Object.assign(f.rpc, {
-          readHead: async () => ({
-            blockNumber: BigInt(20 + n++),
-            blockHash: hash("66"),
+          readBlock: async (blockNumber: bigint) => ({
+            blockNumber,
+            blockHash: blockNumber === 20n ? hash("77") : hash("66"),
             blockTimestamp: BigInt(Date.parse(f.now) / 1000),
           }),
         });
-      }
+      if (change === "pending") Object.assign(f.rpc, { readPendingNonce: async () => 3n });
       await expect(f.run()).rejects.toMatchObject({ code: "cancellation_recovery_unavailable" });
     }
   });

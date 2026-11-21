@@ -46,10 +46,10 @@ const Capture = Schema.Struct({
   captureExpiresAtMs: RevisionV2,
   bodyStartMs: Natural,
   bodyEndMs: RevisionV2,
-  cueId: Schema.Literals(["hands_on_head", "arms_t", "hands_on_hips"]),
+  cueId: Schema.Literals(["hands_on_head", "arms_t", "hands_on_hips", "none"]),
   cueStartMs: Natural,
-  cueEndMs: RevisionV2,
-  cueHoldMs: RevisionV2,
+  cueEndMs: Natural,
+  cueHoldMs: Natural,
   timezone: f.timezone,
   timezoneVersion: f.timezoneVersion,
   rewardMode: Schema.Literals(["practice", "reward_eligible"]),
@@ -57,7 +57,10 @@ const Capture = Schema.Struct({
   termsHash: HashV2,
 });
 const StoredTerms = Schema.Struct({
-  version: Schema.Literal("dance-moderated-capture-terms-v1"),
+  version: Schema.Literals([
+    "dance-moderated-capture-terms-v1",
+    "dance-moderated-capture-terms-v2",
+  ]),
   session_id: IdV2,
   created_at_ms: RevisionV2,
   policy_id: IdV2,
@@ -109,11 +112,18 @@ const verifyTerms = Effect.fn("ModeratedDanceContext.verifyTerms")(function* (
   const { hash: policyHash, ...policy } = capture.policy;
   const { hash: retentionHash, ...disposition } = terms.disposition;
   if (
+    (policy.version === "moderator-review-policy-v2") !==
+      (terms.profile.version === "dance-moderated-intake-profile-v2") ||
+    (policy.version === "moderator-review-policy-v2") !==
+      (terms.version === "dance-moderated-capture-terms-v2") ||
+    (policy.version === "moderator-review-policy-v2") !== (capture.cueId === "none") ||
     terms.session_id !== capture.sessionId ||
     terms_hash !== termsHash ||
     (yield* canonicalBodyHash({ ...rest, capture: captured })) !== terms_hash ||
     (yield* canonicalBodyHash([
-      "dance-moderated-policy-v1",
+      policy.version === "moderator-review-policy-v2"
+        ? "dance-moderated-policy-v2"
+        : "dance-moderated-policy-v1",
       policy,
       terms.profile,
       terms.disposition,
@@ -133,7 +143,9 @@ const verifyTerms = Effect.fn("ModeratedDanceContext.verifyTerms")(function* (
       retentionHash,
     ])) !== policy.consentHash ||
     (yield* canonicalBodyHash([
-      "dance-owner-rubric-v1",
+      policy.version === "moderator-review-policy-v2"
+        ? "dance-owner-rubric-v2"
+        : "dance-owner-rubric-v1",
       policy.rubricVersion,
       disclosure.owner_rubric_text,
     ])) !== policy.rubricHash ||
@@ -164,6 +176,7 @@ const verifyTerms = Effect.fn("ModeratedDanceContext.verifyTerms")(function* (
     score_bps: null,
     calibration: null,
     numeric_floor_bps: null,
+    ...(policy.version === "moderator-review-policy-v2" ? { opening_pose: "not_required" } : {}),
     producer_id: policy.producerId,
     admission: policy.admission,
     admission_version: policy.admissionVersion,
@@ -338,7 +351,10 @@ export const decodeModeratedDanceOwnerRubric = Effect.fn("ModeratedDanceContext.
       rubric_version: p.rubricVersion,
       rubric_hash: p.rubricHash,
       rubric_text: packet.disclosure.owner_rubric_text,
-      attestation_version: "dance-owner-verdict-attestation-v1",
+      attestation_version:
+        p.version === "moderator-review-policy-v2"
+          ? "dance-owner-verdict-attestation-v2"
+          : "dance-owner-verdict-attestation-v1",
     });
   },
 );

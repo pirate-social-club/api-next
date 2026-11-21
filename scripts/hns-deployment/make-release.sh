@@ -7,7 +7,27 @@ set -euo pipefail
 #     [--db-path REL] [--app-commit COMMIT] [--app-link REL]
 #     [--monitored-container NAME]
 #     [--local-image-id CONTAINER=sha256:IMAGE_ID]...
+#     [--compose-project NAME]
+#     [--container-release CONTAINER=self|COMMIT]...
+#     [--container-args CONTAINER=JSON_STRING_ARRAY]...
+#     [--container-mounts CONTAINER=DEST|SOURCE|ro-or-rw[;...]]...
+#     [--systemd-unit UNIT.service]...
 #     [--break-glass-non-main INCIDENT_OR_CHANGE_REFERENCE]
+#
+# Runtime-configuration expectations (all optional; deployment-status.sh checks
+# each one read-only and reports a mismatch as drift):
+#   --container-release   the release whose compose.yaml created the container:
+#                         `self` for this release, or a retained release commit
+#                         (a service deliberately left on an older release).
+#   --container-args      the container's exact Args as a JSON string array.
+#   --container-mounts    its exact mounts, `;`-separated `dest|source|ro|rw`.
+#                         SOURCE may use ${DEPLOY_ROOT} and ${RELEASE:self} or
+#                         ${RELEASE:<commit>}; named volumes are `volume:<name>`.
+#   --compose-project     the Compose project; every container labelled with it
+#                         needs a --container-release expectation.
+#   --systemd-unit        a unit that must carry no drop-ins and no COMPOSE_*
+#                         environment (the unit file itself belongs in
+#                         INSTALLED_SHA256SUMS).
 #
 # Example:
 #   make-release.sh scripts/hns-secondary-dns /tmp/ns2-out --expect-running false \
@@ -32,6 +52,11 @@ app_commit=""
 app_link="app"
 monitored_container=""
 local_image_ids=()
+compose_project=""
+container_releases=()
+container_args=()
+container_mounts=()
+systemd_units=()
 break_glass_reason=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +66,11 @@ while [[ $# -gt 0 ]]; do
     --app-link) shift; app_link="${1:?}" ;;
     --monitored-container) shift; monitored_container="${1:?}" ;;
     --local-image-id) shift; local_image_ids+=("${1:?}") ;;
+    --compose-project) shift; compose_project="${1:?}" ;;
+    --container-release) shift; container_releases+=("${1:?}") ;;
+    --container-args) shift; container_args+=("${1:?}") ;;
+    --container-mounts) shift; container_mounts+=("${1:?}") ;;
+    --systemd-unit) shift; systemd_units+=("${1:?}") ;;
     --break-glass-non-main) shift; break_glass_reason="${1:?}" ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -53,6 +83,44 @@ for local_image in "${local_image_ids[@]}"; do
     exit 2
   fi
 done
+
+if [[ -n "$compose_project" && ! "$compose_project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "--compose-project must be a lowercase Compose project name" >&2
+  exit 2
+fi
+for record in "${container_releases[@]}"; do
+  if [[ ! "$record" =~ ^[A-Za-z0-9_.-]+=(self|[a-f0-9]{40})$ ]]; then
+    echo "--container-release must be CONTAINER=self or CONTAINER=<40-character commit>" >&2
+    exit 2
+  fi
+done
+for record in "${container_args[@]}"; do
+  if [[ ! "$record" =~ ^[A-Za-z0-9_.-]+= ]] || ! python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+assert isinstance(value, list) and all(isinstance(v, str) for v in value)
+' "${record#*=}" 2>/dev/null; then
+    echo "--container-args must be CONTAINER=<JSON array of strings>" >&2
+    exit 2
+  fi
+done
+for record in "${container_mounts[@]}"; do
+  if [[ ! "$record" =~ ^[A-Za-z0-9_.-]+=$ ]] \
+    && [[ ! "$record" =~ ^[A-Za-z0-9_.-]+=(/[^|;]+\|[^|;]+\|(ro|rw))(;/[^|;]+\|[^|;]+\|(ro|rw))*$ ]]; then
+    echo "--container-mounts must be CONTAINER=DEST|SOURCE|ro-or-rw[;...] (empty for no mounts)" >&2
+    exit 2
+  fi
+done
+for unit in "${systemd_units[@]}"; do
+  if [[ ! "$unit" =~ ^[A-Za-z0-9@._-]+\.service$ ]]; then
+    echo "--systemd-unit must be a systemd .service unit name" >&2
+    exit 2
+  fi
+done
+if (( ${#container_releases[@]} > 0 )) && [[ -z "$compose_project" ]]; then
+  echo "--container-release requires --compose-project" >&2
+  exit 2
+fi
 
 if [[ -n "$app_commit" && ! "$app_commit" =~ ^[a-f0-9]{40}$ ]]; then
   echo "--app-commit must be a full lowercase 40-character git commit" >&2
@@ -171,6 +239,15 @@ if [[ -f "$compose_file" ]]; then
   image_digest="$(cut -f2 <<< "$match")"
 fi
 
+declared_containers="$(cut -f1 <<< "${service_pairs:-}")"
+for record in "${container_releases[@]}" "${container_args[@]}" "${container_mounts[@]}"; do
+  named="${record%%=*}"
+  if ! grep -Fxq -- "$named" <<< "$declared_containers"; then
+    echo "runtime expectation names container '$named', which $compose_file does not declare" >&2
+    exit 2
+  fi
+done
+
 {
   echo "ROLE=$(basename "$role_dir")"
   echo "SOURCE_COMMIT=$source_commit"
@@ -191,6 +268,19 @@ fi
     local_image_index=$((local_image_index + 1))
     echo "LOCAL_IMAGE_ID_${local_image_index}=$local_image"
   done
+  [[ -n "$compose_project" ]] && echo "COMPOSE_PROJECT=$compose_project"
+  index=0
+  for record in "${container_releases[@]}"; do index=$((index + 1)); echo "CONTAINER_RELEASE_${index}=$record"; done
+  index=0
+  for record in "${container_args[@]}"; do
+    index=$((index + 1))
+    canonical="$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${record#*=}")"
+    echo "CONTAINER_ARGS_${index}=${record%%=*}=$canonical"
+  done
+  index=0
+  for record in "${container_mounts[@]}"; do index=$((index + 1)); echo "CONTAINER_MOUNTS_${index}=$record"; done
+  index=0
+  for unit in "${systemd_units[@]}"; do index=$((index + 1)); echo "SYSTEMD_UNIT_${index}=$unit"; done
   echo "EXPECT_RUNNING=$expect_running"
   [[ -n "$db_path" ]] && echo "DB_PATH=$db_path"
   echo "DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

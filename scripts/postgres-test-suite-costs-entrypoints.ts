@@ -1,6 +1,14 @@
 // Worker and operational script measurements outside HNS.
 // Provenance and public aggregate: postgres-test-suite-costs.ts.
 export const postgresEntrypointSuiteCostEstimates = {
+  // One callback expands to19 full-schema lifecycle cases. The prior15-case run
+  // took235.74s; the18-case treasury run took144.30s locally. The19-case run with
+  // context exhaustion took228s locally on PostgreSQL17 with fsync on. Retain250s. This
+  // estimate is not hosted acceptance and changes no deadline or assertion.
+  "apps/jobs-worker/src/reward-safe-study-journey.pg.test.ts": {
+    sourceCallCount: 1,
+    milliseconds: 250000,
+  },
   "apps/http-worker/src/guest-authority-private-composition.pg.test.ts": {
     sourceCallCount: 6,
     milliseconds: 19625,

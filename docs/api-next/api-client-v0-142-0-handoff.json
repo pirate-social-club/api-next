@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.142.0",
+  "sourceBranch": "fix/rewards-disabled-availability-20261102",
+  "sourceBase": "e7d7e625da02b298adff693df2a53c94f7e5a9c4",
+  "validatedSourceCommit": null,
+  "pullRequest": null,
+  "wireContract": "Adds authenticated GET /rewards/availability returning the effective configured enabled boolean with no-store. It does not claim provider health or authorize reward operations. Disabled is HTTP200 without reward provider initialization; enabled qualification-policy outages remain typed failures. Preserves all accepted141.1 contracts and immutable predecessors.",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.142.0.tgz",
+    "sha256": "49603d6657d47a6da16cd83235c1cb815c1eb5cb0053b0c6d69a7a6058efc81e"
+  },
+  "validation": {
+    "status": "Full local repository check, unit/storage/Node/six Worker suites, isolated package verification and breaking comparison against accepted e7d7e625 pass on the refreshed candidate. Exact final-source independent review and required hosted checks remain before protected integration. No runtime delivery is claimed.",
+    "operationalBoundary": "Source/client release only; no production/staging deployment, feature activation, DB migration, credentials or financial operation. Preserve API712 then Rewards source order and Solid160 then consumer142 source order."
+  }
+}

@@ -61,18 +61,24 @@ const Clip = Schema.Struct({
   offsetMs: Timestamp,
   durationMs: Positive,
 });
+const ProbeFields = {
+  evidenceRef: Text,
+  ingestPolicyRevision: Positive,
+  durationMs: Positive,
+  width: Positive,
+  height: Positive,
+  frameRateMillihertz: Positive,
+  videoCodec: Schema.Literals(["h264", "hevc"]),
+};
 const schemas = {
-  probe: Schema.Struct({
-    evidenceRef: Text,
-    ingestPolicyRevision: Positive,
-    durationMs: Positive,
-    width: Positive,
-    height: Positive,
-    frameRateMillihertz: Positive,
-    videoCodec: Schema.Literals(["h264", "hevc"]),
-    audioCodec: Schema.Literal("aac"),
-    hasAudio: Schema.Literal(true),
-  }),
+  probe: Schema.Union([
+    Schema.Struct({
+      ...ProbeFields,
+      audioCodec: Schema.Literal("aac"),
+      hasAudio: Schema.Literal(true),
+    }),
+    Schema.Struct({ ...ProbeFields, audioCodec: Schema.Null, hasAudio: Schema.Literal(false) }),
+  ]),
   audio: Schema.Struct({
     sizeBytes: Positive,
     offsetMs: Schema.Literal(0),

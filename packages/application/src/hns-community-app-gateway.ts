@@ -5,9 +5,9 @@ import {
 import { HNS_FORWARDER_V3 } from "./hns-forwarder-v3.ts";
 
 export const HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_VERSION =
-  "pirate-hns-community-app-interactive-gateway-v3" as const;
+  "pirate-hns-community-app-interactive-gateway-v4" as const;
 export const HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_SHA256 =
-  "c4f4c07252ba10a25467f476cc5b56d50ef9cf02e25ad368a05551d19ba861ed" as const;
+  "705350bde58be27bf06a05efcf7dcc811e74f0a99ad7580e9be2de790e9c6561" as const;
 
 export const HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_METHODS = Object.freeze([
   "GET",
@@ -42,6 +42,7 @@ export const HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_REQUEST_HEADERS = Object.free
 
 export const HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_RESPONSE_COOKIES = Object.freeze([
   "__Host-pirate_session",
+  "__Host-pirate_renewal",
   "__Host-pirate_csrf",
 ] as const);
 
@@ -50,7 +51,7 @@ export const HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_AUTHORITY_WIRE = Object.freez
   HNS_SOLID_HOST_AUTHORITY_RESPONSE_V2,
 ] as const);
 
-export type HnsCommunityAppInteractiveGatewayProfileV3 = readonly [
+export type HnsCommunityAppInteractiveGatewayProfileV4 = readonly [
   version: typeof HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_VERSION,
   forwarder: typeof HNS_FORWARDER_V3,
   authority_variant: "community_app_v1",
@@ -70,7 +71,7 @@ export type HnsCommunityAppInteractiveGatewayProfileV3 = readonly [
   private_authority_deadline_milliseconds: 4_000,
 ];
 
-export const HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE: HnsCommunityAppInteractiveGatewayProfileV3 =
+export const HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE: HnsCommunityAppInteractiveGatewayProfileV4 =
   Object.freeze([
     HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_VERSION,
     HNS_FORWARDER_V3,
@@ -99,13 +100,13 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const profileBytes = encoder.encode(JSON.stringify(HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE));
 
-export function encodeHnsCommunityAppInteractiveGatewayProfileV3(): Uint8Array {
+export function encodeHnsCommunityAppInteractiveGatewayProfileV4(): Uint8Array {
   return new Uint8Array(profileBytes);
 }
 
-export function decodeHnsCommunityAppInteractiveGatewayProfileV3(
+export function decodeHnsCommunityAppInteractiveGatewayProfileV4(
   bytes: Uint8Array,
-): HnsCommunityAppInteractiveGatewayProfileV3 {
+): HnsCommunityAppInteractiveGatewayProfileV4 {
   if (
     bytes.byteLength !== profileBytes.byteLength ||
     !bytes.every((byte, index) => byte === profileBytes[index])
@@ -130,7 +131,7 @@ function hex(bytes: Uint8Array): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function verifyHnsCommunityAppInteractiveGatewayProfileV3(): Promise<void> {
+export async function verifyHnsCommunityAppInteractiveGatewayProfileV4(): Promise<void> {
   const digest = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", profileBytes)));
   if (digest !== HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_SHA256) {
     throw new HnsCommunityAppInteractiveGatewayProfileError(

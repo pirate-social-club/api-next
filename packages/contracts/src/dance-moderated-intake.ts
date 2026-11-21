@@ -86,10 +86,10 @@ export const ModeratedDanceSessionView = Schema.Struct({
   body_start_ms: Natural,
   body_end_ms: Positive,
   cue: Schema.Struct({
-    kind: Schema.Literals(["hands_on_head", "arms_t", "hands_on_hips"]),
+    kind: Schema.Literals(["hands_on_head", "arms_t", "hands_on_hips", "none"]),
     start_ms: Natural,
-    end_ms: Positive,
-    hold_ms: Positive,
+    end_ms: Natural,
+    hold_ms: Natural,
   }),
   maximum_bytes: Positive,
   upload_id: Schema.NullOr(Id),
@@ -99,7 +99,20 @@ export const ModeratedDanceSessionView = Schema.Struct({
   uploaded_at_ms: Schema.NullOr(Natural),
   review_deadline_ms: Schema.NullOr(Positive),
   score_bps: Schema.Null,
-});
+}).check(
+  Schema.makeFilter((s) =>
+    s.cue.kind === "none"
+      ? s.cue.start_ms === 0 && s.cue.end_ms === 0 && s.cue.hold_ms === 0 && s.body_start_ms === 0
+        ? undefined
+        : "No-pose capture must start with the dance"
+      : s.cue.start_ms < s.cue.end_ms &&
+          s.cue.end_ms <= s.body_start_ms &&
+          s.cue.hold_ms > 0 &&
+          s.cue.hold_ms <= s.cue.end_ms - s.cue.start_ms
+        ? undefined
+        : "Invalid captured opening cue",
+  ),
+);
 export type ModeratedDanceSessionView = typeof ModeratedDanceSessionView.Type;
 export const ModeratedDanceIntakeReceipt = Schema.Struct({
   version: Schema.Literal("dance-moderated-intake-receipt-v1"),
